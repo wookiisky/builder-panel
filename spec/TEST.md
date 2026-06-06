@@ -1,0 +1,359 @@
+# 测试
+
+## 职责
+
+本文档记录测试目标、测试分层、断言模型和验收入口。
+
+本文档不复制测试代码。
+
+## 测试目标
+
+测试优先验证分层边界、纯规则、状态转换和降级行为。
+
+阶段 1 测试 Domain 类型、事件、reducer 和 view model 纯转换。
+
+当前测试不测试真实 agent 协议。
+
+阶段 2 测试本地 bridge codec、hook helper fail-open、payload 基础校验、stdout directive 编码和 Mac UDS 单请求往返。
+
+阶段 2 不声明 Windows Named Pipe 已在 Windows 本机验证。
+
+阶段 3 测试 mock agent 事件、session 读取、审批回写、文本回复、timeline 查询和前端 mock 状态。
+
+阶段 3 不测试真实 Codex 或 Claude Code 协议。
+
+阶段 3 不声明 Windows 本机人工验证。
+
+阶段 4 当前测试 Codex CLI hook adapter、Codex CLI runtime、Codex APP schema 探针、Codex APP request 编码和 notification 转换。
+
+阶段 4 当前不声明 Claude Code 真实闭环已完成。
+
+阶段 4 当前不执行 Windows 本机人工验证。
+
+阶段 5 测试 mock 审批允许并记住、mock 选项提交、快捷回复过滤、预设命令计划、跳回降级和前端选项状态。
+
+阶段 5 当前不执行 Windows 本机人工验证。
+
+阶段 6 测试 timeline 内存缓存、分页、搜索、筛选、去重、淘汰、Codex CLI hook 接收、前端复制筛选结果、虚拟列表范围和缓存释放。
+
+阶段 6 当前不执行 Windows 本机人工验证。
+
+阶段 7 测试扩展模式 session 排序、统计、设置默认值、设置文件读写、通知合并和收缩保留草稿。
+
+阶段 7 当前未建立 Playwright 自动化截图验证。
+
+阶段 7 当前不执行 Windows 本机人工验证。
+
+阶段 8 测试配置缺字段默认化、原子写失败不覆盖旧配置、hook 安装卸载 fixture、日志脱敏、spec 文档门禁和性能预算静态场景。
+
+阶段 8 测试设置页 hook 安装目标选择和 panel 默认持久化状态。
+
+阶段 8 当前不执行 Windows 本机人工验证。
+
+阶段 8 当前不声明 10 分钟空闲 CPU 人工采样已完成。
+
+阶段 0 不测试未实现的持久化恢复。
+
+## 测试分层
+
+Rust 单元测试验证 Domain 纯规则。
+
+前端单元测试验证 UI store 的纯状态转换。
+
+架构脚本验证跨层依赖边界。
+
+Rust adapter 测试验证 bridge 和 hook helper 边界行为。
+
+Rust mock adapter 测试验证 mock event、directive 记录和回写失败保留 pending。
+
+Rust Codex CLI adapter 测试验证 hook payload 到归一事件、非阻塞 ack、pending approval 和 directive 等待。
+
+Rust Codex CLI runtime 测试验证审批等待超时会清理 pending approval 并拒绝迟到决策。
+
+Rust Codex CLI runtime 测试验证迟到 UI 决策早于 bridge 超时清理时仍会清理 session pending。
+
+Rust Codex CLI runtime 测试验证同一 session 新审批会让旧审批等待器过期。
+
+Rust Codex APP adapter 测试验证 app-server schema 探针、request 编码和 notification 到归一事件转换。
+
+Rust bridge transport 测试验证长请求等待时 listener 仍可接收后续请求。
+
+Rust service 测试验证 session 读取、审批、回复和 timeline 查询。
+
+Rust service 测试验证选项校验、快捷回复过滤和预设命令计划生成。
+
+Rust timeline adapter 测试验证去重、单 session 上限、全局上限、优先级淘汰和大文本释放。
+
+Rust terminal adapter 测试验证跳回记录和复制降级。
+
+前端 mock store 测试验证草稿隔离、提交中状态和 timeline 缓存释放。
+
+前端 mock store 测试验证选项选择按 interaction 隔离，失败后可保留，成功后只清当前交互。
+
+前端 mock store 测试验证复制筛选结果和虚拟列表可见范围计算。
+
+前端 Builder Panel 测试验证轮询刷新后新出现的 Codex CLI session 会被选中。
+
+前端 Builder Panel 测试验证 session 路由以 runtime source 为准，不以 agent kind 猜测来源。
+
+前端 Builder Panel 测试验证同一个 `SessionKey` 的 mock 和 Codex CLI session 拥有不同 UI 选中身份。
+
+前端 Builder Panel 测试验证合并后的 session 等待优先、同状态更新时间倒序、统计数量和动作标签。
+
+前端 Builder Panel 测试验证旧选中项消失后会自动选择当前可用 session。
+
+前端 Builder Panel 测试验证设置保存旧响应不会覆盖最新状态。
+
+前端设置测试验证阶段 7 默认设置不包含自动更新配置项。
+
+前端设置测试验证默认 panel 状态为展开且没有虚构窗口几何。
+
+前端 Builder Panel 测试验证 hook 安装目标选择不修改原数组。
+
+前端 Builder Panel 测试验证没有当前选择对应的安装预览时不能安装 hook。
+
+前端 Builder Panel 测试验证窗口移动和尺寸变化的局部保存更新会合并。
+
+Rust settings service 测试验证配置缺失、配置损坏和保存。
+
+Rust config file adapter 测试验证设置文件缺失、读写和损坏 JSON。
+
+Rust notification service 测试验证当前 session 抑制、短时间重复通知合并和点击不打开 timeline。
+
+Rust config file adapter 测试验证缺字段默认化、未知字段丢弃、临时文件写入失败不覆盖旧配置和并发保存临时文件隔离。
+
+Rust hook install adapter 测试验证安装预览、Codex hook 写入、重复安装替换、混合 group 保留用户 handler、重复 agent 去重、失败回滚、备份恢复、manifest 删除和缺失配置卸载删除。
+
+Rust log sanitizer 测试验证敏感字段脱敏、长文本截断和中文业务事件名。
+
+CI 串行执行依赖安装、架构检查、前端 lint、前端测试和 Rust 测试。
+
+CI 执行 spec 文档门禁和性能预算静态场景。
+
+## 断言模型
+
+Domain 测试断言输入和输出的确定关系。
+
+Domain reducer 测试覆盖所有已定义事件分支。
+
+Domain view model 测试覆盖 capability 到 UI action 的映射。
+
+Domain view model 测试覆盖终态 session 不生成过期回复动作。
+
+前端 store 测试断言状态转换不修改原对象。
+
+架构脚本断言禁止依赖不会进入 Domain 和前端边界。
+
+Bridge codec 测试断言 NDJSON 半包不会被提前解析。
+
+Hook helper 测试断言 fail-open 不输出 stdout。
+
+Hook output 测试断言 directive JSON 结构。
+
+Mock adapter 测试断言多项目、多对话不会合并。
+
+Mock adapter 测试断言用量不可用不会生成虚假数字。
+
+Codex CLI adapter 测试断言第三方 payload 不进入 Domain 事件。
+
+Codex CLI runtime 测试断言审批决策唤醒等待中的 hook request。
+
+Codex CLI runtime 测试断言审批等待超时后不会保留可被迟到 UI 操作完成的 pending approval。
+
+Codex CLI runtime 测试断言当前 session pending interaction 不匹配时旧审批不能完成。
+
+Codex APP adapter 测试断言 token usage 只来自 app-server 已验证 notification 字段。
+
+Codex APP adapter 测试断言未闭环的 follow-up turn 和 process timeline capability 不会暴露。
+
+Interaction Service 测试断言 allow、deny 和回写失败路径。
+
+Interaction Service 测试断言 allow and remember、单选、多选空选择、非法选项和回写失败路径。
+
+Reply Service 测试断言非空、空内容、超长和回写失败路径。
+
+Shortcut Reply Service 测试断言启用状态、agent 绑定、项目绑定和排序。
+
+Preset Command Service 测试断言结构化创建优先、托管进程降级和复制降级。
+
+Process Timeline Service 测试断言分页、搜索和类型筛选。
+
+Timeline adapter 测试断言重复条目不重复写入。
+
+Timeline adapter 测试断言达到上限后优先淘汰低优先级旧条目。
+
+Timeline adapter 测试断言大文本释放后缓存正文字符数下降。
+
+Mock panel store 测试断言草稿按 session 隔离，关闭 timeline 释放当前页缓存。
+
+Mock panel store 测试断言虚拟列表不会按一万条记录全量计算可见范围。
+
+Panel probe store 测试断言收缩状态切换不清理 session 草稿。
+
+Builder Panel 测试断言合并排序不会被 runtime 拼接顺序破坏。
+
+Settings Service 测试断言配置损坏时核心 UI 使用默认设置。
+
+Config file adapter 测试断言配置缺字段时对应字段使用默认值。
+
+Settings Service 测试断言默认 panel 状态为展开且没有虚构窗口几何。
+
+Config file adapter 测试断言临时文件写入失败时旧配置仍保留。
+
+Config file adapter 测试断言同一路径并发保存不会共享临时文件。
+
+Hook install adapter 测试断言安装前可获得修改文件、备份文件和 manifest 路径。
+
+Hook install adapter 测试断言卸载可恢复安装前已有配置。
+
+Hook install adapter 测试断言安装失败不会留下无 manifest 的半安装配置。
+
+Hook install adapter 测试断言卸载成功后 manifest 不再生效。
+
+Log sanitizer 测试断言 prompt、transcript、timeline 和 token 类字段不会输出原文。
+
+Notification Service 测试断言通知点击只定位 session，不打开过程弹层。
+
+## 资源隔离
+
+阶段 0 测试不启动真实 agent。
+
+阶段 0 测试不读写用户配置。
+
+阶段 0 测试不访问网络。
+
+阶段 2 hook helper 测试不启动真实 Codex 或 Claude Code。
+
+阶段 3 mock agent 测试不启动真实 Codex 或 Claude Code。
+
+阶段 3 mock agent 测试不读写真正用户配置。
+
+阶段 4 Codex APP schema 人工验证会执行本机 `codex app-server generate-json-schema --experimental`。
+
+阶段 4 自动测试不启动真实 Codex APP app-server 长驻进程。
+
+阶段 7 自动测试不调用真实系统通知 API。
+
+阶段 7 自动测试不读写真正用户配置路径；设置 adapter 测试使用临时文件。
+
+阶段 8 hook 安装测试不读写真正用户配置路径；hook 安装测试使用临时目录 fixture。
+
+阶段 8 性能预算脚本不启动真实 agent，不访问网络，不读取用户配置。
+
+## 禁止方式
+
+不得通过修改运行时语义来满足类型检查。
+
+不得只验证 happy path。
+
+不得把未验证的人工行为写成已通过结论。
+
+## 代码入口
+
+`src-tauri/src/domain/panel_geometry.rs` 是 Rust 位置修正测试入口。
+
+`src-tauri/src/domain/panel_probe.rs` 是 Rust 探针测试入口。
+
+`src-tauri/src/domain/agent_session.rs` 是 session key 和 capability 测试入口。
+
+`src-tauri/src/domain/agent_interaction.rs` 是 pending interaction 测试入口。
+
+`src-tauri/src/domain/agent_event.rs` 是事件序列化测试入口。
+
+`src-tauri/src/domain/session_state.rs` 是 reducer、pending 清理、多会话隔离和排序测试入口。
+
+`src-tauri/src/domain/usage.rs` 是用量测试入口。
+
+`src-tauri/src/domain/app_error.rs` 是错误对象测试入口。
+
+`src-tauri/src/domain/view_model.rs` 是 view model 映射测试入口。
+
+`src-tauri/src/adapters/bridge/codec_tests.rs` 是 bridge codec 测试入口。
+
+`src-tauri/src/adapters/bridge/transport.rs` 是 Unix Domain Socket bridge 测试入口。
+
+`src-tauri/src/adapters/bridge/hook_cli.rs` 是 hook helper 测试入口。
+
+`src-tauri/src/adapters/bridge/hook_payload.rs` 是 hook payload 基础校验测试入口。
+
+`src-tauri/src/adapters/bridge/hook_output.rs` 是 stdout directive 编码测试入口。
+
+`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock adapter 测试入口。
+
+`src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存测试入口。
+
+`src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook adapter 和 runtime 测试入口。
+
+`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP app-server adapter 测试入口。
+
+`src-tauri/src/services/session_service.rs` 是 session service 测试入口。
+
+`src-tauri/src/services/interaction_service.rs` 是 interaction service 测试入口。
+
+`src-tauri/src/services/reply_service.rs` 是 reply service 测试入口。
+
+`src-tauri/src/services/shortcut_reply_service.rs` 是 shortcut reply service 测试入口。
+
+`src-tauri/src/services/preset_command_service.rs` 是 preset command service 测试入口。
+
+`src-tauri/src/services/process_timeline_service.rs` 是 process timeline service 测试入口。
+
+`src-tauri/src/adapters/terminal/mod.rs` 是 terminal adapter 测试入口。
+
+`src-tauri/src/services/settings_service.rs` 是 settings service 测试入口。
+
+`src-tauri/src/adapters/config_file/mod.rs` 是 JSON 设置文件 adapter 测试入口。
+
+`src-tauri/src/adapters/hook_install/mod.rs` 是 hook 安装器 fixture 测试入口。
+
+`src-tauri/src/adapters/log_sanitizer/mod.rs` 是日志脱敏测试入口。
+
+`scripts/check-spec-docs.mjs` 是 spec 文档质量门禁入口。
+
+`scripts/check-performance-budget.mjs` 是性能预算静态场景入口。
+
+`src-tauri/src/services/notification_service.rs` 是 notification service 测试入口。
+
+`src-tauri/src/adapters/notification/mod.rs` 是记录型通知 adapter 入口。
+
+`src/stores/panelProbeStore.test.ts` 是前端状态测试入口。
+
+`src/stores/mockPanelStore.test.ts` 是前端 mock 状态测试入口。
+
+`src/stores/mockPanelStore.test.ts` 是前端 timeline 复制和虚拟范围测试入口。
+
+`src/views/BuilderPanelApp.test.ts` 是前端 Codex CLI session 刷新选择测试入口。
+
+`src/views/BuilderPanelApp.test.ts` 是阶段 7 session 排序、统计和动作标签测试入口。
+
+`src/api/settingsApi.test.ts` 是前端设置默认值测试入口。
+
+`src/api/panelWindowApi.ts` 是前端 panel 窗口状态恢复和局部保存入口。
+
+`src/api/hookInstallApi.ts` 是前端 hook 安装 command 调用入口。
+
+`scripts/check-architecture.mjs` 是架构检查入口。
+
+`.github/workflows/ci.yml` 是 CI 验证入口。
+
+## 命令入口
+
+`pnpm architecture:check` 运行架构边界检查。
+
+`pnpm lint` 运行前端 lint 和架构检查。
+
+`pnpm test` 运行前端测试。
+
+`cargo test --manifest-path src-tauri/Cargo.toml` 运行 Rust 测试。
+
+`cargo test --manifest-path src-tauri/Cargo.toml bridge` 运行阶段 2 bridge 和 hook helper 测试。
+
+`cargo test --manifest-path src-tauri/Cargo.toml codex_cli_hook` 运行 Codex CLI hook adapter 测试。
+
+`cargo test --manifest-path src-tauri/Cargo.toml timeline` 运行 timeline service、adapter 和 Codex CLI timeline 接收测试。
+
+`cargo test --manifest-path src-tauri/Cargo.toml codex_app` 运行 Codex APP app-server adapter 测试。
+
+`pnpm tauri:dev` 启动人工验证空 panel。
+
+当用户级 Cargo mirror 缺少 lockfile 依赖时，可用命令级 Cargo mirror 配置运行 Rust 测试，不把 mirror 缺包记录为代码失败。

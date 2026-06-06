@@ -1,0 +1,277 @@
+# 外部行为
+
+## 职责
+
+本文档记录外部使用者可以观察到的行为和限制。
+
+本文档不记录内部实现细节。
+
+## 桌面窗口行为
+
+应用启动后展示一个基础 Builder Panel 窗口。
+
+窗口配置为置顶、无系统装饰、可调整大小。
+
+窗口顶部区域声明为可拖动区域。
+
+窗口首版只展示扩展模式。
+
+阶段 7 主窗口默认尺寸面向扩展模式工作台。
+
+应用读取设置后会尝试恢复上次收缩状态、窗口位置和窗口尺寸。
+
+窗口移动或调整大小后，Tauri 环境会保存新的窗口位置和尺寸。
+
+## 前端行为
+
+panel 展示阶段 3 mock agent 会话列表。
+
+用户可以点击按钮收缩或展开 panel 内容区。
+
+收缩和展开后，当前选中的 session 和当前 session 草稿保持不变。
+
+panel 不展示 mini 模式切换入口。
+
+panel 展示等待数量、运行数量和 session 总数。
+
+mock session 列表展示等待审批、等待回复、完成和失败状态。
+
+mock session 列表中的用量可用时展示已验证数字。
+
+mock session 列表中的用量不可用时展示占位。
+
+session 列表合并 mock 和 Codex CLI session 后，等待用户操作的 session 排在前面。
+
+同一状态的 session 按更新时间倒序展示。
+
+不支持的动作不展示为可点击按钮。
+
+长摘要、长路径和长命令不会撑破面板布局。
+
+用户可以在 mock 审批 session 中点击允许、拒绝或允许并记住。
+
+用户可以在 mock 回复 session 中输入单行或多行文本回复。
+
+用户可以在 mock 选项 session 中提交单选或多选回复。
+
+`Enter` 发送 mock 文本回复。
+
+`Shift+Enter` 在 mock 回复框中换行。
+
+用户可以在 mock 文本回复 session 中点击快捷回复。
+
+快捷回复发送失败后，快捷回复内容保留在当前草稿中。
+
+用户可以打开支持 timeline 的 mock session 过程事件弹层。
+
+用户可以搜索、筛选和复制单条 mock timeline 条目。
+
+用户可以复制当前筛选页的 timeline 条目。
+
+用户可以在 timeline 弹层中跳到最新条目。
+
+关闭 timeline 弹层后，当前页缓存被释放。
+
+关闭 timeline 弹层后，后端会尝试释放该 session 的大文本正文缓存。
+
+timeline 弹层不提供导出过程事件文件入口。
+
+阶段 3 的会话列表不代表真实 agent 连接。
+
+阶段 4 的会话列表可展示 Codex CLI hook 产生的真实 session。
+
+panel 打开期间会刷新 Codex CLI session，后续 hook 事件可进入列表和详情。
+
+Codex CLI 请求权限时，用户可在 panel 中点击允许或拒绝。
+
+Codex CLI 审批决策会通过 hook stdout directive 返回给 Codex CLI。
+
+Codex CLI 的允许并记住入口当前按允许 directive 返回，不声明真实记忆规则已支持。
+
+Codex CLI hook 产生的托管事件可在支持 timeline 的 session 中查询。
+
+阶段 7 设置页包含 General、Display、Agents、Replies、Presets、Terminal 和 Advanced。
+
+设置页包含 Hook Install 分组。
+
+设置页不提供自动更新配置项。
+
+用户可以在 Hook Install 分组选择 Codex CLI hook 和 Claude CLI hook。
+
+用户可以在 Hook Install 分组预览将修改的文件、备份文件和 manifest 路径。
+
+用户点击安装后才会写入第三方 hook 配置。
+
+用户点击卸载后会按 manifest 恢复安装前配置。
+
+Mock Agent 和 Codex CLI 开关会影响对应来源的 session 读取和展示。
+
+Codex APP、Claude Code CLI 和 Claude Code APP 设置开关当前显示为禁用，不触发 session 读取。
+
+用量展示开关关闭后，列表和详情不展示用量信息。
+
+快捷回复开关关闭后，文本回复区域不展示快捷回复入口。
+
+Enter 发送开关关闭后，Enter 不触发文本回复发送。
+
+配置不存在时使用默认设置。
+
+配置缺失字段时使用对应默认值。
+
+配置未知字段不会进入设置模型。
+
+配置损坏时使用默认设置并提示。
+
+通知点击只定位 session、聚焦并展开 panel。
+
+通知点击不直接打开过程弹出层。
+
+Codex APP app-server schema 可由后端探针验证，但当前不展示 Codex APP 结构化审批、回复、follow-up turn 或 timeline 按钮。
+
+## hook CLI 行为
+
+`builder-panel-hook` 可作为命令执行。
+
+阶段 0 的 hook CLI 不输出阻塞 directive。
+
+阶段 2 的 hook CLI 支持 `--source codex` 和 `--source claude`。
+
+阶段 2 的 hook CLI 从 stdin 读取 hook JSON。
+
+空 stdin、非法 JSON、payload 校验失败和 bridge 不可用时，hook CLI 不输出阻塞 directive。
+
+bridge 返回有效 directive 时，hook CLI 向 stdout 输出对应 agent 的 directive JSON。
+
+hook CLI fail-open 时退出码为 0。
+
+hook CLI 可向 stderr 输出简短诊断。
+
+## hook 安装行为
+
+hook 安装前可展示将修改的文件、将创建的备份文件和 manifest 路径。
+
+hook 安装入口已接入设置页。
+
+hook 安装会先备份已存在的第三方配置。
+
+hook 卸载会按 manifest 恢复安装前状态。
+
+Codex hook 安装不绕过 Codex 自身 hook trust review。
+
+## 限制
+
+阶段 0 不承诺真实 Codex APP、Codex CLI、Claude Code APP 或 Claude Code CLI 接入。
+
+阶段 2 不承诺真实 Codex CLI 或 Claude Code CLI 已完成人工端到端验收。
+
+阶段 2 不承诺 Codex APP 或 Claude Code APP 接入。
+
+阶段 2 不承诺 Windows Named Pipe 已在 Windows 本机验收。
+
+阶段 3 不承诺真实 Codex 或 Claude Code 审批、回复和 timeline 接入。
+
+阶段 4 当前只声明 Codex CLI 审批 hook 闭环和 Codex APP schema 探针、消息编码、notification 转换。
+
+阶段 4 当前不声明 Claude Code 真实闭环已完成。
+
+阶段 4 当前不声明 Codex APP 审批回写或已有会话自动发现已完成。
+
+阶段 5 当前不声明真实终端跳回人工闭环已完成。
+
+阶段 5 当前不声明真实新对话创建已完成。
+
+阶段 5 当前不执行 Windows 本机验证。
+
+阶段 6 当前不执行 Windows 本机验证。
+
+阶段 7 当前不执行 Windows 本机验证。
+
+阶段 7 当前不声明真实 Mac 或 Windows 系统通知已接入。
+
+阶段 7 当前未建立 Playwright 自动化截图验证。
+
+阶段 8 当前不执行 Windows 本机验证。
+
+阶段 8 性能预算脚本不替代 10 分钟空闲 CPU 人工采样。
+
+阶段 6 不支持从 transcript 或 JSONL 文件恢复 timeline。
+
+阶段 6 不支持导出过程事件文件。
+
+阶段 3 不执行 Windows 本机人工验证。
+
+当前窗口位置和尺寸恢复只在 Tauri 环境自动执行。
+
+当前窗口位置和尺寸恢复未执行 Windows 本机验证。
+
+阶段 0 不承诺 Windows 人工验收已经完成。
+
+## 代码入口
+
+`src-tauri/tauri.conf.json` 是窗口配置入口。
+
+`src/components/PanelShell.tsx` 是前端拖动区域入口。
+
+`src-tauri/src/bin/builder-panel-hook.rs` 是 hook CLI 入口。
+
+`src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook 状态和 directive 入口。
+
+`src-tauri/src/adapters/timeline/mod.rs` 是过程事件时间线内存缓存入口。
+
+`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP app-server schema 探针和 notification 转换入口。
+
+`src-tauri/src/adapters/bridge/hook_output.rs` 是 hook stdout directive 编码入口。
+
+`src/views/BuilderPanelApp.tsx` 是阶段 3 mock panel 前端行为入口。
+
+`src/api/mockPanelApi.ts` 是前端 mock command 调用入口。
+
+`src-tauri/src/tauri_api/commands.rs` 是 mock session、审批、选项、回复和 timeline command 入口。
+
+`src-tauri/src/services/shortcut_reply_service.rs` 是快捷回复过滤入口。
+
+`src-tauri/src/services/preset_command_service.rs` 是预设命令计划入口。
+
+`src-tauri/src/adapters/terminal/mod.rs` 是终端跳回降级入口。
+
+`src/components/SettingsPanel.tsx` 是设置页入口。
+
+`src/api/settingsApi.ts` 是设置读写和浏览器 fallback 入口。
+
+`src-tauri/src/services/settings_service.rs` 是设置默认化和保存入口。
+
+`src-tauri/src/services/notification_service.rs` 是通知计划和点击定位入口。
+
+`src-tauri/src/adapters/notification/mod.rs` 是记录型通知 adapter 入口。
+
+`src-tauri/src/adapters/hook_install/mod.rs` 是 hook 安装预览、备份、manifest 和卸载入口。
+
+`src-tauri/src/adapters/log_sanitizer/mod.rs` 是日志脱敏入口。
+
+## 验收入口
+
+`pnpm tauri:dev` 用于人工启动空 panel。
+
+`pnpm test` 用于验证前端状态转换。
+
+`cargo test --manifest-path src-tauri/Cargo.toml` 用于验证 Rust 纯规则。
+
+`cargo test --manifest-path src-tauri/Cargo.toml bridge` 用于验证 bridge 和 hook helper 单元测试。
+
+`pnpm build` 用于验证阶段 3 前端类型和生产构建。
+
+`cargo test --manifest-path src-tauri/Cargo.toml codex_cli_hook` 用于验证 Codex CLI hook adapter。
+
+`cargo test --manifest-path src-tauri/Cargo.toml codex_app` 用于验证 Codex APP app-server adapter。
+
+`./node_modules/.bin/vitest run` 用于验证阶段 7 前端排序、统计、设置默认值和收缩保留草稿。
+
+`cargo test --manifest-path src-tauri/Cargo.toml settings_service` 用于验证设置服务。
+
+`cargo test --manifest-path src-tauri/Cargo.toml notification_service` 用于验证通知计划服务。
+
+`cargo test --manifest-path src-tauri/Cargo.toml hook_install` 用于验证 hook 安装器。
+
+`pnpm spec:check` 用于验证 spec 文档质量门禁。
+
+`pnpm performance:check` 用于验证性能预算静态场景。

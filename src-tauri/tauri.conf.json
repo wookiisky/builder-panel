@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Builder Panel",
+  "version": "0.1.0",
+  "identifier": "com.builder.panel",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https://asset.localhost"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Builder Panel",
+        "width": 860,
+        "height": 640,
+        "minWidth": 320,
+        "minHeight": 120,
+        "resizable": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "center": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  }
+}

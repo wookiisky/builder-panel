@@ -1,0 +1,39 @@
+{
+  "name": "builder-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.3.0",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "lint": "eslint . && pnpm architecture:check && pnpm spec:check",
+    "format": "prettier --check package.json pnpm-workspace.yaml index.html eslint.config.js tsconfig.json vite.config.ts \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.mjs\" \"spec/**/*.md\" \".github/**/*.yml\"",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "architecture:check": "node scripts/check-architecture.mjs",
+    "spec:check": "node scripts/check-spec-docs.mjs",
+    "performance:check": "node scripts/check-performance-budget.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@tauri-apps/cli": "2.11.2",
+    "@types/react": "19.2.16",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "eslint": "10.4.1",
+    "jsdom": "29.1.1",
+    "prettier": "3.7.4",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.60.1",
+    "vite": "8.0.16",
+    "vitest": "4.1.8"
+  }
+}

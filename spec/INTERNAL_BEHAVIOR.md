@@ -1,0 +1,401 @@
+# 内部行为
+
+## 职责
+
+本文档记录内部模块协作约束、状态不变量和边界破坏风险。
+
+本文档不复制外部 agent 协议。
+
+## 依赖约束
+
+Domain 不依赖 Tauri。
+
+Domain 不直接读写文件系统。
+
+Domain 不依赖异步运行时。
+
+Domain 不接收 `serde_json::Value` 作为核心逻辑输入。
+
+Domain 不依赖 adapter、service 或 tauri_api。
+
+ports 不反向依赖 adapter 具体实现。
+
+前端 `api` 层不反向依赖 UI 或 store。
+
+前端 UI 不直接引用 Rust 工程或 adapter。
+
+## 状态不变量
+
+阶段 0 只存在 `expanded` panel 模式。
+
+`collapsed` 是显式布尔状态。
+
+panel 位置修正函数不执行 IO。
+
+panel 位置修正函数不修改 panel 尺寸。
+
+`SessionKey` 由 agent、项目和对话共同确定。
+
+`UsageValue::Unavailable` 是用量不可用的唯一 Domain 表达。
+
+pending interaction 由 reducer 统一管理。
+
+pending interaction 的会话键以外层事件会话键为准。
+
+view model 由 Domain 纯转换生成，UI 不需要理解内部状态细节。
+
+view model 动作由 session 状态、pending interaction 和 capability 共同决定。
+
+session detail view model 显式暴露 pending interaction ID 和 pending interaction 类型。
+
+阶段 3 mock agent runtime 是本地内存验证基线，不是持久化事实来源。
+
+阶段 3 mock agent runtime 通过 Domain reducer 写入 session 状态。
+
+Codex CLI runtime 是阶段 4 真实 hook 状态来源，当前仍为进程内内存状态。
+
+Codex CLI pending approval 必须同时匹配 `SessionKey` 和 `InteractionId` 后才能唤醒 hook request。
+
+Codex CLI pending approval 超时后必须从 runtime 移除，并清理 session pending interaction。
+
+Codex APP app-server notification 只在 adapter 边界读取 `serde_json::Value`，转换后只向 Domain 写归一事件。
+
+审批提交必须同时匹配 `SessionKey` 和当前 pending approval 的 `InteractionId`。
+
+文本回复提交必须同时匹配 `SessionKey` 和当前 pending text reply 的 `InteractionId`。
+
+选项提交必须同时匹配 `SessionKey` 和当前 pending choice 的 `InteractionId`。
+
+选项提交值必须来自当前 choice interaction。
+
+单选 interaction 只能提交一个选项值。
+
+文本回复最大长度为 1000 个字符。
+
+前端回复草稿按 session key 派生 ID 隔离保存。
+
+前端选项选择按 interaction ID 隔离保存。
+
+快捷回复不得绕过 Reply Service 的能力校验和 pending 校验。
+
+跳回能力和文本回写能力必须分别建模。
+
+前端 timeline 当前页缓存只在弹层打开期间保存。
+
+后端 timeline 缓存只保存在进程内内存。
+
+后端 timeline 缓存按 `SessionKey` 分片。
+
+后端 timeline 缓存不写文件或数据库。
+
+后端 timeline 缓存不从 transcript 或 JSONL 反向读取。
+
+timeline 条目不进入 `SessionState`。
+
+timeline 条目使用 adapter 生成的条目 ID 去重。
+
+timeline 达到上限时，优先淘汰最旧的低优先级条目。
+
+审批、回复和失败相关 timeline 条目优先保留。
+
+关闭 timeline 弹层时，前端释放当前页缓存，并请求后端释放该 session 的大文本正文缓存。
+
+本地 bridge request 和 response 由显式 enum 表达 command 类型、结果类型、hook 事件名和 directive 类型。
+
+Claude PreToolUse 工具权限由显式 allow、deny、ask 决策表达。
+
+hook payload 中的第三方 JSON 先在 adapter 边界完成基础校验，再进入本项目 bridge command。
+
+`serde_json::Value` 只允许停留在 adapter 或边界 payload 中，不进入 Domain 核心输入。
+
+## 并发和副作用
+
+阶段 0 没有后台 worker。
+
+阶段 2 没有后台 worker。
+
+阶段 3 没有后台 worker。
+
+阶段 4 Codex CLI bridge server 是后台监听线程。
+
+Codex CLI bridge server 的 listener 不等待单个 hook request 完成。
+
+Codex CLI bridge server 每个连接由独立线程处理。
+
+Codex CLI hook 事件写入 session state 的同时写入 timeline 内存缓存。
+
+阶段 0 没有托管进程。
+
+阶段 0 没有持久化写入。
+
+Tauri command 只返回基础探针状态，不执行外部系统访问。
+
+Domain reducer 不执行 IO。
+
+Domain view model 转换不执行 IO。
+
+hook helper 读取 stdin、连接 bridge 和写 stdout 都属于系统边缘副作用。
+
+bridge transport 执行 socket 或 pipe IO。
+
+hook helper 输出 directive 前必须校验 response 与当前 request 和 agent source 匹配。
+
+Mock agent runtime 记录 directive 和折叠事件属于阶段 3 本地验证副作用。
+
+Mock agent runtime 可记录审批、选项和文本回复 directive。
+
+Tauri command 使用进程内 mock runtime 锁收口阶段 3 mock 状态访问。
+
+Tauri command 使用进程内 Codex CLI runtime 锁收口阶段 4 Codex CLI 状态访问。
+
+前端在 panel 打开期间定时刷新 Codex CLI session，避免真实 hook 事件在首次加载后不可见。
+
+前端合并 mock 和 Codex CLI session 后，详情读取和审批提交必须按显式 runtime source 路由。
+
+前端合并 mock 和 Codex CLI session 后，UI session 选中身份必须包含 runtime source。
+
+前端合并 mock 和 Codex CLI session 后，必须重新按 UI 排序规则排序。
+
+阶段 7 前端设置状态不进入 Domain。
+
+设置模型由 Settings Service 显式建模。
+
+Panel 设置保存收缩状态、窗口位置和窗口尺寸。
+
+设置存储脏数据在 config adapter 和前端 fallback 边界完成校验或降级。
+
+设置缺失字段在反序列化边界补默认值。
+
+设置未知字段在反序列化边界丢弃，不进入设置模型。
+
+配置损坏时，核心 UI 使用默认设置。
+
+设置页不包含自动更新配置项。
+
+设置页 hook 安装入口只在用户点击预览、安装或卸载时调用 hook 安装 command。
+
+设置保存响应必须通过请求版本校验后才能覆盖前端设置状态。
+
+panel 窗口移动和尺寸变化通过局部保存 command 更新 Panel 设置，不覆盖其它设置分组。
+
+当前只有 mock agent 和 Codex CLI 开关驱动 session 读取。
+
+未接入 session 读取链路的 agent 开关必须在 UI 禁用。
+
+通知计划不进入 `SessionState`。
+
+通知合并状态只存在于 Notification Service 进程内状态。
+
+通知点击动作只定位 session，不打开 timeline。
+
+Codex CLI bridge 启动只有 bind 成功后才记录为已启动。
+
+Codex CLI bridge 首次 bind 失败后允许后续 command 重试启动。
+
+Codex CLI 审批决策唤醒等待器前，必须校验当前 session pending interaction 仍匹配同一个 `InteractionId`。
+
+Codex CLI 允许并记住决策当前只唤醒为 allow directive。
+
+Codex CLI 同一 session 收到新的 `PermissionRequest` 时，旧审批等待器必须过期，避免多个可决策审批同时悬挂。
+
+Codex APP schema 探针会执行本机 `codex app-server generate-json-schema --experimental`，属于 adapter 边界副作用。
+
+终端跳回 adapter 当前只记录跳回请求和失败降级，不执行真实终端控制。
+
+JSON 设置文件读写属于 config adapter 边界副作用。
+
+JSON 设置文件保存使用同目录临时文件写入和目标文件替换。
+
+JSON 设置文件每次保存生成唯一临时文件路径。
+
+临时文件写入失败不得覆盖旧配置。
+
+hook 安装和卸载属于 hook install adapter 边界副作用。
+
+设置页 hook 安装 command 是 hook install adapter 的 Tauri 边界入口。
+
+hook 安装必须先能生成修改文件、备份文件和 manifest 的预览。
+
+设置页安装 hook 前必须允许用户查看预览结果。
+
+hook 安装不得静默提权，不得绕过 Codex hook trust review。
+
+hook 安装器只移除 Builder Panel 自己写入的旧 handler，不删除用户其他 hook handler。
+
+hook 安装器必须在写文件前对重复 agent 输入去重。
+
+hook 安装器必须先完成所有目标配置读取和构造，再开始写入文件。
+
+hook 安装器写配置文件和 manifest 时使用临时文件替换目标文件。
+
+hook 安装中途失败时，已写配置必须回滚到安装前状态。
+
+hook 卸载必须以 manifest 为恢复依据。
+
+hook 卸载成功后必须删除 manifest，避免陈旧恢复记录再次生效。
+
+Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界副作用。
+
+浏览器开发环境不得执行 Tauri 窗口位置和尺寸恢复。
+
+日志脱敏属于 adapter 边界纯转换。
+
+默认日志不得保留 prompt、transcript 或 timeline 全文。
+
+记录型通知 adapter 只记录通知计划，不调用真实系统通知 API。
+
+## 边界破坏风险
+
+若 Domain 引入 Tauri 或文件系统依赖，后续 reducer 和规则测试会被基础设施污染。
+
+若前端绕过 `api` 层直接访问 adapter，UI 会承担协议清洗职责。
+
+若 hook helper 阶段 0 输出阻塞 directive，可能影响 agent 正常运行。
+
+若 hook helper 在 bridge 不可用时非 0 退出，可能影响 agent 正常运行。
+
+若 hook helper 未校验 payload 就发送 bridge command，第三方脏数据会污染内部协议。
+
+若前端绕过 view model 猜测 interaction ID，pending 已变化时可能提交到错误交互。
+
+若回写失败时清理 pending，用户将失去可重试入口。
+
+若选项失败后清理已选状态，用户将失去重试上下文。
+
+若快捷回复绕过 Reply Service，可能在 pending 已变化后提交到错误交互。
+
+若跳回能力被当成回写能力，UI 可能展示无法可靠完成的发送入口。
+
+若 timeline 关闭后仍保留当前页缓存，长文本过程事件会滞留在前端状态中。
+
+若后端 timeline 缓存从 transcript 或 JSONL 反读，托管事件入口会变成历史文件解析入口。
+
+若 timeline 写入 `SessionState`，主 session reducer 会被高频过程事件污染。
+
+若 timeline 淘汰不区分优先级，审批、回复或失败上下文可能早于普通活动被释放。
+
+若 Codex APP adapter 直接透传 app-server 原始 JSON 到 Domain，Domain 纯粹性会被外部协议污染。
+
+若 Codex CLI bridge server 在等待审批时不校验 interaction，旧 UI 决策可能返回给错误 hook request。
+
+若 Codex CLI bridge listener 被单个审批等待阻塞，其他 hook 事件会超时或 fail-open。
+
+若前端只在首屏读取一次 Codex CLI session，后续真实审批请求会不可见并最终超时 fail-open。
+
+若前端按 agent kind 而不是 runtime source 路由，mock 验证数据可能误走真实 Codex command。
+
+若前端选中态不包含 runtime source，同一个 `SessionKey` 的 mock 和真实 session 可能互相误选。
+
+若合并后不重新排序，不同 runtime 来源的 session 拼接顺序会破坏等待优先规则。
+
+若设置 fallback 不校验本地缓存结构，脏数据可能让 UI 展示与能力不一致。
+
+若配置保存直接覆盖目标文件，写入失败可能破坏用户旧配置。
+
+若同进程并发保存共享临时文件，失败保存可能污染成功保存结果。
+
+若 hook 安装不备份第三方配置，卸载无法恢复安装前状态。
+
+若 hook 安装中途失败不回滚，会形成没有 manifest 的半安装状态。
+
+若 hook 卸载成功后保留 manifest，后续误触发卸载可能覆盖用户新配置。
+
+若 hook 安装绕过 Codex trust review，会破坏 Codex 自身安全边界。
+
+若默认日志记录 prompt、transcript 或 timeline 全文，敏感信息可能进入本地日志。
+
+若通知点击直接打开 timeline，用户可能从通知进入非预期过程弹层。
+
+若 Codex CLI 审批决策不校验当前 pending interaction，旧 UI 决策可能唤醒过期 hook request。
+
+## 代码入口
+
+`scripts/check-architecture.mjs` 是边界守护入口。
+
+`scripts/check-spec-docs.mjs` 是 spec 文档质量门禁入口。
+
+`scripts/check-performance-budget.mjs` 是性能预算静态场景入口。
+
+`src-tauri/src/domain/panel_probe.rs` 是 panel 探针状态入口。
+
+`src-tauri/src/domain/panel_geometry.rs` 是纯窗口规则入口。
+
+`src-tauri/src/domain/session_state.rs` 是 reducer 入口。
+
+`src-tauri/src/domain/view_model.rs` 是 view model 转换入口。
+
+`src-tauri/src/adapters/config_file/mod.rs` 是 JSON 设置文件原子读写入口。
+
+`src-tauri/src/adapters/hook_install/mod.rs` 是 hook 安装和卸载入口。
+
+`src-tauri/src/adapters/log_sanitizer/mod.rs` 是日志脱敏入口。
+
+`src-tauri/src/adapters/bridge/hook_payload.rs` 是第三方 hook payload 清洗入口。
+
+`src-tauri/src/adapters/bridge/codec.rs` 是显式 bridge 契约入口。
+
+`src-tauri/src/adapters/mock_agent/mod.rs` 是阶段 3 mock runtime 入口。
+
+`src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI runtime 和审批等待入口。
+
+`src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存、去重、淘汰和释放入口。
+
+`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP app-server adapter 入口。
+
+`src-tauri/src/services/interaction_service.rs` 是审批 pending 校验入口。
+
+`src-tauri/src/services/reply_service.rs` 是文本回复 pending 校验和长度校验入口。
+
+`src-tauri/src/services/shortcut_reply_service.rs` 是快捷回复过滤入口。
+
+`src-tauri/src/services/preset_command_service.rs` 是预设命令计划入口。
+
+`src-tauri/src/services/process_timeline_service.rs` 是 timeline 查询入口。
+
+`src/stores/mockPanelStore.ts` 是前端草稿和 timeline 缓存状态入口。
+
+`src-tauri/src/adapters/terminal/mod.rs` 是跳回降级测试入口。
+
+`src-tauri/src/services/settings_service.rs` 是设置模型和默认化入口。
+
+`src-tauri/src/adapters/config_file/mod.rs` 是设置文件副作用入口。
+
+`src-tauri/src/services/notification_service.rs` 是通知合并和点击动作入口。
+
+`src-tauri/src/adapters/notification/mod.rs` 是记录型通知 adapter 入口。
+
+`src/components/SettingsPanel.tsx` 是设置 UI 入口。
+
+## 相关测试
+
+`pnpm architecture:check` 验证边界不变量。
+
+`cargo test --manifest-path src-tauri/Cargo.toml` 验证 Rust 纯规则。
+
+`cargo test --manifest-path src-tauri/Cargo.toml bridge` 验证 bridge 和 hook helper 边界。
+
+`src-tauri/src/services/interaction_service.rs` 验证审批 pending 校验和失败保留。
+
+`src-tauri/src/services/reply_service.rs` 验证回复校验和失败保留。
+
+`src-tauri/src/services/shortcut_reply_service.rs` 验证快捷回复过滤和排序。
+
+`src-tauri/src/services/preset_command_service.rs` 验证预设命令计划生成。
+
+`src-tauri/src/services/process_timeline_service.rs` 验证 timeline 过滤和分页。
+
+`src-tauri/src/adapters/timeline/mod.rs` 验证 timeline 去重、淘汰和大文本释放。
+
+`src-tauri/src/adapters/codex_cli_hook/mod.rs` 验证 Codex CLI runtime pending approval 不变量。
+
+`src-tauri/src/adapters/codex_app/mod.rs` 验证 Codex APP notification 清洗边界。
+
+`src/stores/mockPanelStore.test.ts` 验证前端草稿隔离、选项选择隔离和 timeline 缓存释放。
+
+`src/stores/panelProbeStore.test.ts` 验证收缩状态不清理草稿边界。
+
+`src/views/BuilderPanelApp.test.ts` 验证阶段 7 合并排序、统计和动作标签。
+
+`src-tauri/src/services/settings_service.rs` 验证配置缺失、损坏和保存。
+
+`src-tauri/src/services/notification_service.rs` 验证通知抑制、合并和点击定位。
