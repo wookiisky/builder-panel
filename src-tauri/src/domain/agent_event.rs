@@ -61,6 +61,17 @@ pub struct AnswerRequestedEvent {
     pub updated_at: UnixMillis,
 }
 
+/// 用户交互已回写事件。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InteractionCompletedEvent {
+    /// 会话唯一键。
+    pub session_key: SessionKey,
+    /// 可选回写摘要。
+    pub summary: Option<String>,
+    /// 事件更新时间。
+    pub updated_at: UnixMillis,
+}
+
 /// 当前 turn 完成事件。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TurnCompletedEvent {
@@ -139,6 +150,8 @@ pub enum AgentEvent {
     ApprovalRequested(ApprovalRequestedEvent),
     /// 问题或选项请求。
     AnswerRequested(AnswerRequestedEvent),
+    /// 用户交互已回写，turn 可能仍在继续。
+    InteractionCompleted(InteractionCompletedEvent),
     /// 当前 turn 完成。
     TurnCompleted(TurnCompletedEvent),
     /// 失败。
@@ -161,6 +174,7 @@ impl AgentEvent {
             Self::ActivityUpdated(event) => &event.session_key,
             Self::ApprovalRequested(event) => &event.session_key,
             Self::AnswerRequested(event) => &event.session_key,
+            Self::InteractionCompleted(event) => &event.session_key,
             Self::TurnCompleted(event) => &event.session_key,
             Self::Failed(event) => &event.session_key,
             Self::Detached(event) => &event.session_key,

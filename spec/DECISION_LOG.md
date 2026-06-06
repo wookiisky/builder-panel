@@ -138,7 +138,7 @@
 
 原因：Codex CLI hook 与 Codex APP app-server 已具备本机可验证入口，Claude Code 仍需后续独立验证。
 
-代码影响：新增 `codex_cli_hook` runtime、Codex APP app-server schema 探针和前端 Codex CLI API。
+代码影响：新增 `codex_cli_hook` runtime、Codex APP hook/app-server runtime、Codex APP app-server schema 探针和前端 Codex API。
 
 测试影响：Rust 测试覆盖 Codex CLI hook 转换、审批等待、Codex APP request 编码和 notification 转换。
 
@@ -157,6 +157,22 @@
 测试影响：测试固定本项目依赖的关键 schema 文件和已使用 notification 字段。
 
 排障影响：若 Codex APP 接入失败，先运行 schema 探针确认当前 Codex 版本是否仍提供所需入口。
+
+状态：生效。
+
+## 决策 11A
+
+决策：Codex APP 使用 Codex hook 和 app-server stdio 双通道接入。
+
+原因：Codex hook 是权限请求的阻塞回写边界，app-server 是 thread、turn、文本输入和 follow-up 的结构化边界；只使用其中一个都会缺失完整功能。
+
+约束：双通道事件必须通过 `thread_id -> cwd` 映射折叠到同一个 `SessionKey`，禁止用 Builder Panel 自身 cwd 代替 Codex thread cwd。
+
+代码影响：`src-tauri/src/adapters/bridge/hook_payload.rs` 将 `terminal_app` 为 `Codex.app` 的 Codex hook payload 分流为 Codex APP；`src-tauri/src/adapters/codex_app/mod.rs` 保存 Codex APP runtime 和 app-server stdio 客户端；`src/views/BuilderPanelApp.tsx` 按 runtime source 路由 Codex APP session。
+
+测试影响：Rust 测试覆盖 Codex APP hook 分流、stdout directive、schema 探针和完整能力 capability；前端测试覆盖 Codex APP runtime source 路由。
+
+排障影响：若 Codex APP session 不出现，先检查 Codex hook 是否启用、`terminal_app` 是否为 `Codex.app`、app-server 是否可启动，再检查前端设置开关。
 
 状态：生效。
 
@@ -190,7 +206,7 @@
 
 ## 决策 14
 
-决策：阶段 7 设置页建立显式设置模型，但不提供自动更新配置项。
+决策：阶段 7 建立显式设置模型和设置弹窗，但不提供自动更新配置项。
 
 原因：当前阶段目标是完成 panel 体验、agent 开关、用量展示和回复行为配置；自动更新涉及发布和安全边界，不属于本阶段可验证能力。
 
@@ -232,7 +248,7 @@
 
 ## 决策 17
 
-决策：阶段 8 hook 安装器只写入显式 JSON hook 配置，不绕过 Codex hook trust review，设置页只提供用户显式触发的预览、安装和卸载入口。
+决策：阶段 8 hook 安装器写入显式 hook 配置，并为 Codex 通过 TOML 配置启用 hooks feature；不绕过 Codex hook trust review，设置页只提供用户显式触发的预览、安装和卸载入口。
 
 原因：hook 安装会修改第三方配置，必须先有可预览、可备份、可卸载的基础设施能力；Codex trust review 是外部 agent 自身安全边界，不能由 Builder Panel 绕过；agent 开关变化不应隐式写入第三方配置。
 
@@ -255,5 +271,19 @@
 测试影响：CI 执行性能预算静态场景。
 
 排障影响：若真实环境卡顿，应补充系统监控采样，不能只依赖静态脚本结论。
+
+状态：生效。
+
+## 决策 19
+
+决策：主界面固定为展开工作台，使用顶部状态区、单列 session 行、行内回复区和设置弹窗，不再提供收缩入口。
+
+原因：当前核心任务是并排观察多个 agent session、快速处理等待回复和跳回对应工具界面；收缩入口会增加状态分支，但不提供当前阶段需要的核心能力。
+
+代码影响：`src/views/BuilderPanelApp.tsx` 负责顶部状态区、工具用量聚合、session 行、行内交互和设置弹窗；`src/components/PanelShell.tsx` 不再提供收缩按钮；设置保存边界将 `collapsed` 归一化为 `false`。
+
+测试影响：前端测试覆盖 session 排序、统计、工具用量聚合和自定义快捷输入清洗；Rust 测试覆盖 view model 只在存在跳回目标时生成跳回动作。
+
+排障影响：若 UI 出现收缩入口，应视为旧交互残留；若点击 session 没有跳转，应先检查该 session 是否同时具备跳回能力和跳回目标。
 
 状态：生效。

@@ -88,10 +88,27 @@ pub struct VerifiedUsageValue {
     pub value: UsageAmount,
     /// 可选单位。
     pub unit: Option<String>,
+    /// 稳定来源键。
+    #[serde(default = "default_usage_source_key")]
+    pub source_key: String,
     /// 数据来源标签。
     pub source_label: String,
+    /// 用量作用域。
+    #[serde(default)]
+    pub scope: UsageScope,
     /// 来源更新时间。
     pub updated_at: Option<UnixMillis>,
+}
+
+/// 用量作用域。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageScope {
+    /// 单个 session 的增量或快照。
+    Session,
+    /// Agent 账号或窗口维度整体用量。
+    #[default]
+    AccountWindow,
 }
 
 /// 用量可用性。
@@ -127,6 +144,46 @@ impl UsageValue {
             Self::Unavailable => None,
         }
     }
+
+    /// 返回稳定来源键。
+    pub fn source_key(&self) -> Option<&str> {
+        match self {
+            Self::Verified(verified) => Some(verified.source_key.as_str()),
+            Self::Unavailable => None,
+        }
+    }
+
+    /// 返回已验证数值标签。
+    pub fn amount_label(&self) -> Option<String> {
+        match self {
+            Self::Verified(verified) => Some(trim_float_label(verified.value.value())),
+            Self::Unavailable => None,
+        }
+    }
+
+    /// 返回单位。
+    pub fn unit(&self) -> Option<&str> {
+        match self {
+            Self::Verified(verified) => verified.unit.as_deref(),
+            Self::Unavailable => None,
+        }
+    }
+
+    /// 返回用量作用域。
+    pub fn scope(&self) -> Option<&UsageScope> {
+        match self {
+            Self::Verified(verified) => Some(&verified.scope),
+            Self::Unavailable => None,
+        }
+    }
+
+    /// 返回来源更新时间。
+    pub fn updated_at(&self) -> Option<UnixMillis> {
+        match self {
+            Self::Verified(verified) => verified.updated_at,
+            Self::Unavailable => None,
+        }
+    }
 }
 
 /// 会话或账号上下文用量。
@@ -157,10 +214,16 @@ fn trim_float_label(value: f64) -> String {
     }
 }
 
+/// 旧配置缺少 source key 时使用来源标签兼容。
+fn default_usage_source_key() -> String {
+    "default".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        UnixMillis, UsageAmount, UsageAmountError, UsageSnapshot, UsageValue, VerifiedUsageValue,
+        UnixMillis, UsageAmount, UsageAmountError, UsageScope, UsageSnapshot, UsageValue,
+        VerifiedUsageValue,
     };
 
     #[test]
@@ -174,12 +237,19 @@ mod tests {
         let usage = UsageValue::Verified(VerifiedUsageValue {
             value: UsageAmount::new(42.0).expect("valid usage amount"),
             unit: Some("tokens".to_string()),
+            source_key: "codex-status".to_string(),
             source_label: "Codex /status".to_string(),
+            scope: UsageScope::AccountWindow,
             updated_at: Some(UnixMillis::new(1000)),
         });
 
         assert_eq!(usage.display_label(), "42 tokens");
+        assert_eq!(usage.amount_label(), Some("42".to_string()));
+        assert_eq!(usage.unit(), Some("tokens"));
+        assert_eq!(usage.source_key(), Some("codex-status"));
         assert_eq!(usage.source_label(), Some("Codex /status"));
+        assert_eq!(usage.scope(), Some(&UsageScope::AccountWindow));
+        assert_eq!(usage.updated_at(), Some(UnixMillis::new(1000)));
     }
 
     #[test]

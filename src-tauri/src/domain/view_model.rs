@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::agent_interaction::{AgentInteraction, InteractionChoice, InteractionId};
 use crate::domain::agent_session::{AgentSession, SessionCapabilities, SessionKey, SessionStatus};
 use crate::domain::session_state::SessionState;
+use crate::domain::usage::{UnixMillis, UsageScope, UsageValue};
 
 /// UI 动作。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -38,8 +39,18 @@ pub struct TextDisplay {
 pub struct UsageValueViewModel {
     /// 展示标签。
     pub value_label: String,
+    /// 已验证数值标签。
+    pub amount_label: Option<String>,
+    /// 可选单位。
+    pub unit: Option<String>,
+    /// 稳定来源键。
+    pub source_key: Option<String>,
     /// 可选来源标签。
     pub source_label: Option<String>,
+    /// 用量作用域。
+    pub scope: Option<UsageScope>,
+    /// 来源更新时间。
+    pub updated_at: Option<UnixMillis>,
 }
 
 /// 会话列表项 view model。
@@ -67,6 +78,31 @@ pub struct SessionListItemViewModel {
     pub usage_weekly: UsageValueViewModel,
     /// 可执行动作。
     pub actions: Vec<UiAction>,
+    /// 行内交互展示。
+    pub inline_interaction: InlineInteractionViewModel,
+}
+
+/// 行内交互 view model。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InlineInteractionViewModel {
+    /// 等待处理的交互摘要。
+    pub summary: Option<String>,
+    /// 等待处理的交互 ID。
+    pub interaction_id: Option<InteractionId>,
+    /// 等待处理的交互类型。
+    pub kind: Option<PendingInteractionKind>,
+    /// 是否可跳回。
+    pub can_jump: bool,
+    /// 是否可回复。
+    pub can_send_reply: bool,
+    /// 是否可审批。
+    pub can_resolve_approval: bool,
+    /// 是否可创建后续 turn。
+    pub can_create_followup_turn: bool,
+    /// 是否可查看过程时间线。
+    pub can_view_process_timeline: bool,
+    /// 选项框状态。
+    pub choice_box: ChoiceBoxViewModel,
 }
 
 /// 会话详情 view model。
@@ -124,6 +160,8 @@ pub struct InteractionChoiceViewModel {
     pub value: String,
     /// 展示标签。
     pub label: String,
+    /// 可选悬停说明。
+    pub tooltip: Option<String>,
 }
 
 /// 选项框 view model。
@@ -181,23 +219,10 @@ pub fn session_list_item_view_model(session: &AgentSession) -> SessionListItemVi
         status_kind: session.status,
         summary: text_display(session.summary.as_deref().unwrap_or(""), 96),
         updated_at_label: session.updated_at.value.to_string(),
-        usage_5h: UsageValueViewModel {
-            value_label: session.usage.usage_5h.display_label(),
-            source_label: session
-                .usage
-                .usage_5h
-                .source_label()
-                .map(ToString::to_string),
-        },
-        usage_weekly: UsageValueViewModel {
-            value_label: session.usage.usage_weekly.display_label(),
-            source_label: session
-                .usage
-                .usage_weekly
-                .source_label()
-                .map(ToString::to_string),
-        },
+        usage_5h: usage_value_view_model(&session.usage.usage_5h),
+        usage_weekly: usage_value_view_model(&session.usage.usage_weekly),
         actions: actions_for_session(session),
+        inline_interaction: inline_interaction_view_model(session),
     }
 }
 
@@ -300,7 +325,10 @@ pub fn actions_from_capabilities(capabilities: &SessionCapabilities) -> Vec<UiAc
 pub fn actions_for_session(session: &AgentSession) -> Vec<UiAction> {
     let mut actions = Vec::new();
 
-    if session.capabilities.can_jump && session.status != SessionStatus::Detached {
+    if session.capabilities.can_jump
+        && session.jump_target.is_some()
+        && session.status != SessionStatus::Detached
+    {
         actions.push(UiAction::Jump);
     }
 
@@ -337,6 +365,46 @@ pub fn actions_for_session(session: &AgentSession) -> Vec<UiAction> {
     }
 
     actions
+}
+
+/// 创建用量 view model。
+fn usage_value_view_model(value: &UsageValue) -> UsageValueViewModel {
+    UsageValueViewModel {
+        value_label: value.display_label(),
+        amount_label: value.amount_label(),
+        unit: value.unit().map(ToString::to_string),
+        source_key: value.source_key().map(ToString::to_string),
+        source_label: value.source_label().map(ToString::to_string),
+        scope: value.scope().cloned(),
+        updated_at: value.updated_at(),
+    }
+}
+
+/// 创建行内交互 view model。
+fn inline_interaction_view_model(session: &AgentSession) -> InlineInteractionViewModel {
+    let actions = actions_for_session(session);
+    let choice_box = choice_box_view_model(session, &actions);
+
+    InlineInteractionViewModel {
+        summary: session
+            .pending_interaction
+            .as_ref()
+            .map(pending_interaction_label),
+        interaction_id: session
+            .pending_interaction
+            .as_ref()
+            .map(pending_interaction_id),
+        kind: session
+            .pending_interaction
+            .as_ref()
+            .map(pending_interaction_kind),
+        can_jump: actions.contains(&UiAction::Jump),
+        can_send_reply: actions.contains(&UiAction::SendReply),
+        can_resolve_approval: actions.contains(&UiAction::ResolveApproval),
+        can_create_followup_turn: actions.contains(&UiAction::CreateFollowupTurn),
+        can_view_process_timeline: actions.contains(&UiAction::ViewProcessTimeline),
+        choice_box,
+    }
 }
 
 /// 创建截断文本展示。
@@ -414,6 +482,7 @@ fn choice_view_model(choice: &InteractionChoice) -> InteractionChoiceViewModel {
     InteractionChoiceViewModel {
         value: choice.value.clone(),
         label: choice.label.clone(),
+        tooltip: choice.tooltip.clone(),
     }
 }
 
@@ -428,8 +497,8 @@ mod tests {
         InteractionId, InteractionStatus, ReplyTarget, TextReplyInteraction,
     };
     use crate::domain::agent_session::{
-        AgentKind, AgentSession, ConversationId, ProjectId, SessionCapabilities, SessionKey,
-        SessionStatus,
+        AgentKind, AgentSession, ConversationId, JumpTarget, ProjectId, SessionCapabilities,
+        SessionKey, SessionStatus,
     };
     use crate::domain::usage::{
         UnixMillis, UsageAmount, UsageSnapshot, UsageValue, VerifiedUsageValue,
@@ -479,7 +548,9 @@ mod tests {
             usage_5h: UsageValue::Verified(VerifiedUsageValue {
                 value: UsageAmount::new(64.0).expect("valid usage amount"),
                 unit: Some("percent".to_string()),
+                source_key: "codex-status".to_string(),
                 source_label: "Codex /status".to_string(),
+                scope: crate::domain::usage::UsageScope::AccountWindow,
                 updated_at: None,
             }),
             usage_weekly: UsageValue::Unavailable,
@@ -508,12 +579,42 @@ mod tests {
         );
         session.status = SessionStatus::Completed;
         session.pending_interaction = None;
+        session.jump_target = Some(JumpTarget {
+            label: "Codex".to_string(),
+            location: "codex://threads/conversation".to_string(),
+        });
         let view_model = session_list_item_view_model(&session);
 
         assert_eq!(
             view_model.actions,
             vec![UiAction::Jump, UiAction::CreateFollowupTurn]
         );
+    }
+
+    #[test]
+    fn list_view_model_only_creates_jump_when_target_exists() {
+        let mut session = base_session(
+            SessionCapabilities {
+                can_jump: true,
+                can_send_reply: false,
+                can_resolve_approval: false,
+                can_create_followup_turn: false,
+                can_view_process_timeline: false,
+            },
+            UsageSnapshot::unavailable(),
+        );
+
+        let without_target = session_list_item_view_model(&session);
+        session.jump_target = Some(JumpTarget {
+            label: "Codex".to_string(),
+            location: "codex://threads/conversation".to_string(),
+        });
+        let with_target = session_list_item_view_model(&session);
+
+        assert_eq!(without_target.actions, Vec::<UiAction>::new());
+        assert_eq!(with_target.actions, vec![UiAction::Jump]);
+        assert!(!without_target.inline_interaction.can_jump);
+        assert!(with_target.inline_interaction.can_jump);
     }
 
     #[test]
@@ -651,6 +752,10 @@ mod tests {
         assert!(view_model.choice_box.allows_multiple);
         assert_eq!(view_model.choice_box.choices[0].value, "first");
         assert_eq!(
+            view_model.choice_box.choices[0].tooltip,
+            Some("第一个选项说明".to_string())
+        );
+        assert_eq!(
             view_model.pending_interaction_kind,
             Some(super::PendingInteractionKind::Choice)
         );
@@ -698,10 +803,12 @@ mod tests {
                 InteractionChoice {
                     value: "first".to_string(),
                     label: "第一个选项".to_string(),
+                    tooltip: Some("第一个选项说明".to_string()),
                 },
                 InteractionChoice {
                     value: "second".to_string(),
                     label: "第二个选项".to_string(),
+                    tooltip: None,
                 },
             ],
             allows_multiple,

@@ -90,6 +90,15 @@ impl SessionState {
                 session.pending_interaction = Some(interaction);
                 session.updated_at = event.updated_at;
             }
+            AgentEvent::InteractionCompleted(event) => {
+                let session = self.ensure_session(event.session_key, event.updated_at);
+                session.status = SessionStatus::Running;
+                if let Some(summary) = event.summary {
+                    session.summary = Some(summary);
+                }
+                session.pending_interaction = None;
+                session.updated_at = event.updated_at;
+            }
             AgentEvent::TurnCompleted(event) => {
                 let session = self.ensure_session(event.session_key, event.updated_at);
                 session.status = SessionStatus::Completed;
@@ -113,6 +122,7 @@ impl SessionState {
                 if let Some(reason) = event.reason {
                     session.summary = Some(reason);
                 }
+                session.pending_interaction = None;
                 session.updated_at = event.updated_at;
             }
             AgentEvent::CapabilitiesUpdated(event) => {
@@ -170,8 +180,8 @@ mod tests {
     use super::SessionState;
     use crate::domain::agent_event::{
         ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, ApprovalRequestedEvent,
-        CapabilitiesUpdatedEvent, DetachedEvent, FailedEvent, SessionStartedEvent,
-        TurnCompletedEvent, UsageUpdatedEvent,
+        CapabilitiesUpdatedEvent, DetachedEvent, FailedEvent, InteractionCompletedEvent,
+        SessionStartedEvent, TurnCompletedEvent, UsageUpdatedEvent,
     };
     use crate::domain::agent_interaction::{
         AnswerInteraction, ApprovalInteraction, ChoiceInteraction, ClipboardFallbackTarget,
@@ -342,6 +352,26 @@ mod tests {
     }
 
     #[test]
+    fn interaction_completed_clears_pending_and_keeps_running() {
+        let key = session_key("project-a", "conversation-a");
+        let state = SessionState::empty()
+            .apply_event(started_event(key.clone(), 1))
+            .apply_event(approval_event(key.clone(), 2))
+            .apply_event(AgentEvent::InteractionCompleted(
+                InteractionCompletedEvent {
+                    session_key: key.clone(),
+                    summary: Some("审批已允许".to_string()),
+                    updated_at: UnixMillis::new(3),
+                },
+            ));
+        let session = state.sessions.get(&key).expect("session should exist");
+
+        assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.pending_interaction, None);
+        assert_eq!(session.summary, Some("审批已允许".to_string()));
+    }
+
+    #[test]
     fn failed_clears_pending_and_keeps_error() {
         let key = session_key("project-a", "conversation-a");
         let error = AppError::new(AppErrorCode::ReplySendFailed, "发送失败", None, true, None);
@@ -365,21 +395,17 @@ mod tests {
         let key = session_key("project-a", "conversation-a");
         let state = SessionState::empty()
             .apply_event(started_event(key.clone(), 1))
+            .apply_event(approval_event(key.clone(), 2))
             .apply_event(AgentEvent::Detached(DetachedEvent {
                 session_key: key.clone(),
                 reason: Some("进程不可见".to_string()),
-                updated_at: UnixMillis::new(2),
+                updated_at: UnixMillis::new(3),
             }));
+        let session = state.sessions.get(&key).expect("session should exist");
 
         assert!(state.sessions.contains_key(&key));
-        assert_eq!(
-            state
-                .sessions
-                .get(&key)
-                .expect("session should exist")
-                .status,
-            SessionStatus::Detached
-        );
+        assert_eq!(session.status, SessionStatus::Detached);
+        assert!(session.pending_interaction.is_none());
     }
 
     #[test]
@@ -396,7 +422,9 @@ mod tests {
             usage_5h: UsageValue::Verified(VerifiedUsageValue {
                 value: UsageAmount::new(7.0).expect("valid usage amount"),
                 unit: None,
+                source_key: "mock".to_string(),
                 source_label: "mock".to_string(),
+                scope: crate::domain::usage::UsageScope::Session,
                 updated_at: None,
             }),
             usage_weekly: UsageValue::Unavailable,

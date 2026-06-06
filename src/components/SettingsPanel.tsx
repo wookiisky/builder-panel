@@ -210,7 +210,6 @@ export const SettingsPanel = ({
         />
         <ToggleRow
           checked={settings.agents.codex_app_enabled}
-          disabled={true}
           label="Codex APP"
           onChange={(checked) => {
             update({
@@ -341,6 +340,160 @@ export const SettingsPanel = ({
             });
           }}
         />
+        <div className="shortcut-editor">
+          {settings.replies.custom_shortcuts.map((shortcut, index) => (
+            <div className="shortcut-editor-row" key={shortcut.id}>
+              <label>
+                <span>标签</span>
+                <input
+                  value={shortcut.label}
+                  onChange={(event) => {
+                    update({
+                      ...settings,
+                      replies: {
+                        ...settings.replies,
+                        custom_shortcuts: updateShortcutAt(
+                          settings.replies.custom_shortcuts,
+                          index,
+                          {
+                            ...shortcut,
+                            label: event.target.value,
+                          },
+                        ),
+                      },
+                    });
+                  }}
+                />
+              </label>
+              <label>
+                <span>内容</span>
+                <input
+                  value={shortcut.content}
+                  onChange={(event) => {
+                    update({
+                      ...settings,
+                      replies: {
+                        ...settings.replies,
+                        custom_shortcuts: updateShortcutAt(
+                          settings.replies.custom_shortcuts,
+                          index,
+                          {
+                            ...shortcut,
+                            content: event.target.value,
+                          },
+                        ),
+                      },
+                    });
+                  }}
+                />
+              </label>
+              <ToggleRow
+                checked={shortcut.enabled}
+                label="启用"
+                onChange={(checked) => {
+                  update({
+                    ...settings,
+                    replies: {
+                      ...settings.replies,
+                      custom_shortcuts: updateShortcutAt(
+                        settings.replies.custom_shortcuts,
+                        index,
+                        {
+                          ...shortcut,
+                          enabled: checked,
+                        },
+                      ),
+                    },
+                  });
+                }}
+              />
+              <div className="shortcut-editor-actions">
+                <button
+                  disabled={index === 0}
+                  type="button"
+                  onClick={() => {
+                    update({
+                      ...settings,
+                      replies: {
+                        ...settings.replies,
+                        custom_shortcuts: moveShortcut(
+                          settings.replies.custom_shortcuts,
+                          index,
+                          index - 1,
+                        ),
+                      },
+                    });
+                  }}
+                >
+                  上移
+                </button>
+                <button
+                  disabled={
+                    index === settings.replies.custom_shortcuts.length - 1
+                  }
+                  type="button"
+                  onClick={() => {
+                    update({
+                      ...settings,
+                      replies: {
+                        ...settings.replies,
+                        custom_shortcuts: moveShortcut(
+                          settings.replies.custom_shortcuts,
+                          index,
+                          index + 1,
+                        ),
+                      },
+                    });
+                  }}
+                >
+                  下移
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    update({
+                      ...settings,
+                      replies: {
+                        ...settings.replies,
+                        custom_shortcuts:
+                          settings.replies.custom_shortcuts.filter(
+                            (item) => item.id !== shortcut.id,
+                          ),
+                      },
+                    });
+                  }}
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              update({
+                ...settings,
+                replies: {
+                  ...settings.replies,
+                  custom_shortcuts: [
+                    ...settings.replies.custom_shortcuts,
+                    {
+                      id: nextShortcutId(settings.replies.custom_shortcuts),
+                      label: "新快捷输入",
+                      content: "继续。",
+                      enabled: true,
+                      order: nextShortcutOrder(
+                        settings.replies.custom_shortcuts,
+                      ),
+                    },
+                  ],
+                },
+              });
+            }}
+          >
+            新增快捷输入
+          </button>
+        </div>
       </SettingsGroup>
       <SettingsGroup title="Presets">
         <ToggleRow
@@ -408,6 +561,53 @@ export const SettingsPanel = ({
       )}
     </section>
   );
+};
+
+/// 更新指定快捷输入。
+const updateShortcutAt = (
+  shortcuts: BuilderPanelSettings["replies"]["custom_shortcuts"],
+  index: number,
+  shortcut: BuilderPanelSettings["replies"]["custom_shortcuts"][number],
+): BuilderPanelSettings["replies"]["custom_shortcuts"] => {
+  return shortcuts.map((item, itemIndex) =>
+    itemIndex === index ? shortcut : item,
+  );
+};
+
+/// 移动快捷输入并重排顺序。
+const moveShortcut = (
+  shortcuts: BuilderPanelSettings["replies"]["custom_shortcuts"],
+  from: number,
+  to: number,
+): BuilderPanelSettings["replies"]["custom_shortcuts"] => {
+  const next = [...shortcuts];
+  const [item] = next.splice(from, 1);
+  if (item === undefined) {
+    return shortcuts;
+  }
+  next.splice(to, 0, item);
+  return next.map((shortcut, index) => ({
+    ...shortcut,
+    order: (index + 1) * 10,
+  }));
+};
+
+/// 返回下一条快捷输入 ID。
+const nextShortcutId = (
+  shortcuts: BuilderPanelSettings["replies"]["custom_shortcuts"],
+): string => {
+  return `custom-${shortcuts.length + 1}-${Date.now()}`;
+};
+
+/// 返回下一条快捷输入排序值。
+const nextShortcutOrder = (
+  shortcuts: BuilderPanelSettings["replies"]["custom_shortcuts"],
+): number => {
+  const maxOrder = shortcuts.reduce(
+    (current, shortcut) => Math.max(current, shortcut.order),
+    0,
+  );
+  return maxOrder + 10;
 };
 
 /// 设置分组属性。

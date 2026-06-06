@@ -84,7 +84,7 @@
 
 `spec/DOMAIN/AGENT_EVENT.md` 回答归一事件契约和事件边界。
 
-`spec/DOMAIN/USAGE.md` 回答用量可用性、不可用语义和展示口径。
+`spec/DOMAIN/USAGE.md` 回答用量可用性、来源键、作用域、不可用语义和展示口径。
 
 `spec/DOMAIN/ERRORS.md` 回答应用错误分类和失败状态影响。
 
@@ -96,7 +96,7 @@
 
 `spec/SERVICE/REPLY_SERVICE.md` 回答文本回复校验、发送、草稿保留口径和失败不清理规则。
 
-`spec/SERVICE/SHORTCUT_REPLY_SERVICE.md` 回答快捷回复过滤、排序、绑定和失败回填草稿口径。
+`spec/SERVICE/SHORTCUT_REPLY_SERVICE.md` 回答快捷回复过滤、排序、绑定、自定义快捷输入展示边界和失败回填草稿口径。
 
 `spec/SERVICE/PRESET_COMMAND_SERVICE.md` 回答预设命令计划生成、结构化创建优先和复制降级口径。
 
@@ -116,7 +116,7 @@
 
 `spec/INFRA/TERMINAL.md` 回答终端跳回边界、降级策略和 Windows 未验证口径。
 
-`spec/INFRA/UI_RUNTIME.md` 回答阶段 7 扩展模式、设置页和前端运行时验证入口。
+`spec/INFRA/UI_RUNTIME.md` 回答阶段 7 扩展模式、顶部状态区、设置弹窗、行内交互和前端运行时验证入口。
 
 ## API 文档
 
@@ -132,7 +132,7 @@
 
 `spec/INTEGRATIONS/CODEX_CLI.md` 回答 Codex CLI 阶段 4 真实 hook 闭环、能力和降级边界。
 
-`spec/INTEGRATIONS/CODEX_APP.md` 回答 Codex APP app-server schema 探针、notification 转换和当前降级边界。
+`spec/INTEGRATIONS/CODEX_APP.md` 回答 Codex APP hook、app-server、session、审批、回复、follow-up、timeline 和降级边界。
 
 `spec/INTEGRATIONS/CLAUDE_HOOKS.md` 回答 Claude Code CLI hook 当前接入边界。
 
@@ -176,7 +176,7 @@
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook 事件转换、runtime 和 bridge server 入口。
 
-`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP app-server schema 探针、消息编码和 notification 转换入口。
+`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server stdio 客户端、runtime、schema 探针、消息编码和 notification 转换入口。
 
 `src-tauri/src/adapters/config_file/mod.rs` 是阶段 8 JSON 设置文件默认路径、原子读写和损坏降级入口。
 
@@ -188,7 +188,7 @@
 
 `src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存、去重、淘汰和释放入口。
 
-`src-tauri/src/adapters/terminal/mod.rs` 是阶段 5 终端跳回 adapter 和复制降级测试入口。
+`src-tauri/src/adapters/terminal/mod.rs` 是阶段 5 终端跳回 adapter、系统 URL 打开和复制降级测试入口。
 
 `src-tauri/src/services/session_service.rs` 是 session 读取应用服务入口。
 
@@ -220,15 +220,15 @@
 
 `src/api/settingsContract.ts` 是前端设置契约入口。
 
-`src/api/panelWindowApi.ts` 是前端 panel 窗口状态恢复、监听和局部保存入口。
+`src/api/panelWindowApi.ts` 是前端 panel 窗口状态恢复、监听、局部保存和关闭窗口入口。
+
+`src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
 `src/api/hookInstallApi.ts` 是前端 hook 安装预览、安装和卸载 command 调用入口。
 
-`src/stores/panelProbeStore.ts` 是前端 panel UI 状态入口。
-
 `src/stores/mockPanelStore.ts` 是前端 mock session 草稿、提交和 timeline 弹层状态入口。
 
-`src/components/SettingsPanel.tsx` 是阶段 7 设置页组件入口。
+`src/components/SettingsPanel.tsx` 是阶段 7 设置弹窗内容组件入口。
 
 `scripts/check-architecture.mjs` 是架构边界检查入口。
 
@@ -270,7 +270,7 @@
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 包含 Codex CLI hook 事件转换和审批 directive 等待测试。
 
-`src-tauri/src/adapters/codex_app/mod.rs` 包含 Codex APP schema 探针、request 编码和 notification 转换测试。
+`src-tauri/src/adapters/codex_app/mod.rs` 包含 Codex APP hook 分流、schema 探针、request 编码、notification 转换和 capability 测试。
 
 `src-tauri/src/adapters/config_file/mod.rs` 包含 JSON 设置文件读写、缺字段默认化、原子写失败和损坏文件测试。
 
@@ -298,13 +298,11 @@
 
 `src-tauri/src/services/notification_service.rs` 包含通知抑制、合并和点击定位测试。
 
-`src/stores/panelProbeStore.test.ts` 包含前端 panel 状态测试。
-
 `src/stores/mockPanelStore.test.ts` 包含前端 mock 草稿、提交中和 timeline 缓存测试。
 
-`src/api/settingsApi.test.ts` 包含前端设置默认值测试。
+`src/api/settingsApi.test.ts` 包含前端设置默认值和自定义快捷输入清洗测试。
 
-`src/views/BuilderPanelApp.test.ts` 包含阶段 7 session 排序、统计和动作标签测试。
+`src/views/BuilderPanelApp.test.ts` 包含阶段 7 session 排序、统计、动作标签和工具用量聚合测试。
 
 `scripts/check-architecture.mjs` 包含跨层依赖静态检查。
 

@@ -2,15 +2,21 @@ import { describe, expect, it } from "vitest";
 
 import {
   actionLabel,
+  aggregateToolUsage,
+  canExpandSessionRow,
   canShowTimelineEntry,
   countSessionsByStatus,
+  fetchSessionsForSource,
   isLatestSettingsSaveResponse,
   isCodexCliRuntime,
+  isCodexAppRuntime,
   canInstallHooksAfterPreview,
   mergePanelWindowStateUpdate,
   panelSessionToId,
   selectPanelSession,
   selectFirstSessionWhenMissing,
+  shouldSubmitReplyOnKeyDown,
+  shouldUseFollowupShortcut,
   sortPanelSessions,
   toggleHookInstallAgent,
   type PanelSessionListItem,
@@ -82,9 +88,18 @@ describe("BuilderPanelApp session refresh", () => {
   it("routes by runtime source instead of agent kind", () => {
     const mockCodexLikeSession = sessionItem(codexSessionKey, "mock");
     const realCodexSession = sessionItem(codexSessionKey, "codex_cli");
+    const codexAppSession = sessionItem(
+      {
+        ...codexSessionKey,
+        agent_kind: "codex_app",
+      },
+      "codex_app",
+    );
 
     expect(isCodexCliRuntime(mockCodexLikeSession)).toBe(false);
     expect(isCodexCliRuntime(realCodexSession)).toBe(true);
+    expect(isCodexAppRuntime(codexAppSession)).toBe(true);
+    expect(isCodexCliRuntime(codexAppSession)).toBe(false);
   });
 
   it("keeps runtime source in selected session identity", () => {
@@ -110,6 +125,18 @@ describe("BuilderPanelApp session refresh", () => {
   it("only shows timeline entry when capability exists", () => {
     expect(canShowTimelineEntry(["jump", "view_process_timeline"])).toBe(true);
     expect(canShowTimelineEntry(["jump", "send_reply"])).toBe(false);
+  });
+
+  it("returns empty source sessions when one runtime fetch fails", async () => {
+    const sessions = await fetchSessionsForSource(true, async () => {
+      throw new Error("Codex APP 不可用");
+    });
+    const disabledSessions = await fetchSessionsForSource(false, async () => [
+      sessionItem(mockSessionKey, "mock"),
+    ]);
+
+    expect(sessions).toEqual([]);
+    expect(disabledSessions).toEqual([]);
   });
 
   it("sorts waiting sessions before running sessions and then by updated time", () => {
@@ -177,6 +204,75 @@ describe("BuilderPanelApp session refresh", () => {
     ]);
 
     expect(counts).toEqual({ waiting: 2, running: 1 });
+  });
+
+  it("aggregates tool usage by latest source value without summing sessions", () => {
+    const olderCodex = {
+      ...sessionItem(
+        sessionKey("project-a", "codex-old"),
+        "codex_app",
+        "running",
+        "运行中",
+        1000,
+      ),
+      usage_5h: verifiedUsage("10 tokens", "codex-account", 1000),
+    };
+    const newerCodex = {
+      ...sessionItem(
+        sessionKey("project-a", "codex-new"),
+        "codex_app",
+        "running",
+        "运行中",
+        2000,
+      ),
+      usage_5h: verifiedUsage("20 tokens", "codex-account", 2000),
+    };
+    const mock = {
+      ...sessionItem(sessionKey("project-a", "mock"), "mock"),
+      usage_5h: verifiedUsage("99 tokens", "mock", 3000),
+    };
+
+    const usage = aggregateToolUsage([olderCodex, newerCodex, mock]);
+
+    expect(usage).toEqual([
+      {
+        family: "Codex",
+        usage5h: "20 tokens",
+        weekly: "--",
+        tooltip: "test 20 tokens",
+      },
+    ]);
+  });
+
+  it("ignores session scoped usage in tool usage summary", () => {
+    const codexSessionUsage = {
+      ...sessionItem(
+        sessionKey("project-a", "codex-session"),
+        "codex_app",
+        "running",
+        "运行中",
+        1000,
+      ),
+      usage_5h: verifiedUsage("99 tokens", "codex-session", 1000, "session"),
+    };
+
+    const usage = aggregateToolUsage([codexSessionUsage]);
+
+    expect(usage).toEqual([]);
+  });
+
+  it("submits reply on Enter but keeps Shift Enter for multiline input", () => {
+    expect(shouldSubmitReplyOnKeyDown(true, "Enter", false)).toBe(true);
+    expect(shouldSubmitReplyOnKeyDown(true, "Enter", true)).toBe(false);
+    expect(shouldSubmitReplyOnKeyDown(false, "Enter", false)).toBe(false);
+    expect(shouldSubmitReplyOnKeyDown(true, "A", false)).toBe(false);
+  });
+
+  it("expands failed sessions that can create follow-up turns", () => {
+    expect(canExpandSessionRow("failed", true)).toBe(true);
+    expect(shouldUseFollowupShortcut("failed", true)).toBe(true);
+    expect(canExpandSessionRow("failed", false)).toBe(false);
+    expect(shouldUseFollowupShortcut("running", true)).toBe(false);
   });
 
   it("uses stable labels for executable capability actions", () => {
@@ -270,13 +366,39 @@ const sessionItem = (
   updated_at_label: updatedAt.toString(),
   usage_5h: {
     value_label: "--",
+    amount_label: null,
+    unit: null,
+    source_key: null,
     source_label: null,
+    scope: null,
+    updated_at: null,
   },
   usage_weekly: {
     value_label: "--",
+    amount_label: null,
+    unit: null,
+    source_key: null,
     source_label: null,
+    scope: null,
+    updated_at: null,
   },
   actions: ["resolve_approval"],
+  inline_interaction: {
+    summary: "等待 Codex 审批",
+    interaction_id: { value: "approval-1" },
+    kind: "approval",
+    can_jump: false,
+    can_send_reply: false,
+    can_resolve_approval: true,
+    can_create_followup_turn: false,
+    can_view_process_timeline: false,
+    choice_box: {
+      enabled: false,
+      allows_multiple: false,
+      choices: [],
+      disabled_reason: "当前会话没有选项交互",
+    },
+  },
 });
 
 const sessionKey = (projectId: string, conversationId: string): SessionKey => ({
@@ -284,3 +406,21 @@ const sessionKey = (projectId: string, conversationId: string): SessionKey => ({
   project_id: { value: projectId },
   conversation_id: { value: conversationId },
 });
+
+const verifiedUsage = (
+  valueLabel: string,
+  sourceKey: string,
+  updatedAt: number,
+  scope: PanelSessionListItem["usage_5h"]["scope"] = "account_window",
+): PanelSessionListItem["usage_5h"] => {
+  const [amountLabel, unit] = valueLabel.split(" ");
+  return {
+    value_label: valueLabel,
+    amount_label: amountLabel,
+    unit: unit ?? null,
+    source_key: sourceKey,
+    source_label: "test",
+    scope,
+    updated_at: { value: updatedAt },
+  };
+};

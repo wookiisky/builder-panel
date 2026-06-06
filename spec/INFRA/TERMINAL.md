@@ -18,7 +18,13 @@
 
 阶段 5 建立 `JumpTargetPort`，用于表达跳回 agent 所在 APP 或终端的能力。
 
-阶段 5 的终端 adapter 只提供可测试的跳回记录和失败降级模型。
+阶段 5 的终端 adapter 提供可测试的跳回记录、系统 URL 打开和失败降级模型。
+
+macOS 上 `codex://` 跳回目标通过系统 `open` 打开。
+
+非 macOS 平台的 `codex://` 跳回目标当前返回复制降级。
+
+不支持的跳回目标返回复制降级。
 
 阶段 5 不声明 Ghostty、tmux、PowerShell 或 cmd 的人工端到端验证已完成。
 
@@ -36,4 +42,4 @@
 
 ## 相关测试
 
-`src-tauri/src/adapters/terminal/mod.rs` 覆盖跳回记录、失败和复制降级。
+`src-tauri/src/adapters/terminal/mod.rs` 覆盖跳回记录、系统 URL 打开、失败和复制降级。

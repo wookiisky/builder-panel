@@ -12,6 +12,7 @@ use crate::adapters::bridge::codec::{
     BridgeHookEventName, BridgeRequestEnvelope, BridgeResponseEnvelope, ValidatedHookPayload,
 };
 use crate::adapters::bridge::transport::default_bridge_location;
+use crate::adapters::codex_app::{handle_codex_app_bridge_request, CodexAppRuntime};
 use crate::adapters::timeline::InMemoryProcessTimelineCache;
 use crate::domain::agent_event::{
     ActivityUpdatedEvent, AgentEvent, ApprovalRequestedEvent, FailedEvent, SessionStartedEvent,
@@ -407,6 +408,7 @@ pub fn handle_bridge_request(
 #[cfg(unix)]
 pub fn start_codex_cli_bridge_server(
     runtime: Arc<Mutex<CodexCliHookRuntime>>,
+    codex_app_runtime: Arc<Mutex<CodexAppRuntime>>,
 ) -> Result<thread::JoinHandle<()>, crate::adapters::bridge::transport::BridgeTransportError> {
     let server = crate::adapters::bridge::transport::unix_transport::UnixBridgeServer::bind(
         default_bridge_location(),
@@ -414,8 +416,25 @@ pub fn start_codex_cli_bridge_server(
 
     Ok(thread::spawn(move || loop {
         let runtime = Arc::clone(&runtime);
+        let codex_app_runtime = Arc::clone(&codex_app_runtime);
         if server
-            .accept_one_on_thread(move |request| handle_bridge_request(runtime, request))
+            .accept_one_on_thread(move |request| {
+                match request.payload.validated_payload.agent_kind {
+                    AgentKind::CodexApp => {
+                        handle_codex_app_bridge_request(codex_app_runtime, request)
+                    }
+                    AgentKind::CodexCli => handle_bridge_request(runtime, request),
+                    AgentKind::ClaudeCodeApp | AgentKind::ClaudeCodeCli => {
+                        BridgeResponseEnvelope::error(
+                            request.request_id,
+                            BridgeErrorPayload {
+                                code: BridgeErrorCode::AgentProtocolUnsupported,
+                                message: "当前 bridge 不处理该 agent".to_string(),
+                            },
+                        )
+                    }
+                }
+            })
             .is_err()
         {
             thread::sleep(Duration::from_millis(100));
@@ -427,6 +446,7 @@ pub fn start_codex_cli_bridge_server(
 #[cfg(windows)]
 pub fn start_codex_cli_bridge_server(
     _runtime: Arc<Mutex<CodexCliHookRuntime>>,
+    _codex_app_runtime: Arc<Mutex<CodexAppRuntime>>,
 ) -> Result<thread::JoinHandle<()>, crate::adapters::bridge::transport::BridgeTransportError> {
     Ok(thread::spawn(|| {}))
 }
@@ -952,6 +972,10 @@ mod tests {
             model: Some("gpt-5.4".to_string()),
             permission_mode: Some("default".to_string()),
             transcript_path: None,
+            terminal_app: None,
+            terminal_session_id: None,
+            terminal_tty: None,
+            terminal_title: None,
             turn_id: None,
             tool_name: None,
             tool_input: None,

@@ -48,7 +48,15 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 阶段 8 设置页已接入 hook 安装预览、安装和卸载入口。
 
-阶段 8 设置已保存 panel 收缩状态、窗口位置和窗口尺寸。
+阶段 8 设置已保存 panel 窗口位置和窗口尺寸。
+
+当前主界面固定为展开工作台，不提供收缩入口。
+
+当前主界面以顶部状态区和单列 session 行展示 session。
+
+当前设置页以弹窗形式展示。
+
+当前自定义快捷输入保存在 Replies 设置中，并在无选项的行内回复区展示。
 
 当前 hook helper 可接收 Codex CLI 和 Claude Code CLI 的基础 hook payload，并通过 bridge 发送已清洗 command。
 
@@ -56,7 +64,9 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 当前 Codex CLI hook 事件可写入进程内 timeline 缓存。
 
-当前 Codex APP app-server 已验证本机 schema 探针、消息编码和 notification 转换。
+当前 Codex APP 已接入 Codex hook 分流、app-server stdio 子进程、session 展示、审批、回复、follow-up turn、跳回和进程内 timeline。
+
+当前 Codex APP hook 与 app-server 事件通过 thread ID 和 cwd 映射统一为同一个 session。
 
 当前系统不声明 Claude Code 真实闭环已完成。
 
@@ -66,7 +76,7 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 当前跳回能力和文本回写能力是两个独立能力。
 
-当前终端 adapter 只声明可测试跳回记录和复制降级模型，不声明真实终端人工闭环完成。
+当前终端 adapter 声明可测试跳回记录、macOS 系统 URL 打开和复制降级模型，不声明真实终端人工闭环完成。
 
 当前系统不声明真实 Mac 或 Windows 系统通知已接入。
 
@@ -96,7 +106,7 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 `src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存 adapter 入口。
 
-`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP app-server schema 探针和 notification 转换入口。
+`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server、runtime、schema 探针和 notification 转换入口。
 
 `src-tauri/src/services/session_service.rs` 是 session 读取服务入口。
 
@@ -136,6 +146,8 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 `src/api/panelWindowApi.ts` 是前端 panel 窗口状态恢复和局部保存入口。
 
+`src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
+
 `src/api/hookInstallApi.ts` 是前端 hook 安装 command 调用入口。
 
 `src-tauri/src/domain/session_state.rs` 是 session 状态入口。
@@ -147,8 +159,6 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 `scripts/check-architecture.mjs` 验证分层边界。
 
 `src-tauri/src/domain/panel_geometry.rs` 验证基础窗口位置修正。
-
-`src/stores/panelProbeStore.test.ts` 验证前端 panel 状态转换。
 
 `src-tauri/src/domain/session_state.rs` 验证 Domain reducer。
 
@@ -162,7 +172,7 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 `src-tauri/src/adapters/timeline/mod.rs` 验证 timeline 去重、淘汰和释放。
 
-`src-tauri/src/adapters/codex_app/mod.rs` 验证 Codex APP schema 探针、request 编码和 notification 转换。
+`src-tauri/src/adapters/codex_app/mod.rs` 验证 Codex APP schema 探针、hook 分流、request 编码、notification 转换和完整能力 capability。
 
 `src-tauri/src/services/interaction_service.rs` 验证审批闭环。
 
@@ -176,7 +186,7 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 `src/stores/mockPanelStore.test.ts` 验证前端草稿、提交和 timeline 缓存状态。
 
-`src/views/BuilderPanelApp.test.ts` 验证阶段 7 session 排序、统计和动作标签。
+`src/views/BuilderPanelApp.test.ts` 验证阶段 7 session 排序、统计、动作标签和工具用量聚合。
 
 `src-tauri/src/services/settings_service.rs` 验证设置服务默认化和保存。
 

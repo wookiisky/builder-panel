@@ -38,13 +38,27 @@
 
 UI 必须分别读取 `can_jump` 和 `can_send_reply`。
 
+UI 只在同时存在跳回能力和跳回目标时请求跳回。
+
+没有跳回能力或没有跳回目标时，点击 session 只更新选中态。
+
 回写失败时不得自动二次发送。
 
 复制降级只提示用户手动处理，不冒充已完成回写。
 
+## 选项提示
+
+选项交互可携带可选 tooltip。
+
+tooltip 只用于解释选项，不参与提交值校验。
+
+选项提交仍以当前 pending interaction 的显式选项值为准。
+
 ## 相关测试
 
 `src-tauri/src/domain/view_model.rs` 覆盖 capability 到 UI 动作的独立映射。
+
+`src-tauri/src/domain/view_model.rs` 覆盖选项 tooltip 映射。
 
 `src-tauri/src/adapters/terminal/mod.rs` 覆盖跳回记录和复制降级错误。
 

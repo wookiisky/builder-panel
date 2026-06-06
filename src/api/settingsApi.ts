@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   BuilderPanelSettings,
+  CustomShortcutInput,
   SettingsViewModel,
 } from "./settingsContract";
 
@@ -36,6 +37,7 @@ export const defaultSettings = (): BuilderPanelSettings => ({
   replies: {
     enter_to_send: true,
     shortcut_replies_enabled: true,
+    custom_shortcuts: defaultCustomShortcuts(),
   },
   presets: {
     prefer_structured_create: true,
@@ -65,9 +67,10 @@ export const fetchPanelSettings = async (): Promise<SettingsViewModel> => {
 export const savePanelSettings = async (
   settings: BuilderPanelSettings,
 ): Promise<SettingsViewModel> => {
+  const normalizedSettings = normalizeFallbackSettings(settings) ?? settings;
   try {
     return await invoke<SettingsViewModel>("save_panel_settings", {
-      settings,
+      settings: normalizedSettings,
     });
   } catch (error) {
     if (isTauriRuntime()) {
@@ -75,10 +78,10 @@ export const savePanelSettings = async (
     }
     window.localStorage.setItem(
       FALLBACK_SETTINGS_KEY,
-      JSON.stringify(settings),
+      JSON.stringify(normalizedSettings),
     );
     return {
-      settings,
+      settings: normalizedSettings,
       status_message: "设置已保存",
     };
   }
@@ -262,7 +265,7 @@ const normalizePanelSettings = (
   }
 
   const candidate = value as Partial<BuilderPanelSettings["panel"]>;
-  const collapsed = normalizeBoolean(candidate.collapsed, defaults.collapsed);
+  const collapsed = false;
   const windowPosition = normalizePanelWindowPosition(
     candidate.window_position,
     defaults.window_position,
@@ -273,7 +276,6 @@ const normalizePanelSettings = (
   );
 
   if (
-    collapsed === null ||
     windowPosition === undefined ||
     windowSize === undefined
   ) {
@@ -433,15 +435,126 @@ const normalizeReplySettings = (
     candidate.shortcut_replies_enabled,
     defaults.shortcut_replies_enabled,
   );
+  const customShortcuts = normalizeCustomShortcuts(
+    candidate.custom_shortcuts,
+    defaults.custom_shortcuts,
+  );
 
-  if (enterToSend === null || shortcutRepliesEnabled === null) {
+  if (
+    enterToSend === null ||
+    shortcutRepliesEnabled === null ||
+    customShortcuts === null
+  ) {
     return null;
   }
 
   return {
     enter_to_send: enterToSend,
     shortcut_replies_enabled: shortcutRepliesEnabled,
+    custom_shortcuts: customShortcuts,
   };
+};
+
+/// 默认自定义快捷输入。
+export const defaultCustomShortcuts = (): readonly CustomShortcutInput[] => [
+  {
+    id: "continue",
+    label: "继续",
+    content: "继续按当前方案执行。",
+    enabled: true,
+    order: 10,
+  },
+  {
+    id: "need-boundary",
+    label: "补充边界",
+    content: "请优先说明输入、输出、边界条件和失败处理。",
+    enabled: true,
+    order: 20,
+  },
+];
+
+/// 归一自定义快捷输入。
+export const normalizeCustomShortcuts = (
+  value: unknown,
+  defaults: readonly CustomShortcutInput[],
+): readonly CustomShortcutInput[] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const seenIds = new Set<string>();
+  const shortcuts: CustomShortcutInput[] = [];
+  for (const item of value) {
+    const shortcut = normalizeCustomShortcut(item);
+    if (shortcut === null || seenIds.has(shortcut.id)) {
+      continue;
+    }
+    seenIds.add(shortcut.id);
+    shortcuts.push(shortcut);
+  }
+
+  return shortcuts.sort((left, right) => {
+    if (left.order !== right.order) {
+      return left.order - right.order;
+    }
+    if (left.label !== right.label) {
+      return left.label.localeCompare(right.label);
+    }
+    return left.id.localeCompare(right.id);
+  });
+};
+
+/// 归一单条自定义快捷输入。
+const normalizeCustomShortcut = (value: unknown): CustomShortcutInput | null => {
+  if (!isObjectRecord(value)) {
+    return null;
+  }
+
+  const candidate = value as Partial<CustomShortcutInput>;
+  const id = normalizeTrimmedText(candidate.id, 80);
+  const label = normalizeTrimmedText(candidate.label, 80);
+  const content = normalizeTrimmedText(candidate.content, 1000);
+  const enabled = normalizeBoolean(candidate.enabled, true);
+  const order = candidate.order;
+  if (
+    id === null ||
+    label === null ||
+    content === null ||
+    enabled === null ||
+    !Number.isInteger(order) ||
+    order === undefined ||
+    order < 0
+  ) {
+    return null;
+  }
+
+  return {
+    id,
+    label,
+    content,
+    enabled,
+    order,
+  };
+};
+
+/// 归一非空文本。
+const normalizeTrimmedText = (
+  value: unknown,
+  maxChars: number,
+): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const text = value.trim();
+  if (text.length === 0 || [...text].length > maxChars) {
+    return null;
+  }
+
+  return text;
 };
 
 /// 归一预设设置。

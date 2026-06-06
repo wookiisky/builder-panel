@@ -56,11 +56,13 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 审批和回答事件进入 reducer 时，pending interaction 的 `SessionKey` 以外层事件的 `SessionKey` 为准。
 
+`InteractionCompleted` 清理 pending interaction，并保持或恢复运行状态，不表示 turn 完成。
+
 `TurnCompleted` 设置完成状态，并清理 pending interaction。
 
 `Failed` 设置失败状态，记录错误，并清理 pending interaction。
 
-`Detached` 设置失联状态，不删除 session。
+`Detached` 设置失联状态，清理 pending interaction，不删除 session。
 
 `UsageUpdated` 只更新用量。
 

@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  fetchCodexCliSessionDetail,
+  createCodexAppFollowupTurn,
+  fetchCodexAppSessions,
+  fetchCodexAppTimeline,
+  releaseCodexAppTimelineCache,
+  submitCodexAppApproval,
+  submitCodexAppChoice,
+  submitCodexAppReply,
+} from "../api/codexAppPanelApi";
+import {
   fetchCodexCliSessions,
   fetchCodexCliTimeline,
   releaseCodexCliTimelineCache,
@@ -15,7 +23,6 @@ import {
   type HookInstallPreview,
 } from "../api/hookInstallApi";
 import {
-  fetchMockSessionDetail,
   fetchMockSessions,
   fetchMockTimeline,
   releaseMockTimelineCache,
@@ -25,12 +32,15 @@ import {
 } from "../api/mockPanelApi";
 import {
   applyPanelWindowGeometry,
+  closePanelWindow,
   savePanelWindowState,
   subscribePanelWindowGeometry,
   type PanelWindowStateUpdate,
 } from "../api/panelWindowApi";
+import { jumpToSession } from "../api/sessionJumpApi";
 import type {
   ApprovalDecision,
+  InteractionId,
   ProcessTimelineItem,
   SessionDetailViewModel,
   SessionKey,
@@ -39,8 +49,6 @@ import type {
   TimelineQuery,
   UiAction,
 } from "../api/mockPanelContract";
-import { fetchPanelProbe } from "../api/panelProbeApi";
-import type { PanelProbeView } from "../api/panelProbeContract";
 import {
   defaultSettings,
   fetchPanelSettings,
@@ -48,6 +56,7 @@ import {
 } from "../api/settingsApi";
 import type {
   BuilderPanelSettings,
+  CustomShortcutInput,
   SettingsViewModel,
 } from "../api/settingsContract";
 import { PanelShell } from "../components/PanelShell";
@@ -76,17 +85,8 @@ import {
   type MockPanelUiState,
   type TimelineKindFilter,
 } from "../stores/mockPanelStore";
-import {
-  createDefaultPanelUiState,
-  togglePanelCollapsed,
-  type PanelUiState,
-} from "../stores/panelProbeStore";
-
 /// 会话运行时来源。
-type RuntimeSource = "mock" | "codex_cli";
-
-/// 主工作区视图。
-type PanelSection = "sessions" | "settings";
+type RuntimeSource = "mock" | "codex_cli" | "codex_app";
 
 /// hook 安装前端状态。
 interface HookInstallUiState {
@@ -110,20 +110,6 @@ export type PanelSessionListItem = SessionListItemViewModel & {
 
 /// Codex CLI hook 写入 runtime 后，前端刷新 session 的间隔。
 export const SESSION_REFRESH_INTERVAL_MS = 1000;
-
-/// 内置快捷回复，用于阶段 5 本地闭环演练。
-const DEFAULT_SHORTCUT_REPLIES = [
-  {
-    id: "continue",
-    label: "继续",
-    content: "继续按当前方案执行。",
-  },
-  {
-    id: "need-boundary",
-    label: "补充边界",
-    content: "请优先说明输入、输出、边界条件和失败处理。",
-  },
-] as const;
 
 /// Timeline 单次读取页大小。
 const TIMELINE_PAGE_SIZE = 50;
@@ -149,17 +135,11 @@ const SESSION_STATUS_ORDER: Record<
 
 /// Builder Panel 首屏应用。
 export const BuilderPanelApp = () => {
-  const [panelUiState, setPanelUiState] = useState<PanelUiState>(() =>
-    createDefaultPanelUiState(),
-  );
   const [mockUiState, setMockUiState] = useState<MockPanelUiState>(() =>
     createDefaultMockPanelUiState(),
   );
-  const [panelProbe, setPanelProbe] = useState<PanelProbeView | null>(null);
   const [sessions, setSessions] = useState<readonly PanelSessionListItem[]>([]);
-  const [selectedDetail, setSelectedDetail] =
-    useState<SessionDetailViewModel | null>(null);
-  const [activeSection, setActiveSection] = useState<PanelSection>("sessions");
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [settingsView, setSettingsView] = useState<SettingsViewModel>(() => ({
     settings: defaultSettings(),
     status_message: null,
@@ -183,37 +163,12 @@ export const BuilderPanelApp = () => {
   useEffect(() => {
     let disposed = false;
 
-    fetchPanelProbe()
-      .then((probe) => {
-        if (!disposed) {
-          setPanelProbe(probe);
-        }
-      })
-      .catch(() => {
-        if (!disposed) {
-          setPanelProbe({
-            mode: "expanded",
-            collapsed: false,
-            always_on_top: true,
-            draggable: true,
-          });
-        }
-      });
-
-    return () => {
-      disposed = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let disposed = false;
-
     fetchPanelSettings()
       .then((view) => {
         if (!disposed) {
-          setSettingsView(view);
-          setPanelUiState({
-            collapsed: view.settings.panel.collapsed,
+          setSettingsView({
+            ...view,
+            settings: forceExpandedPanelSettings(view.settings),
           });
           setSettingsHydrated(true);
         }
@@ -224,9 +179,9 @@ export const BuilderPanelApp = () => {
             settings: defaultSettings(),
             status_message: readableError(error, "读取设置失败"),
           };
-          setSettingsView(fallbackView);
-          setPanelUiState({
-            collapsed: fallbackView.settings.panel.collapsed,
+          setSettingsView({
+            ...fallbackView,
+            settings: forceExpandedPanelSettings(fallbackView.settings),
           });
           setSettingsHydrated(true);
         }
@@ -343,34 +298,6 @@ export const BuilderPanelApp = () => {
   useEffect(() => {
     let disposed = false;
 
-    if (selectedSession === null) {
-      setSelectedDetail(null);
-      return;
-    }
-
-    fetchSessionDetail(selectedSession)
-      .then((detail) => {
-        if (!disposed) {
-          setSelectedDetail(detail);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!disposed) {
-          setSelectedDetail(null);
-          setMockUiState((current) =>
-            endSubmit(current, readableError(error, "读取 session 详情失败")),
-          );
-        }
-      });
-
-    return () => {
-      disposed = true;
-    };
-  }, [selectedSession]);
-
-  useEffect(() => {
-    let disposed = false;
-
     if (!mockUiState.timeline.open || selectedSession === null) {
       return;
     }
@@ -413,28 +340,9 @@ export const BuilderPanelApp = () => {
     selectedSession,
   ]);
 
-  const collapsed = panelUiState.collapsed || panelProbe?.collapsed === true;
-  const selectedDraft =
-    selectedSession === null
-      ? ""
-      : (mockUiState.draftsBySessionId[
-          sessionKeyToId(selectedSession.session_key)
-        ] ?? "");
-  const selectedChoiceValues =
-    selectedDetail?.pending_interaction_id === null ||
-    selectedDetail?.pending_interaction_id === undefined
-      ? []
-      : (mockUiState.selectedChoicesByInteractionId[
-          selectedDetail.pending_interaction_id.value
-        ] ?? []);
-
-  const refreshSessions = async (
-    session: PanelSessionListItem,
-  ): Promise<void> => {
+  const refreshSessions = async (): Promise<void> => {
     const nextSessions = await fetchAllSessions(settingsView.settings);
-    const nextDetail = await fetchSessionDetail(session);
     setSessions(nextSessions);
-    setSelectedDetail(nextDetail);
   };
 
   const updateSettings = async (
@@ -470,25 +378,6 @@ export const BuilderPanelApp = () => {
         setSettingsSaving(false);
       }
     }
-  };
-
-  const persistPanelCollapsed = (collapsed: boolean): void => {
-    setSettingsView((current) => ({
-      ...current,
-      settings: {
-        ...current.settings,
-        panel: {
-          ...current.settings.panel,
-          collapsed,
-        },
-      },
-    }));
-    void savePanelWindowState({ collapsed }).catch((error: unknown) => {
-      setSettingsView((current) => ({
-        ...current,
-        status_message: readableError(error, "保存 panel 收缩状态失败"),
-      }));
-    });
   };
 
   const schedulePanelWindowStateSave = (
@@ -611,36 +500,35 @@ export const BuilderPanelApp = () => {
     }
   };
 
-  const resolveApproval = async (
+  const resolveApprovalForSession = async (
+    session: PanelSessionListItem,
+    interactionId: InteractionId,
     decision: ApprovalDecision,
     injectFailure: boolean,
   ): Promise<void> => {
-    if (
-      selectedSession === null ||
-      selectedDetail?.pending_interaction_id === null ||
-      selectedDetail?.pending_interaction_id === undefined
-    ) {
-      return;
-    }
-
-    const interactionId = selectedDetail.pending_interaction_id.value;
-    setMockUiState((current) => beginSubmit(current, interactionId));
+    setMockUiState((current) => beginSubmit(current, interactionId.value));
     try {
-      if (isCodexCliRuntime(selectedSession)) {
+      if (isCodexCliRuntime(session)) {
         await submitCodexCliApproval({
-          session_key: selectedSession.session_key,
-          interaction_id: selectedDetail.pending_interaction_id,
+          session_key: session.session_key,
+          interaction_id: interactionId,
+          decision,
+        });
+      } else if (isCodexAppRuntime(session)) {
+        await submitCodexAppApproval({
+          session_key: session.session_key,
+          interaction_id: interactionId,
           decision,
         });
       } else {
         await submitMockApproval({
-          session_key: selectedSession.session_key,
-          interaction_id: selectedDetail.pending_interaction_id,
+          session_key: session.session_key,
+          interaction_id: interactionId,
           decision,
           inject_failure: injectFailure,
         });
       }
-      await refreshSessions(selectedSession);
+      await refreshSessions();
       setMockUiState((current) => endSubmit(current, null));
     } catch (error: unknown) {
       setMockUiState((current) =>
@@ -649,40 +537,44 @@ export const BuilderPanelApp = () => {
     }
   };
 
-  const sendReply = async (
+  const sendReplyForSession = async (
+    session: PanelSessionListItem,
+    interactionId: InteractionId,
     injectFailure: boolean,
     contentOverride: string | null = null,
   ): Promise<void> => {
-    if (
-      selectedSession === null ||
-      selectedDetail?.pending_interaction_id === null ||
-      selectedDetail?.pending_interaction_id === undefined
-    ) {
+    const draft =
+      mockUiState.draftsBySessionId[sessionKeyToId(session.session_key)] ?? "";
+    const effectiveContent = (contentOverride ?? draft).trim();
+    if (isReplyDraftInvalid(effectiveContent, 1000)) {
       return;
     }
 
-    const interactionId = selectedDetail.pending_interaction_id.value;
-    const content = (contentOverride ?? selectedDraft).trim();
-    if (isReplyDraftInvalid(content, 1000)) {
-      return;
-    }
-
-    setMockUiState((current) => beginSubmit(current, interactionId));
+    setMockUiState((current) => beginSubmit(current, interactionId.value));
     try {
-      await submitMockReply({
-        session_key: selectedSession.session_key,
-        interaction_id: selectedDetail.pending_interaction_id,
-        content,
-        inject_failure: injectFailure,
-      });
-      await refreshSessions(selectedSession);
+      if (isCodexAppRuntime(session)) {
+        await submitCodexAppReply({
+          session_key: session.session_key,
+          interaction_id: interactionId,
+          content: effectiveContent,
+          inject_failure: false,
+        });
+      } else {
+        await submitMockReply({
+          session_key: session.session_key,
+          interaction_id: interactionId,
+          content: effectiveContent,
+          inject_failure: injectFailure,
+        });
+      }
+      await refreshSessions();
       setMockUiState((current) =>
-        endSubmit(clearDraft(current, selectedSession.session_key), null),
+        endSubmit(clearDraft(current, session.session_key), null),
       );
     } catch (error: unknown) {
       if (contentOverride !== null) {
         setMockUiState((current) =>
-          updateDraft(current, selectedSession.session_key, contentOverride),
+          updateDraft(current, session.session_key, contentOverride),
         );
       }
       setMockUiState((current) =>
@@ -691,28 +583,36 @@ export const BuilderPanelApp = () => {
     }
   };
 
-  const submitChoice = async (injectFailure: boolean): Promise<void> => {
-    if (
-      selectedSession === null ||
-      selectedDetail?.pending_interaction_id === null ||
-      selectedDetail?.pending_interaction_id === undefined ||
-      selectedChoiceValues.length === 0
-    ) {
+  const submitChoiceForSession = async (
+    session: PanelSessionListItem,
+    interactionId: InteractionId,
+    selectedValues: readonly string[],
+    injectFailure: boolean,
+  ): Promise<void> => {
+    if (selectedValues.length === 0) {
       return;
     }
 
-    const interactionId = selectedDetail.pending_interaction_id.value;
-    setMockUiState((current) => beginSubmit(current, interactionId));
+    setMockUiState((current) => beginSubmit(current, interactionId.value));
     try {
-      await submitMockChoice({
-        session_key: selectedSession.session_key,
-        interaction_id: selectedDetail.pending_interaction_id,
-        selected_values: selectedChoiceValues,
-        inject_failure: injectFailure,
-      });
-      await refreshSessions(selectedSession);
+      if (isCodexAppRuntime(session)) {
+        await submitCodexAppChoice({
+          session_key: session.session_key,
+          interaction_id: interactionId,
+          selected_values: selectedValues,
+          inject_failure: false,
+        });
+      } else {
+        await submitMockChoice({
+          session_key: session.session_key,
+          interaction_id: interactionId,
+          selected_values: selectedValues,
+          inject_failure: injectFailure,
+        });
+      }
+      await refreshSessions();
       setMockUiState((current) =>
-        endSubmit(clearChoiceSelection(current, interactionId), null),
+        endSubmit(clearChoiceSelection(current, interactionId.value), null),
       );
     } catch (error: unknown) {
       setMockUiState((current) =>
@@ -721,128 +621,188 @@ export const BuilderPanelApp = () => {
     }
   };
 
+  const createFollowupTurnForSession = async (
+    session: PanelSessionListItem,
+    content: string,
+  ): Promise<void> => {
+    if (!isCodexAppRuntime(session)) {
+      return;
+    }
+
+    const prompt = content.trim();
+    if (isReplyDraftInvalid(prompt, 1000)) {
+      return;
+    }
+
+    const submitId = `followup-${sessionKeyToId(session.session_key)}`;
+    setMockUiState((current) => beginSubmit(current, submitId));
+    try {
+      await createCodexAppFollowupTurn({
+        session_key: session.session_key,
+        prompt,
+      });
+      await refreshSessions();
+      setMockUiState((current) =>
+        endSubmit(clearDraft(current, session.session_key), null),
+      );
+    } catch (error: unknown) {
+      setMockUiState((current) =>
+        endSubmit(current, readableError(error, "follow-up 创建失败")),
+      );
+    }
+  };
+
+  const jumpToPanelSession = async (
+    session: PanelSessionListItem,
+  ): Promise<void> => {
+    setMockUiState((current) => selectPanelSession(current, session));
+    if (
+      !settingsView.settings.terminal.jump_enabled ||
+      !session.inline_interaction.can_jump
+    ) {
+      return;
+    }
+
+    const result = await jumpToSession({
+      runtime_source: session.runtimeSource,
+      session_key: session.session_key,
+    });
+    if (result.jumped) {
+      setMockUiState((current) => endSubmit(current, null));
+      return;
+    }
+
+    if (
+      result.fallback_text !== null &&
+      settingsView.settings.terminal.copy_fallback_enabled
+    ) {
+      await copyText(result.fallback_text);
+    }
+    setMockUiState((current) => endSubmit(current, result.message));
+  };
+
+  const closeWindow = async (): Promise<void> => {
+    try {
+      await closePanelWindow();
+    } catch (error: unknown) {
+      setMockUiState((current) =>
+        endSubmit(current, readableError(error, "关闭窗口失败")),
+      );
+    }
+  };
+
   return (
     <main className={appSurfaceClassName(settingsView.settings)}>
-      <PanelShell
-        title="Builder Panel"
-        collapsed={collapsed}
-        onToggleCollapsed={() => {
-          setPanelUiState((current) => {
-            const next = togglePanelCollapsed(current);
-            persistPanelCollapsed(next.collapsed);
-            return next;
-          });
-        }}
-      >
-        <div className="panel-summary">
-          <span>阶段 7 扩展模式</span>
-          <strong>
-            {panelProbe?.always_on_top === false ? "普通窗口" : "置顶窗口"}
-          </strong>
-        </div>
-        <PanelStats sessions={sessions} />
-        <div className="panel-tabs" aria-label="主视图">
-          <button
-            className={activeSection === "sessions" ? "tab-active" : ""}
-            type="button"
-            onClick={() => {
-              setActiveSection("sessions");
-            }}
-          >
-            Sessions
-          </button>
-          <button
-            className={activeSection === "settings" ? "tab-active" : ""}
-            type="button"
-            onClick={() => {
-              setActiveSection("settings");
-            }}
-          >
-            Settings
-          </button>
-        </div>
+      <PanelShell title="Builder Panel">
+        <PanelTopBar
+          sessions={sessions}
+          settings={settingsView.settings}
+          onClose={() => {
+            void closeWindow();
+          }}
+          onOpenSettings={() => {
+            setSettingsModalOpen(true);
+          }}
+        />
         {mockUiState.errorMessage !== null && (
           <div className="panel-error" role="alert">
             {mockUiState.errorMessage}
           </div>
         )}
-        {activeSection === "sessions" ? (
-          <div className="mock-workspace">
-            <SessionList
-              sessions={sessions}
-              selectedSessionId={mockUiState.selectedSessionId}
-              showUsage={settingsView.settings.display.show_usage}
-              onSelect={(session) => {
-                setMockUiState((current) =>
-                  selectPanelSession(current, session),
-                );
-              }}
-            />
-            <SessionDetail
-              detail={selectedDetail}
-              selectedSession={selectedSession}
-              draft={selectedDraft}
-              selectedChoiceValues={selectedChoiceValues}
-              settings={settingsView.settings}
-              submittingInteractionId={mockUiState.submittingInteractionId}
-              onDraftChange={(draft) => {
-                if (selectedSession !== null) {
-                  setMockUiState((current) =>
-                    updateDraft(current, selectedSession.session_key, draft),
-                  );
-                }
-              }}
-              onResolveApproval={(decision, injectFailure) => {
-                void resolveApproval(decision, injectFailure);
-              }}
-              onSendReply={(injectFailure) => {
-                void sendReply(injectFailure);
-              }}
-              onUseShortcutReply={(content, injectFailure) => {
-                void sendReply(injectFailure, content);
-              }}
-              onToggleChoice={(choiceValue, allowsMultiple) => {
-                const pendingInteractionId =
-                  selectedDetail?.pending_interaction_id;
-                if (pendingInteractionId != null) {
-                  setMockUiState((current) =>
-                    toggleChoiceSelection(
-                      current,
-                      pendingInteractionId.value,
-                      choiceValue,
-                      allowsMultiple,
-                    ),
-                  );
-                }
-              }}
-              onSubmitChoice={(injectFailure) => {
-                void submitChoice(injectFailure);
-              }}
-              onOpenTimeline={(sessionKey) => {
-                setMockUiState((current) => openTimeline(current, sessionKey));
-              }}
-            />
+        <SessionStream
+          mockUiState={mockUiState}
+          sessions={sessions}
+          settings={settingsView.settings}
+          selectedSessionId={mockUiState.selectedSessionId}
+          onCreateFollowupTurn={(session, content) => {
+            void createFollowupTurnForSession(session, content);
+          }}
+          onDraftChange={(session, draft) => {
+            setMockUiState((current) =>
+              updateDraft(current, session.session_key, draft),
+            );
+          }}
+          onJump={(session) => {
+            void jumpToPanelSession(session);
+          }}
+          onOpenTimeline={(session) => {
+            setMockUiState((current) =>
+              openTimeline(selectPanelSession(current, session), session.session_key),
+            );
+          }}
+          onResolveApproval={(session, interactionId, decision, injectFailure) => {
+            void resolveApprovalForSession(
+              session,
+              interactionId,
+              decision,
+              injectFailure,
+            );
+          }}
+          onSendReply={(session, interactionId, injectFailure, content) => {
+            void sendReplyForSession(
+              session,
+              interactionId,
+              injectFailure,
+              content,
+            );
+          }}
+          onSubmitChoice={(session, interactionId, values, injectFailure) => {
+            void submitChoiceForSession(
+              session,
+              interactionId,
+              values,
+              injectFailure,
+            );
+          }}
+          onToggleChoice={(interactionId, choiceValue, allowsMultiple) => {
+            setMockUiState((current) =>
+              toggleChoiceSelection(
+                current,
+                interactionId.value,
+                choiceValue,
+                allowsMultiple,
+              ),
+            );
+          }}
+        />
+        {settingsModalOpen && (
+          <div className="overlay-backdrop" role="presentation">
+            <section className="overlay-panel settings-modal" aria-label="设置">
+              <header>
+                <div>
+                  <strong>设置</strong>
+                  <p>配置会立即保存</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSettingsModalOpen(false);
+                  }}
+                >
+                  关闭
+                </button>
+              </header>
+              <SettingsPanel
+                hookInstall={hookInstallState}
+                saving={settingsSaving}
+                settings={settingsView.settings}
+                statusMessage={settingsView.status_message}
+                onChange={(settings) => {
+                  void updateSettings(settings);
+                }}
+                onInstallHooks={() => {
+                  void runHookInstall();
+                }}
+                onPreviewHookInstall={() => {
+                  void runHookInstallPreview();
+                }}
+                onToggleHookAgent={toggleHookInstallAgentSelection}
+                onUninstallHooks={() => {
+                  void runHookUninstall();
+                }}
+              />
+            </section>
           </div>
-        ) : (
-          <SettingsPanel
-            hookInstall={hookInstallState}
-            saving={settingsSaving}
-            settings={settingsView.settings}
-            statusMessage={settingsView.status_message}
-            onChange={(settings) => {
-              void updateSettings(settings);
-            }}
-            onInstallHooks={() => {
-              void runHookInstall();
-            }}
-            onPreviewHookInstall={() => {
-              void runHookInstallPreview();
-            }}
-            onToggleHookAgent={toggleHookInstallAgentSelection}
-            onUninstallHooks={() => {
-              void runHookUninstall();
-            }}
-          />
         )}
         {mockUiState.timeline.open && selectedSession !== null && (
           <TimelineOverlay
@@ -878,23 +838,58 @@ const appSurfaceClassName = (settings: BuilderPanelSettings): string => {
   return classNames.filter((className) => className !== null).join(" ");
 };
 
+/// 移除收缩入口后，运行时始终强制展开 panel。
+const forceExpandedPanelSettings = (
+  settings: BuilderPanelSettings,
+): BuilderPanelSettings => ({
+  ...settings,
+  panel: {
+    ...settings.panel,
+    collapsed: false,
+  },
+});
+
 /// 读取所有当前可展示 session。
 const fetchAllSessions = async (
   settings: BuilderPanelSettings,
 ): Promise<readonly PanelSessionListItem[]> => {
-  const [mockSessions, codexSessions] = await Promise.all([
-    settings.agents.mock_agent_enabled
-      ? fetchMockSessions()
-      : Promise.resolve([]),
-    settings.agents.codex_cli_enabled
-      ? fetchCodexCliSessions()
-      : Promise.resolve([]),
+  const [mockSessions, codexCliSessions, codexAppSessions] = await Promise.all([
+    fetchSessionsForSource(settings.agents.mock_agent_enabled, fetchMockSessions),
+    fetchSessionsForSource(
+      settings.agents.codex_cli_enabled,
+      fetchCodexCliSessions,
+    ),
+    fetchSessionsForSource(
+      settings.agents.codex_app_enabled,
+      fetchCodexAppSessions,
+    ),
   ]);
 
   return sortPanelSessions([
-    ...codexSessions.map((session) => withRuntimeSource(session, "codex_cli")),
+    ...codexAppSessions.map((session) =>
+      withRuntimeSource(session, "codex_app"),
+    ),
+    ...codexCliSessions.map((session) =>
+      withRuntimeSource(session, "codex_cli"),
+    ),
     ...mockSessions.map((session) => withRuntimeSource(session, "mock")),
   ]);
+};
+
+/// 读取单一来源 session，来源失败时不阻断其它来源。
+export const fetchSessionsForSource = async (
+  enabled: boolean,
+  fetcher: () => Promise<readonly SessionListItemViewModel[]>,
+): Promise<readonly SessionListItemViewModel[]> => {
+  if (!enabled) {
+    return [];
+  }
+
+  try {
+    return await fetcher();
+  } catch {
+    return [];
+  }
 };
 
 /// 排序合并后的 session 列表。
@@ -1047,27 +1042,41 @@ const withRuntimeSource = (
   runtimeSource,
 });
 
-/// 面板统计属性。
-interface PanelStatsProps {
+/// 顶部状态区属性。
+interface PanelTopBarProps {
   /// 当前 session 列表。
   readonly sessions: readonly PanelSessionListItem[];
+  /// 当前设置。
+  readonly settings: BuilderPanelSettings;
+  /// 打开设置回调。
+  readonly onOpenSettings: () => void;
+  /// 关闭窗口回调。
+  readonly onClose: () => void;
 }
 
-/// 面板顶部统计。
-const PanelStats = ({ sessions }: PanelStatsProps) => {
+/// 顶部状态区。
+const PanelTopBar = ({
+  sessions,
+  settings,
+  onOpenSettings,
+  onClose,
+}: PanelTopBarProps) => {
   const counts = countSessionsByStatus(sessions);
 
   return (
-    <div className="panel-stats" aria-label="session 统计">
-      <span>
-        等待 <strong>{counts.waiting}</strong>
-      </span>
-      <span>
-        运行 <strong>{counts.running}</strong>
-      </span>
-      <span>
-        总计 <strong>{sessions.length}</strong>
-      </span>
+    <div className="panel-topbar" aria-label="session 状态">
+      <strong>
+        运行中 {counts.running} / {sessions.length}
+      </strong>
+      {settings.display.show_usage && <ToolUsageSummary sessions={sessions} />}
+      <div className="panel-topbar-actions">
+        <button type="button" onClick={onOpenSettings}>
+          设置
+        </button>
+        <button type="button" onClick={onClose}>
+          关闭
+        </button>
+      </div>
     </div>
   );
 };
@@ -1077,9 +1086,45 @@ export const isCodexCliRuntime = (session: PanelSessionListItem): boolean => {
   return session.runtimeSource === "codex_cli";
 };
 
+/// 判断 session 是否来自真实 Codex APP runtime。
+export const isCodexAppRuntime = (session: PanelSessionListItem): boolean => {
+  return session.runtimeSource === "codex_app";
+};
+
 /// 判断是否展示 timeline 入口。
 export const canShowTimelineEntry = (actions: readonly UiAction[]): boolean => {
   return actions.includes("view_process_timeline");
+};
+
+/// 判断回复输入键盘事件是否应提交。
+export const shouldSubmitReplyOnKeyDown = (
+  enterToSend: boolean,
+  key: string,
+  shiftKey: boolean,
+): boolean => enterToSend && key === "Enter" && !shiftKey;
+
+/// 判断 session 行是否应展开。
+export const canExpandSessionRow = (
+  statusKind: PanelSessionListItem["status_kind"],
+  canCreateFollowupTurn: boolean,
+): boolean => {
+  return (
+    statusKind === "waiting_for_approval" ||
+    statusKind === "waiting_for_answer" ||
+    ((statusKind === "completed" || statusKind === "failed") &&
+      canCreateFollowupTurn)
+  );
+};
+
+/// 判断快捷输入是否应创建 follow-up。
+export const shouldUseFollowupShortcut = (
+  statusKind: PanelSessionListItem["status_kind"],
+  canCreateFollowupTurn: boolean,
+): boolean => {
+  return (
+    canCreateFollowupTurn &&
+    (statusKind === "completed" || statusKind === "failed")
+  );
 };
 
 /// 返回 UI 动作标签。
@@ -1098,17 +1143,6 @@ export const actionLabel = (action: UiAction): string => {
   }
 };
 
-/// 按运行时来源读取 session 详情。
-const fetchSessionDetail = async (
-  session: PanelSessionListItem,
-): Promise<SessionDetailViewModel | null> => {
-  if (isCodexCliRuntime(session)) {
-    return fetchCodexCliSessionDetail(session.session_key);
-  }
-
-  return fetchMockSessionDetail(session.session_key);
-};
-
 /// 按运行时来源读取 timeline。
 const fetchTimelinePage = async (
   session: PanelSessionListItem,
@@ -1116,6 +1150,9 @@ const fetchTimelinePage = async (
 ): Promise<TimelinePage> => {
   if (isCodexCliRuntime(session)) {
     return fetchCodexCliTimeline(query);
+  }
+  if (isCodexAppRuntime(session)) {
+    return fetchCodexAppTimeline(query);
   }
 
   return fetchMockTimeline(query);
@@ -1125,68 +1162,543 @@ const fetchTimelinePage = async (
 const releaseTimelineCache = (session: PanelSessionListItem): void => {
   const releaseTask = isCodexCliRuntime(session)
     ? releaseCodexCliTimelineCache(session.session_key)
-    : releaseMockTimelineCache(session.session_key);
+    : isCodexAppRuntime(session)
+      ? releaseCodexAppTimelineCache(session.session_key)
+      : releaseMockTimelineCache(session.session_key);
 
   releaseTask.catch(() => {
     // 关闭弹层不能被释放失败阻塞；下次查询仍可重新读取可用缓存。
   });
 };
 
-/// Session 列表属性。
-interface SessionListProps {
+/// Session 流属性。
+interface SessionStreamProps {
   /// 会话列表。
   readonly sessions: readonly PanelSessionListItem[];
   /// 当前选中 session ID。
   readonly selectedSessionId: string | null;
-  /// 是否展示用量。
-  readonly showUsage: boolean;
-  /// 选择回调。
-  readonly onSelect: (session: PanelSessionListItem) => void;
+  /// 当前设置。
+  readonly settings: BuilderPanelSettings;
+  /// mock UI 状态。
+  readonly mockUiState: MockPanelUiState;
+  /// 跳回回调。
+  readonly onJump: (session: PanelSessionListItem) => void;
+  /// 草稿变化回调。
+  readonly onDraftChange: (session: PanelSessionListItem, draft: string) => void;
+  /// 审批回调。
+  readonly onResolveApproval: (
+    session: PanelSessionListItem,
+    interactionId: InteractionId,
+    decision: ApprovalDecision,
+    injectFailure: boolean,
+  ) => void;
+  /// 回复回调。
+  readonly onSendReply: (
+    session: PanelSessionListItem,
+    interactionId: InteractionId,
+    injectFailure: boolean,
+    content: string | null,
+  ) => void;
+  /// 切换选项回调。
+  readonly onToggleChoice: (
+    interactionId: InteractionId,
+    choiceValue: string,
+    allowsMultiple: boolean,
+  ) => void;
+  /// 提交选项回调。
+  readonly onSubmitChoice: (
+    session: PanelSessionListItem,
+    interactionId: InteractionId,
+    values: readonly string[],
+    injectFailure: boolean,
+  ) => void;
+  /// 打开时间线回调。
+  readonly onOpenTimeline: (session: PanelSessionListItem) => void;
+  /// 创建后续 turn 回调。
+  readonly onCreateFollowupTurn: (
+    session: PanelSessionListItem,
+    content: string,
+  ) => void;
 }
 
-/// Session 列表。
-const SessionList = ({
+/// Session 流。
+const SessionStream = ({
   sessions,
   selectedSessionId,
-  showUsage,
-  onSelect,
-}: SessionListProps) => (
+  settings,
+  mockUiState,
+  onJump,
+  onDraftChange,
+  onResolveApproval,
+  onSendReply,
+  onToggleChoice,
+  onSubmitChoice,
+  onOpenTimeline,
+  onCreateFollowupTurn,
+}: SessionStreamProps) => (
   <div className="session-list" aria-label="agent 会话列表">
     {sessions.length === 0 && (
       <div className="session-list-empty">暂无可展示 session</div>
     )}
-    {sessions.map((session) => {
-      const sessionId = panelSessionToId(session);
-      const selected = selectedSessionId === sessionId;
-
-      return (
-        <button
-          className={
-            selected ? "session-row session-row-selected" : "session-row"
-          }
-          key={sessionId}
-          type="button"
-          onClick={() => {
-            onSelect(session);
-          }}
-        >
-          <div>
-            <strong>{session.project_label}</strong>
-            <p>{session.summary.text}</p>
-            <small>
-              {session.agent_label} / {session.conversation_label}
-            </small>
-            <small className="session-actions">
-              {session.actions.map(actionLabel).join(" / ") || "无可执行动作"}
-            </small>
-          </div>
-          <span>{session.status_label}</span>
-          {showUsage && <em>{session.usage_5h.value_label}</em>}
-        </button>
-      );
-    })}
+    {sessions.map((session) => (
+      <SessionRow
+        key={panelSessionToId(session)}
+        mockUiState={mockUiState}
+        selected={selectedSessionId === panelSessionToId(session)}
+        session={session}
+        settings={settings}
+        onCreateFollowupTurn={onCreateFollowupTurn}
+        onDraftChange={onDraftChange}
+        onJump={onJump}
+        onOpenTimeline={onOpenTimeline}
+        onResolveApproval={onResolveApproval}
+        onSendReply={onSendReply}
+        onSubmitChoice={onSubmitChoice}
+        onToggleChoice={onToggleChoice}
+      />
+    ))}
   </div>
 );
+
+/// 工具用量摘要。
+interface ToolUsageSummaryItem {
+  /// 工具族。
+  readonly family: "Codex" | "Claude";
+  /// 5 小时窗口展示。
+  readonly usage5h: string;
+  /// 周窗口展示。
+  readonly weekly: string;
+  /// tooltip 文本。
+  readonly tooltip: string;
+}
+
+/// 工具用量摘要。
+const ToolUsageSummary = ({
+  sessions,
+}: {
+  readonly sessions: readonly PanelSessionListItem[];
+}) => {
+  const items = aggregateToolUsage(sessions);
+  if (items.length === 0) {
+    return <span className="tool-usage-empty">用量 --</span>;
+  }
+
+  return (
+    <div className="tool-usage" aria-label="工具用量">
+      {items.map((item) => (
+        <span key={item.family} title={item.tooltip}>
+          {item.family} 5H {item.usage5h} / 1W {item.weekly}
+        </span>
+      ))}
+    </div>
+  );
+};
+
+/// 聚合工具整体用量。
+export const aggregateToolUsage = (
+  sessions: readonly PanelSessionListItem[],
+): readonly ToolUsageSummaryItem[] => {
+  return (["Codex", "Claude"] as const)
+    .map((family) => {
+      const familySessions = sessions.filter(
+        (session) => toolFamily(session) === family,
+      );
+      const usage5h = latestUsageValue(
+        familySessions.map((session) => session.usage_5h),
+      );
+      const weekly = latestUsageValue(
+        familySessions.map((session) => session.usage_weekly),
+      );
+      if (usage5h === null && weekly === null) {
+        return null;
+      }
+
+      return {
+        family,
+        usage5h: usage5h?.label ?? "--",
+        weekly: weekly?.label ?? "--",
+        tooltip: [usage5h?.tooltip, weekly?.tooltip]
+          .filter((item) => item !== undefined)
+          .join("\n"),
+      };
+    })
+    .filter((item) => item !== null);
+};
+
+/// 工具用量候选。
+interface LatestUsageCandidate {
+  /// 展示标签。
+  readonly label: string;
+  /// 更新时间。
+  readonly updatedAt: number;
+  /// tooltip。
+  readonly tooltip: string;
+}
+
+/// 取最新用量值。
+const latestUsageValue = (
+  values: readonly PanelSessionListItem["usage_5h"][],
+): LatestUsageCandidate | null => {
+  const bySource = new Map<string, LatestUsageCandidate>();
+  for (const value of values) {
+    if (
+      value.amount_label === null ||
+      value.source_key === null ||
+      value.scope !== "account_window"
+    ) {
+      continue;
+    }
+    const updatedAt = value.updated_at?.value ?? 0;
+    const candidate = {
+      label: value.value_label,
+      updatedAt,
+      tooltip: `${value.source_label ?? value.source_key} ${value.value_label}`,
+    };
+    const current = bySource.get(value.source_key);
+    if (current === undefined || current.updatedAt <= updatedAt) {
+      bySource.set(value.source_key, candidate);
+    }
+  }
+
+  return [...bySource.values()].sort(
+    (left, right) => right.updatedAt - left.updatedAt,
+  )[0] ?? null;
+};
+
+/// 返回工具族。
+const toolFamily = (session: PanelSessionListItem): "Codex" | "Claude" | null => {
+  if (session.runtimeSource === "mock") {
+    return null;
+  }
+
+  switch (session.session_key.agent_kind) {
+    case "codex_app":
+    case "codex_cli":
+      return "Codex";
+    case "claude_code_app":
+    case "claude_code_cli":
+      return "Claude";
+  }
+};
+
+/// Session 行属性。
+interface SessionRowProps {
+  /// 当前 session。
+  readonly session: PanelSessionListItem;
+  /// 是否选中。
+  readonly selected: boolean;
+  /// 当前设置。
+  readonly settings: BuilderPanelSettings;
+  /// mock UI 状态。
+  readonly mockUiState: MockPanelUiState;
+  /// 跳回回调。
+  readonly onJump: (session: PanelSessionListItem) => void;
+  /// 草稿变化回调。
+  readonly onDraftChange: (session: PanelSessionListItem, draft: string) => void;
+  /// 审批回调。
+  readonly onResolveApproval: SessionStreamProps["onResolveApproval"];
+  /// 回复回调。
+  readonly onSendReply: SessionStreamProps["onSendReply"];
+  /// 切换选项回调。
+  readonly onToggleChoice: SessionStreamProps["onToggleChoice"];
+  /// 提交选项回调。
+  readonly onSubmitChoice: SessionStreamProps["onSubmitChoice"];
+  /// 打开时间线回调。
+  readonly onOpenTimeline: (session: PanelSessionListItem) => void;
+  /// 创建后续 turn 回调。
+  readonly onCreateFollowupTurn: SessionStreamProps["onCreateFollowupTurn"];
+}
+
+/// Session 行。
+const SessionRow = ({
+  session,
+  selected,
+  settings,
+  mockUiState,
+  onJump,
+  onDraftChange,
+  onResolveApproval,
+  onSendReply,
+  onToggleChoice,
+  onSubmitChoice,
+  onOpenTimeline,
+  onCreateFollowupTurn,
+}: SessionRowProps) => {
+  const interaction = session.inline_interaction;
+  const interactionId = interaction.interaction_id;
+  const draft =
+    mockUiState.draftsBySessionId[sessionKeyToId(session.session_key)] ?? "";
+  const selectedChoiceValues =
+    interactionId === null
+      ? []
+      : (mockUiState.selectedChoicesByInteractionId[interactionId.value] ?? []);
+  const submitting =
+    interactionId !== null &&
+    mockUiState.submittingInteractionId === interactionId.value;
+  const followupSubmitId = `followup-${sessionKeyToId(session.session_key)}`;
+  const followupSubmitting =
+    mockUiState.submittingInteractionId === followupSubmitId;
+  const expanded = canExpandSessionRow(
+    session.status_kind,
+    interaction.can_create_followup_turn,
+  );
+  const shortcuts = sortedEnabledShortcuts(settings.replies.custom_shortcuts);
+
+  return (
+    <article
+      className={
+        selected ? "session-card session-card-selected" : "session-card"
+      }
+      onClick={() => {
+        onJump(session);
+      }}
+    >
+      <div className="session-row-main">
+        <span className={`session-status session-status-${session.status_kind}`}>
+          {session.status_label}
+        </span>
+        <span className="session-source">{sourceTag(session)}</span>
+        <strong>{session.project_label}</strong>
+        <p title={session.summary.text}>{lastParagraph(session.summary.text)}</p>
+      </div>
+      {expanded && (
+        <div
+          className="session-row-action"
+          onClick={(event) => {
+            event.stopPropagation();
+          }}
+        >
+          <span>{interaction.summary ?? lastParagraph(session.summary.text)}</span>
+          {interaction.can_resolve_approval && interactionId !== null && (
+            <div className="button-row">
+              <button
+                disabled={submitting}
+                type="button"
+                onClick={() => {
+                  onResolveApproval(session, interactionId, "allow", false);
+                }}
+              >
+                允许
+              </button>
+              <button
+                disabled={submitting}
+                type="button"
+                onClick={() => {
+                  onResolveApproval(session, interactionId, "deny", false);
+                }}
+              >
+                拒绝
+              </button>
+              <button
+                disabled={submitting}
+                type="button"
+                onClick={() => {
+                  onResolveApproval(
+                    session,
+                    interactionId,
+                    "allow_and_remember",
+                    false,
+                  );
+                }}
+              >
+                允许并记住
+              </button>
+              {session.runtimeSource === "mock" && (
+                <button
+                  disabled={submitting}
+                  type="button"
+                  onClick={() => {
+                    onResolveApproval(session, interactionId, "allow", true);
+                  }}
+                >
+                  失败演练
+                </button>
+              )}
+            </div>
+          )}
+          {interaction.kind === "choice" && interactionId !== null && (
+            <div className="choice-box">
+              <div className="choice-list">
+                {interaction.choice_box.choices.map((choice) => (
+                  <label
+                    className="choice-row"
+                    key={choice.value}
+                    title={choice.tooltip ?? choice.label}
+                  >
+                    <input
+                      checked={selectedChoiceValues.includes(choice.value)}
+                      name={interactionId.value}
+                      type={
+                        interaction.choice_box.allows_multiple
+                          ? "checkbox"
+                          : "radio"
+                      }
+                      value={choice.value}
+                      onChange={() => {
+                        onToggleChoice(
+                          interactionId,
+                          choice.value,
+                          interaction.choice_box.allows_multiple,
+                        );
+                      }}
+                    />
+                    <span>{choice.label}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="button-row">
+                <button
+                  disabled={selectedChoiceValues.length === 0 || submitting}
+                  type="button"
+                  onClick={() => {
+                    onSubmitChoice(
+                      session,
+                      interactionId,
+                      selectedChoiceValues,
+                      false,
+                    );
+                  }}
+                >
+                  提交选择
+                </button>
+                {session.runtimeSource === "mock" && (
+                  <button
+                    disabled={selectedChoiceValues.length === 0 || submitting}
+                    type="button"
+                    onClick={() => {
+                      onSubmitChoice(
+                        session,
+                        interactionId,
+                        selectedChoiceValues,
+                        true,
+                      );
+                    }}
+                  >
+                    失败演练
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {interaction.kind !== "choice" &&
+            (interaction.can_send_reply ||
+              interaction.can_create_followup_turn) &&
+            settings.replies.shortcut_replies_enabled &&
+            shortcuts.length > 0 && (
+              <div className="shortcut-row" aria-label="快捷输入">
+                {shortcuts.map((shortcut) => (
+                  <button
+                    disabled={submitting || followupSubmitting}
+                    key={shortcut.id}
+                    title={shortcut.content}
+                    type="button"
+                    onClick={() => {
+                      if (
+                        shouldUseFollowupShortcut(
+                          session.status_kind,
+                          interaction.can_create_followup_turn,
+                        )
+                      ) {
+                        onCreateFollowupTurn(session, shortcut.content);
+                        return;
+                      }
+                      if (interactionId !== null) {
+                        onSendReply(session, interactionId, false, shortcut.content);
+                      }
+                    }}
+                  >
+                    {shortcut.label}
+                  </button>
+                ))}
+              </div>
+          )}
+          {interaction.kind === "text_reply" && interactionId !== null && (
+            <div className="inline-reply">
+              <textarea
+                disabled={submitting}
+                value={draft}
+                placeholder="输入回复"
+                onChange={(event) => {
+                  onDraftChange(session, event.target.value);
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    shouldSubmitReplyOnKeyDown(
+                      settings.replies.enter_to_send,
+                      event.key,
+                      event.shiftKey,
+                    ) &&
+                    !submitting
+                  ) {
+                    event.preventDefault();
+                    onSendReply(session, interactionId, false, null);
+                  }
+                }}
+              />
+              <button
+                disabled={isReplyDraftInvalid(draft, 1000) || submitting}
+                type="button"
+                onClick={() => {
+                  onSendReply(session, interactionId, false, null);
+                }}
+              >
+                发送
+              </button>
+            </div>
+          )}
+          {interaction.can_view_process_timeline && (
+            <button
+              type="button"
+              onClick={() => {
+                onOpenTimeline(session);
+              }}
+            >
+              Timeline
+            </button>
+          )}
+        </div>
+      )}
+    </article>
+  );
+};
+
+/// 返回来源标签。
+const sourceTag = (session: PanelSessionListItem): string => {
+  switch (session.runtimeSource) {
+    case "codex_app":
+      return "codex";
+    case "codex_cli":
+      return "codex-cli";
+    case "mock":
+      return "mock";
+  }
+};
+
+/// 返回最后一段文本。
+const lastParagraph = (text: string): string => {
+  const paragraphs = text
+    .split(/\n\s*\n|\n/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  return paragraphs.at(-1) ?? "";
+};
+
+/// 返回排序后的启用快捷输入。
+const sortedEnabledShortcuts = (
+  shortcuts: readonly CustomShortcutInput[],
+): readonly CustomShortcutInput[] => {
+  return [...shortcuts]
+    .filter((shortcut) => shortcut.enabled)
+    .sort((left, right) => {
+      if (left.order !== right.order) {
+        return left.order - right.order;
+      }
+      if (left.label !== right.label) {
+        return left.label.localeCompare(right.label);
+      }
+      return left.id.localeCompare(right.id);
+    });
+};
 
 /// Session 详情属性。
 interface SessionDetailProps {
@@ -1225,10 +1737,12 @@ interface SessionDetailProps {
   readonly onSubmitChoice: (injectFailure: boolean) => void;
   /// 打开时间线回调。
   readonly onOpenTimeline: (sessionKey: SessionKey) => void;
+  /// 创建后续 turn 回调。
+  readonly onCreateFollowupTurn: (content: string) => void;
 }
 
 /// Session 详情。
-const SessionDetail = ({
+export const SessionDetail = ({
   detail,
   selectedSession,
   draft,
@@ -1242,9 +1756,11 @@ const SessionDetail = ({
   onToggleChoice,
   onSubmitChoice,
   onOpenTimeline,
+  onCreateFollowupTurn,
 }: SessionDetailProps) => {
   const [detailOverlayOpen, setDetailOverlayOpen] = useState(false);
   const [replyComposerOpen, setReplyComposerOpen] = useState(false);
+  const [followupComposerOpen, setFollowupComposerOpen] = useState(false);
 
   if (selectedSession === null || detail === null) {
     return <section className="session-detail-empty">暂无 session</section>;
@@ -1265,6 +1781,9 @@ const SessionDetail = ({
     detail.pending_interaction_kind === "choice" &&
     detail.choice_box.enabled;
   const canOpenTimeline = canShowTimelineEntry(detail.toolbar_actions);
+  const canCreateFollowup =
+    selectedSession.runtimeSource === "codex_app" &&
+    detail.toolbar_actions.includes("create_followup_turn");
   const replyCharCount = countReplyChars(draft);
   const replyInvalid = isReplyDraftInvalid(draft, 1000);
 
@@ -1344,7 +1863,9 @@ const SessionDetail = ({
               <div className="reply-inline">
                 <div className="shortcut-row" aria-label="快捷回复">
                   {settings.replies.shortcut_replies_enabled &&
-                    DEFAULT_SHORTCUT_REPLIES.map((shortcut) => (
+                    sortedEnabledShortcuts(
+                      settings.replies.custom_shortcuts,
+                    ).map((shortcut) => (
                       <button
                         key={shortcut.id}
                         type="button"
@@ -1366,13 +1887,18 @@ const SessionDetail = ({
                     打开回复
                   </button>
                   {isMockSession &&
-                    settings.replies.shortcut_replies_enabled && (
+                    settings.replies.shortcut_replies_enabled &&
+                    sortedEnabledShortcuts(settings.replies.custom_shortcuts)
+                      .length > 0 && (
                       <button
                         type="button"
                         disabled={submitting}
                         onClick={() => {
+                          const [firstShortcut] = sortedEnabledShortcuts(
+                            settings.replies.custom_shortcuts,
+                          );
                           onUseShortcutReply(
-                            DEFAULT_SHORTCUT_REPLIES[0].content,
+                            firstShortcut.content,
                             true,
                           );
                         }}
@@ -1440,16 +1966,28 @@ const SessionDetail = ({
             )}
           </div>
         )}
-        {canOpenTimeline && (
+        {(canOpenTimeline || canCreateFollowup) && (
           <footer>
-            <button
-              type="button"
-              onClick={() => {
-                onOpenTimeline(selectedSession.session_key);
-              }}
-            >
-              Timeline
-            </button>
+            {canCreateFollowup && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFollowupComposerOpen(true);
+                }}
+              >
+                Follow-up
+              </button>
+            )}
+            {canOpenTimeline && (
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenTimeline(selectedSession.session_key);
+                }}
+              >
+                Timeline
+              </button>
+            )}
           </footer>
         )}
       </section>
@@ -1474,6 +2012,18 @@ const SessionDetail = ({
           }}
           onDraftChange={onDraftChange}
           onSendReply={onSendReply}
+        />
+      )}
+      {followupComposerOpen && canCreateFollowup && (
+        <FollowupComposerOverlay
+          draft={draft}
+          replyInvalid={replyInvalid}
+          submitting={submittingInteractionId !== null}
+          onClose={() => {
+            setFollowupComposerOpen(false);
+          }}
+          onDraftChange={onDraftChange}
+          onCreateFollowupTurn={onCreateFollowupTurn}
         />
       )}
     </>
@@ -1618,6 +2168,68 @@ const ReplyComposerOverlay = ({
             失败演练
           </button>
         )}
+      </div>
+    </section>
+  </div>
+);
+
+/// Follow-up 输入弹层属性。
+interface FollowupComposerOverlayProps {
+  /// 当前草稿。
+  readonly draft: string;
+  /// 当前草稿是否非法。
+  readonly replyInvalid: boolean;
+  /// 是否正在提交。
+  readonly submitting: boolean;
+  /// 关闭回调。
+  readonly onClose: () => void;
+  /// 草稿更新回调。
+  readonly onDraftChange: (draft: string) => void;
+  /// 创建 follow-up 回调。
+  readonly onCreateFollowupTurn: (content: string) => void;
+}
+
+/// Follow-up 输入弹层。
+const FollowupComposerOverlay = ({
+  draft,
+  replyInvalid,
+  submitting,
+  onClose,
+  onDraftChange,
+  onCreateFollowupTurn,
+}: FollowupComposerOverlayProps) => (
+  <div className="overlay-backdrop" role="presentation">
+    <section className="overlay-panel reply-composer" aria-label="Follow-up">
+      <header>
+        <div>
+          <strong>Follow-up</strong>
+          <p>Codex APP</p>
+        </div>
+        <button type="button" onClick={onClose}>
+          关闭
+        </button>
+      </header>
+      <textarea
+        value={draft}
+        autoFocus={true}
+        placeholder="输入下一轮指令"
+        onChange={(event) => {
+          onDraftChange(event.target.value);
+        }}
+      />
+      <div className="button-row">
+        <span className={replyInvalid ? "reply-count-invalid" : ""}>
+          {countReplyChars(draft)}/1000
+        </span>
+        <button
+          type="button"
+          disabled={replyInvalid || submitting}
+          onClick={() => {
+            onCreateFollowupTurn(draft);
+          }}
+        >
+          发送
+        </button>
       </div>
     </section>
   </div>

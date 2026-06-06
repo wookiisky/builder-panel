@@ -25,6 +25,9 @@ export type UiAction =
 /// Pending 交互类型。
 export type PendingInteractionKind = "approval" | "choice" | "text_reply";
 
+/// 用量作用域。
+export type UsageScope = "session" | "account_window";
+
 /// 审批决策。
 export type ApprovalDecision = "allow" | "allow_and_remember" | "deny";
 
@@ -78,8 +81,18 @@ export interface TextDisplay {
 export interface UsageValueViewModel {
   /// 展示标签。
   readonly value_label: string;
+  /// 已验证数值标签。
+  readonly amount_label: string | null;
+  /// 可选单位。
+  readonly unit: string | null;
+  /// 稳定来源键。
+  readonly source_key: string | null;
   /// 可选来源标签。
   readonly source_label: string | null;
+  /// 用量作用域。
+  readonly scope: UsageScope | null;
+  /// 来源更新时间。
+  readonly updated_at: { readonly value: number } | null;
 }
 
 /// 会话列表项。
@@ -106,6 +119,30 @@ export interface SessionListItemViewModel {
   readonly usage_weekly: UsageValueViewModel;
   /// 可执行动作。
   readonly actions: readonly UiAction[];
+  /// 行内交互展示。
+  readonly inline_interaction: InlineInteractionViewModel;
+}
+
+/// 行内交互展示。
+export interface InlineInteractionViewModel {
+  /// 等待处理的交互摘要。
+  readonly summary: string | null;
+  /// 等待处理的交互 ID。
+  readonly interaction_id: InteractionId | null;
+  /// 等待处理的交互类型。
+  readonly kind: PendingInteractionKind | null;
+  /// 是否可跳回。
+  readonly can_jump: boolean;
+  /// 是否可回复。
+  readonly can_send_reply: boolean;
+  /// 是否可审批。
+  readonly can_resolve_approval: boolean;
+  /// 是否可创建后续 turn。
+  readonly can_create_followup_turn: boolean;
+  /// 是否可查看过程时间线。
+  readonly can_view_process_timeline: boolean;
+  /// 选项框状态。
+  readonly choice_box: ChoiceBoxViewModel;
 }
 
 /// 回复框状态。
@@ -122,6 +159,8 @@ export interface InteractionChoiceViewModel {
   readonly value: string;
   /// 展示标签。
   readonly label: string;
+  /// 可选悬停说明。
+  readonly tooltip: string | null;
 }
 
 /// 选项框状态。

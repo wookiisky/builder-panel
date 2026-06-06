@@ -115,6 +115,14 @@ pub struct ValidatedHookPayload {
     pub permission_mode: Option<String>,
     /// 可选 transcript 路径。
     pub transcript_path: Option<String>,
+    /// 可选终端或 APP 名称。
+    pub terminal_app: Option<String>,
+    /// 可选终端 session ID。
+    pub terminal_session_id: Option<String>,
+    /// 可选终端 TTY。
+    pub terminal_tty: Option<String>,
+    /// 可选终端标题。
+    pub terminal_title: Option<String>,
     /// 可选 turn ID。
     pub turn_id: Option<String>,
     /// 可选 tool 名。

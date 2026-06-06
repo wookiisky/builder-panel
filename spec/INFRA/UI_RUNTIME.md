@@ -14,19 +14,37 @@ UI Runtime 不记录 React 组件内部私有状态细节，不替代外部行�
 
 Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
 
-前端合并 mock 和 Codex CLI session 后再次排序，等待用户操作优先，同状态按更新时间倒序。
+前端合并 mock、Codex CLI 和 Codex APP session 后再次排序，等待用户操作优先，同状态按更新时间倒序。
 
-前端显示等待数量、运行数量和 session 总数。
+前端读取 session 时按来源独立收敛失败；单一来源失败不会阻断其它来源展示。
+
+顶部状态区显示运行中数量和 session 总数。
+
+顶部状态区按工具展示整体用量摘要。
+
+工具整体用量按 runtime 来源中的非 mock session 计算。
+
+同一工具同一 `source_key` 的账号窗口用量只取 `updated_at` 最新值，不按 session 求和。
+
+顶部状态区最右侧提供设置按钮和关闭窗口按钮。
 
 前端支持浅色和深色两种主题，由 Display 设置控制。
 
-前端主界面使用紧凑工作台布局，长摘要、回复输入、过程时间线和 hook 安装预览使用弹层展示。
+前端主界面使用紧凑工作台布局，主体为单列 session 列表。
 
-收缩状态由 panel UI store 管理。
+每个 session 使用一行展示状态、来源、项目名和当前输出文本。
 
-收缩状态读取设置中的 Panel 配置初始化。
+完成、失败或等待用户回复的 session 可展开为两行，第二行展示行内回复区。
 
-收缩状态变化后通过局部保存 command 写回设置文件。
+有选项的行内回复区展示选项按钮，并保留 choice tooltip。
+
+无选项的行内回复区展示设置中的自定义快捷输入。
+
+设置页通过单独弹窗展示。
+
+前端运行时不再提供收缩按钮。
+
+设置中的 Panel `collapsed` 字段会被归一化为 `false`，不再作为主界面布局状态。
 
 Tauri 环境会在设置读取后尝试恢复上次窗口位置和尺寸。
 
@@ -34,15 +52,17 @@ Tauri 环境会监听主窗口移动和尺寸变化，并以局部保存 command
 
 浏览器开发环境不执行 Tauri 窗口几何恢复。
 
-session 选中和回复草稿由 mock panel UI store 管理。
+session 选中和回复草稿由前端 UI 状态管理。
 
-收缩和展开不会清理 session 选中和草稿。
+点击 session 时，如果该 session 明确具备跳回目标和跳回能力，前端会请求跳转到对应工具界面。
 
-设置页包含 General、Display、Agents、Replies、Presets、Terminal 和 Advanced 分组。
+没有跳回能力或没有跳回目标的 session 点击后只更新选中态，不展示错误。
 
-设置页包含 Hook Install 分组。
+设置弹窗包含 General、Display、Agents、Replies、Presets、Terminal 和 Advanced 分组。
 
-设置页不提供自动更新配置项。
+设置弹窗包含 Hook Install 分组。
+
+设置弹窗不提供自动更新配置项。
 
 Hook Install 分组提供 Codex CLI hook 和 Claude CLI hook 选择、预览、安装和卸载入口。
 
@@ -52,9 +72,11 @@ Hook Install 分组不因 agent 开关变化自动写入第三方配置。
 
 设置保存响应带有前端请求版本保护，旧响应不覆盖较新的 UI 设置状态。
 
-当前 UI 只启用 mock agent 和 Codex CLI 开关。
+当前 UI 启用 mock agent、Codex CLI 和 Codex APP 开关。
 
-Codex APP、Claude Code CLI 和 Claude Code APP 开关当前禁用。
+Codex APP 开关驱动 Codex APP session 读取。
+
+Claude Code CLI 和 Claude Code APP 开关当前禁用。
 
 浏览器开发环境使用 localStorage fallback，并在读取后校验结构。
 
@@ -66,7 +88,7 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 ## 代码入口
 
-`src/views/BuilderPanelApp.tsx` 是扩展模式工作台、session 合并排序、设置页接入和设置影响 UI 的入口。
+`src/views/BuilderPanelApp.tsx` 是扩展模式工作台、session 合并排序、顶部状态区、行内交互、工具用量摘要、设置弹窗和跳回调用入口。
 
 `src/components/SettingsPanel.tsx` 是设置页组件入口。
 
@@ -74,13 +96,13 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 `src/api/settingsApi.ts` 是前端设置读写和 fallback 校验入口。
 
-`src/api/panelWindowApi.ts` 是前端 panel 窗口几何恢复、监听和局部保存入口。
+`src/api/panelWindowApi.ts` 是前端 panel 窗口几何恢复、监听、局部保存和关闭窗口入口。
+
+`src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
 `src/api/hookInstallApi.ts` 是前端 hook 安装 command 调用入口。
 
-`src/stores/panelProbeStore.ts` 是收缩状态入口。
-
-`src/stores/mockPanelStore.ts` 是 session 选中、草稿和 timeline 弹层状态入口。
+`src/stores/mockPanelStore.ts` 是 session 草稿和 timeline 弹层状态入口。
 
 `src/styles.css` 是阶段 7 扩展模式布局入口。
 
@@ -92,11 +114,9 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 ## 相关测试
 
-`src/views/BuilderPanelApp.test.ts` 覆盖合并 session 排序、统计和能力动作标签。
+`src/views/BuilderPanelApp.test.ts` 覆盖合并 session 排序、统计、能力动作标签和工具用量聚合。
 
-`src/stores/panelProbeStore.test.ts` 覆盖收缩状态默认值、切换和草稿保留边界。
-
-`src/api/settingsApi.test.ts` 覆盖阶段 7 默认设置。
+`src/api/settingsApi.test.ts` 覆盖阶段 7 默认设置、收缩状态归一化和自定义快捷输入校验。
 
 `src/views/BuilderPanelApp.test.ts` 覆盖 hook 安装目标选择。
 

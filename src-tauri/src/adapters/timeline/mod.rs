@@ -281,6 +281,13 @@ pub fn timeline_item_from_agent_event(event: &AgentEvent) -> Option<ProcessTimel
             answer_summary(&event.interaction),
             event.updated_at,
         )),
+        AgentEvent::InteractionCompleted(event) => Some(process_item(
+            &event.session_key,
+            ProcessTimelineEventKind::Activity,
+            "交互已回写",
+            event.summary.as_deref().unwrap_or("用户交互已回写"),
+            event.updated_at,
+        )),
         AgentEvent::TurnCompleted(event) => Some(process_item(
             &event.session_key,
             ProcessTimelineEventKind::System,

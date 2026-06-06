@@ -383,10 +383,12 @@ impl MockAgentScenarioAdapter {
                         InteractionChoice {
                             value: "plan-a".to_string(),
                             label: "先完成 mock 闭环".to_string(),
+                            tooltip: Some("优先验证前端审批、回复和选项闭环".to_string()),
                         },
                         InteractionChoice {
                             value: "plan-b".to_string(),
                             label: "先补真实终端 adapter".to_string(),
+                            tooltip: Some("优先推进真实终端跳回能力".to_string()),
                         },
                     ],
                     allows_multiple: false,
@@ -552,13 +554,17 @@ fn verified_usage(usage_5h: f64, usage_weekly: f64) -> UsageSnapshot {
         usage_5h: UsageValue::Verified(VerifiedUsageValue {
             value: UsageAmount::new(usage_5h).expect("mock usage must be valid"),
             unit: Some("percent".to_string()),
+            source_key: "mock-status-5h".to_string(),
             source_label: "Mock /status".to_string(),
+            scope: crate::domain::usage::UsageScope::Session,
             updated_at: Some(UnixMillis::new(1000)),
         }),
         usage_weekly: UsageValue::Verified(VerifiedUsageValue {
             value: UsageAmount::new(usage_weekly).expect("mock usage must be valid"),
             unit: Some("percent".to_string()),
+            source_key: "mock-status-weekly".to_string(),
             source_label: "Mock /status".to_string(),
+            scope: crate::domain::usage::UsageScope::Session,
             updated_at: Some(UnixMillis::new(1000)),
         }),
     }

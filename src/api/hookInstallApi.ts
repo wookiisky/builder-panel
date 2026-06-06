@@ -66,16 +66,7 @@ export const installHooks = async (
       throw errorWithCause(error, "hook 安装失败");
     }
     return {
-      entries: request.agents.map((agent) => ({
-        agent,
-        config_path:
-          agent === "codex" ? "~/.codex/hooks.json" : "~/.claude/settings.json",
-        existed_before_install: false,
-        backup_path:
-          agent === "codex"
-            ? "~/.codex/hooks.json.builder-panel.bak"
-            : "~/.claude/settings.json.builder-panel.bak",
-      })),
+      entries: [...new Set(request.agents)].flatMap(fallbackManifestEntries),
     };
   }
 };
@@ -97,16 +88,33 @@ const fallbackPreview = (
 ): HookInstallPreview => {
   const uniqueAgents = [...new Set(agents)];
   return {
-    files_to_modify: uniqueAgents.map((agent) =>
-      agent === "codex" ? "~/.codex/hooks.json" : "~/.claude/settings.json",
-    ),
-    backup_files: uniqueAgents.map((agent) =>
-      agent === "codex"
-        ? "~/.codex/hooks.json.builder-panel.bak"
-        : "~/.claude/settings.json.builder-panel.bak",
+    files_to_modify: uniqueAgents.flatMap(fallbackConfigPaths),
+    backup_files: uniqueAgents.flatMap((agent) =>
+      fallbackConfigPaths(agent).map((path) => `${path}.builder-panel.bak`),
     ),
     manifest_path: "~/.config/builder-panel/hook-install-manifest.json",
   };
+};
+
+/// 返回浏览器 fallback 的配置路径。
+const fallbackConfigPaths = (agent: HookInstallAgent): readonly string[] => {
+  if (agent === "codex") {
+    return ["~/.codex/hooks.json", "~/.codex/config.toml"];
+  }
+
+  return ["~/.claude/settings.json"];
+};
+
+/// 返回浏览器 fallback 的 manifest entries。
+const fallbackManifestEntries = (
+  agent: HookInstallAgent,
+): readonly HookInstallManifestEntry[] => {
+  return fallbackConfigPaths(agent).map((path) => ({
+    agent,
+    config_path: path,
+    existed_before_install: false,
+    backup_path: `${path}.builder-panel.bak`,
+  }));
 };
 
 /// 创建保留 cause 的错误。

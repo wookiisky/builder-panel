@@ -61,14 +61,24 @@ pub fn validate_hook_payload(
     let cwd = required_string(object.get("cwd"), "cwd")?;
     let session_id = required_string(object.get("session_id"), "session_id")?;
 
+    let terminal_app = optional_string(object.get("terminal_app"), "terminal_app")?;
+    let agent_kind = agent_kind_for_payload(source, terminal_app.as_deref());
+
     Ok(ValidatedHookPayload {
-        agent_kind: source.agent_kind(),
+        agent_kind,
         hook_event_name: parse_event_name(source, &hook_event_name)?,
         cwd,
         session_id,
         model: optional_string(object.get("model"), "model")?,
         permission_mode: optional_string(object.get("permission_mode"), "permission_mode")?,
         transcript_path: optional_string(object.get("transcript_path"), "transcript_path")?,
+        terminal_app,
+        terminal_session_id: optional_string(
+            object.get("terminal_session_id"),
+            "terminal_session_id",
+        )?,
+        terminal_tty: optional_string(object.get("terminal_tty"), "terminal_tty")?,
+        terminal_title: optional_string(object.get("terminal_title"), "terminal_title")?,
         turn_id: optional_string(object.get("turn_id"), "turn_id")?,
         tool_name: optional_string(object.get("tool_name"), "tool_name")?,
         tool_input: optional_object_value(object.get("tool_input"), "tool_input")?,
@@ -82,6 +92,14 @@ pub fn validate_hook_payload(
             "permission_suggestions",
         )?,
     })
+}
+
+fn agent_kind_for_payload(source: HookSource, terminal_app: Option<&str>) -> AgentKind {
+    if source == HookSource::Codex && terminal_app == Some("Codex.app") {
+        return AgentKind::CodexApp;
+    }
+
+    source.agent_kind()
 }
 
 fn parse_event_name(
@@ -185,6 +203,25 @@ mod tests {
         assert_eq!(payload.cwd, "/tmp/project");
         assert_eq!(payload.session_id, "session-1");
         assert_eq!(payload.tool_name.as_deref(), Some("Bash"));
+    }
+
+    #[test]
+    fn codex_app_payload_is_separated_from_codex_cli() {
+        let input = json!({
+            "cwd": "/tmp/project",
+            "hook_event_name": "PermissionRequest",
+            "session_id": "thread-1",
+            "model": "gpt-5-codex",
+            "terminal_app": "Codex.app",
+            "tool_name": "Bash",
+            "tool_input": {"command": "cargo test"}
+        });
+
+        let payload = validate_hook_payload(HookSource::Codex, input.to_string().as_bytes())
+            .expect("payload should validate");
+
+        assert_eq!(payload.agent_kind, AgentKind::CodexApp);
+        assert_eq!(payload.terminal_app.as_deref(), Some("Codex.app"));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 Agent Event 是 adapter 清洗外部 agent payload 后进入 Domain 的统一事件契约。
 
-Agent Event 负责表达会话启动、活动更新、审批、回答、完成、失败、失联、能力、用量和跳回目标变化。
+Agent Event 负责表达会话启动、活动更新、审批、回答、交互回写、完成、失败、失联、能力、用量和跳回目标变化。
 
 Agent Event 不保存第三方原始 payload，不复用参考项目 Swift schema，不承担外部协议兼容逻辑。
 
@@ -37,6 +37,8 @@ Agent Event 不保存第三方原始 payload，不复用参考项目 Swift schem
 `ApprovalRequested` 表示需要用户审批。
 
 `AnswerRequested` 表示需要用户选择或文本回复。
+
+`InteractionCompleted` 表示用户交互已回写，但当前 turn 可能仍在继续。
 
 `TurnCompleted` 表示当前 turn 完成。
 

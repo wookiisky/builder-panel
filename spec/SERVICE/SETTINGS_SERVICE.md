@@ -22,19 +22,37 @@ Settings Service 不直接读写文件系统，不决定具体配置路径，不
 
 Display 设置控制用量展示、浅色或深色主题、UI 密度和动画等级。
 
-Panel 设置控制收缩状态、上次窗口位置和上次窗口尺寸。
+Panel 设置保留 `collapsed` 字段、上次窗口位置和上次窗口尺寸。
+
+Settings Service 会将 `collapsed` 归一化为 `false`。
+
+Panel `collapsed` 字段不再驱动主界面布局。
 
 Agents 设置控制 mock agent、Codex CLI、Codex APP、Claude Code CLI 和 Claude Code APP 开关。
 
-当前 UI 只允许修改 mock agent 和 Codex CLI 开关。
+当前 UI 允许修改 mock agent、Codex CLI 和 Codex APP 开关。
 
-Codex APP、Claude Code CLI 和 Claude Code APP 开关当前保存在模型中，但 UI 禁用，不驱动 session 读取。
+Codex APP 开关当前保存在模型中并驱动 Codex APP session 读取。
 
-Replies 设置控制 Enter 发送和快捷回复入口。
+Claude Code CLI 和 Claude Code APP 开关当前保存在模型中，但 UI 禁用，不驱动 session 读取。
+
+Replies 设置控制 Enter 发送、快捷回复入口和自定义快捷输入。
+
+自定义快捷输入包含 ID、标签、内容、启用状态和排序值。
+
+自定义快捷输入字段缺失时使用默认快捷输入。
+
+自定义快捷输入数组中的非法项会在设置边界丢弃。
+
+自定义快捷输入 ID 重复时保留第一项。
+
+自定义快捷输入数组存在但全部非法时保存为空数组，不恢复默认项。
 
 设置模型不包含自动更新配置项。
 
 panel 窗口状态可以通过局部保存 command 更新，不要求前端重写完整设置模型。
+
+panel 窗口状态局部保存不会持久化收缩状态。
 
 ## 错误与降级
 
@@ -43,6 +61,8 @@ panel 窗口状态可以通过局部保存 command 更新，不要求前端重�
 配置文件缺失字段时使用对应字段默认值。
 
 配置文件未知字段不会进入设置模型。
+
+自定义快捷输入的脏数据在设置反序列化或保存归一化边界收敛。
 
 配置文件损坏或无法解析时返回默认设置，并附带用户可读提示。
 
@@ -66,6 +86,6 @@ JSON 设置文件 adapter 使用同目录临时文件写入后替换目标文件
 
 `src-tauri/src/adapters/config_file/mod.rs` 覆盖同一路径并发保存不会共享临时文件。
 
-`src/api/settingsApi.test.ts` 覆盖前端默认设置和默认 panel 状态事实。
+`src/api/settingsApi.test.ts` 覆盖前端默认设置、默认 panel 状态事实和自定义快捷输入归一化。
 
 `src/views/BuilderPanelApp.test.ts` 覆盖 hook 安装目标选择的前端纯状态转换。

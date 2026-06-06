@@ -18,29 +18,39 @@
 
 阶段 7 主窗口默认尺寸面向扩展模式工作台。
 
-应用读取设置后会尝试恢复上次收缩状态、窗口位置和窗口尺寸。
+应用读取设置后会尝试恢复上次窗口位置和窗口尺寸。
 
 窗口移动或调整大小后，Tauri 环境会保存新的窗口位置和尺寸。
 
+用户可以点击顶部关闭按钮关闭 Tauri 窗口。
+
 ## 前端行为
 
-panel 展示阶段 3 mock agent 会话列表。
-
-用户可以点击按钮收缩或展开 panel 内容区。
-
-收缩和展开后，当前选中的 session 和当前 session 草稿保持不变。
+panel 展示 mock、Codex CLI 和 Codex APP 会话列表。
 
 panel 不展示 mini 模式切换入口。
 
-panel 展示等待数量、运行数量和 session 总数。
+panel 顶部状态区展示运行中数量和 session 总数。
 
-mock session 列表展示等待审批、等待回复、完成和失败状态。
+panel 顶部状态区展示 Codex 和 Claude 工具维度整体用量。
 
-mock session 列表中的用量可用时展示已验证数字。
+同一工具同一来源键的整体用量只取最新值，不按 session 求和。
 
-mock session 列表中的用量不可用时展示占位。
+panel 顶部状态区右侧展示设置按钮和关闭按钮。
 
-session 列表合并 mock 和 Codex CLI session 后，等待用户操作的 session 排在前面。
+session 列表展示等待审批、等待回复、运行中、完成和失败状态。
+
+每个 session 行从左到右展示固定宽度状态区、来源标签、项目名和当前输出文本。
+
+当前输出文本超过行宽时截断展示。
+
+完成、失败或等待用户回复的 session 可展示为两行。
+
+两行 session 的第一行展示最后一段输出文本。
+
+两行 session 的第二行展示回复区。
+
+session 列表合并 mock、Codex CLI 和 Codex APP session 后，等待用户操作的 session 排在前面。
 
 同一状态的 session 按更新时间倒序展示。
 
@@ -48,21 +58,25 @@ session 列表合并 mock 和 Codex CLI session 后，等待用户操作的 sess
 
 长摘要、长路径和长命令不会撑破面板布局。
 
-长摘要通过详情弹层查看。
+用户点击具备跳回能力和跳回目标的 session 时，panel 会尝试跳转到对应工具界面。
+
+用户点击不具备跳回能力或没有跳回目标的 session 时，只更新当前选中态。
 
 用户可以在 mock 审批 session 中点击允许、拒绝或允许并记住。
 
-用户可以在 mock 回复 session 中打开回复弹层并输入单行或多行文本回复。
+用户可以在 mock 回复 session 的行内回复区输入单行或多行文本回复。
 
 用户可以在 mock 选项 session 中提交单选或多选回复。
 
+选项存在 tooltip 时，用户可通过选项按钮 tooltip 查看说明。
+
 `Enter` 发送 mock 文本回复。
 
-`Shift+Enter` 在 mock 回复框中换行。
+`Shift+Enter` 在 mock 行内回复框中换行。
 
-用户可以在 mock 文本回复 session 中点击快捷回复。
+用户可以在无选项的 mock 文本回复 session 中点击自定义快捷输入。
 
-快捷回复发送失败后，快捷回复内容保留在当前草稿中。
+自定义快捷输入发送失败后，快捷输入内容保留在当前草稿中。
 
 用户可以打开支持 timeline 的 mock session 过程事件弹层。
 
@@ -92,7 +106,29 @@ Codex CLI 的允许并记住入口当前按允许 directive 返回，不声明�
 
 Codex CLI hook 产生的托管事件可在支持 timeline 的 session 中查询。
 
-阶段 7 设置页包含 General、Display、Agents、Replies、Presets、Terminal 和 Advanced。
+Codex APP 开关开启后，panel 会尝试启动 Codex APP app-server 并读取 Codex APP session。
+
+Codex APP hook payload 中 `terminal_app` 为 `Codex.app` 时，会显示为 Codex APP session。
+
+Codex APP 请求权限时，用户可在 panel 中点击允许或拒绝。
+
+Codex APP 审批决策可通过 hook stdout directive 或 app-server response 回写。
+
+Codex APP 等待文本输入时，用户可在 panel 行内回复区发送文本。
+
+Codex APP 等待选项输入时，用户可在 panel 中提交选项。
+
+Codex APP app-server 不可用时，mock 和 Codex CLI session 仍可刷新展示。
+
+Codex APP 完成、失败或 app-server 标记为空闲且无待处理交互的 session 可通过 Follow-up 按钮创建后续 turn。
+
+Codex APP session 可打开 timeline 弹层查看 hook 和 app-server 过程事件。
+
+Codex APP session 跳回目标为 `codex://threads/<thread_id>`。
+
+macOS 上 Codex APP 跳回通过系统打开 `codex://` URL。
+
+阶段 7 设置弹窗包含 General、Display、Agents、Replies、Presets、Terminal 和 Advanced。
 
 设置页包含 Hook Install 分组。
 
@@ -108,13 +144,13 @@ Codex CLI hook 产生的托管事件可在支持 timeline 的 session 中查询�
 
 用户点击卸载后会按 manifest 恢复安装前配置。
 
-Mock Agent 和 Codex CLI 开关会影响对应来源的 session 读取和展示。
+Mock Agent、Codex CLI 和 Codex APP 开关会影响对应来源的 session 读取和展示。
 
-Codex APP、Claude Code CLI 和 Claude Code APP 设置开关当前显示为禁用，不触发 session 读取。
+Claude Code CLI 和 Claude Code APP 设置开关当前显示为禁用，不触发 session 读取。
 
-用量展示开关关闭后，列表和详情不展示用量信息。
+用量展示开关关闭后，顶部状态区和 session 行不展示用量信息。
 
-快捷回复开关关闭后，文本回复区域不展示快捷回复入口。
+快捷回复开关关闭后，文本回复区域不展示自定义快捷输入入口。
 
 Enter 发送开关关闭后，Enter 不触发文本回复发送。
 
@@ -126,11 +162,11 @@ Enter 发送开关关闭后，Enter 不触发文本回复发送。
 
 配置损坏时使用默认设置并提示。
 
-通知点击只定位 session、聚焦并展开 panel。
+通知点击只定位 session 并聚焦 panel。
 
 通知点击不直接打开过程弹出层。
 
-Codex APP app-server schema 可由后端探针验证，但当前不展示 Codex APP 结构化审批、回复、follow-up turn 或 timeline 按钮。
+Codex APP app-server schema 可由后端探针验证。
 
 ## hook CLI 行为
 
@@ -160,6 +196,8 @@ hook 安装会先备份已存在的第三方配置。
 
 hook 卸载会按 manifest 恢复安装前状态。
 
+Codex hook 安装会写入 `~/.codex/hooks.json`，并确保 `~/.codex/config.toml` 中启用 `[features] hooks = true`。
+
 Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 ## 限制
@@ -174,11 +212,11 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 阶段 3 不承诺真实 Codex 或 Claude Code 审批、回复和 timeline 接入。
 
-阶段 4 当前只声明 Codex CLI 审批 hook 闭环和 Codex APP schema 探针、消息编码、notification 转换。
+阶段 4 当前声明 Codex CLI 审批 hook 闭环和 Codex APP hook、app-server、审批、回复、follow-up、跳回与 timeline 接入。
 
 阶段 4 当前不声明 Claude Code 真实闭环已完成。
 
-阶段 4 当前不声明 Codex APP 审批回写或已有会话自动发现已完成。
+阶段 4 当前不声明 Codex APP WebSocket transport 已接入。
 
 阶段 5 当前不声明真实终端跳回人工闭环已完成。
 
@@ -222,7 +260,7 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 `src-tauri/src/adapters/timeline/mod.rs` 是过程事件时间线内存缓存入口。
 
-`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP app-server schema 探针和 notification 转换入口。
+`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server、runtime、schema 探针和 notification 转换入口。
 
 `src-tauri/src/adapters/bridge/hook_output.rs` 是 hook stdout directive 编码入口。
 
@@ -230,7 +268,7 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 `src/api/mockPanelApi.ts` 是前端 mock command 调用入口。
 
-`src-tauri/src/tauri_api/commands.rs` 是 mock session、审批、选项、回复和 timeline command 入口。
+`src-tauri/src/tauri_api/commands.rs` 是 mock、Codex CLI 和 Codex APP session、审批、选项、回复、follow-up 和 timeline command 入口。
 
 `src-tauri/src/services/shortcut_reply_service.rs` 是快捷回复过滤入口。
 
@@ -238,7 +276,11 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 `src-tauri/src/adapters/terminal/mod.rs` 是终端跳回降级入口。
 
-`src/components/SettingsPanel.tsx` 是设置页入口。
+`src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
+
+`src/api/panelWindowApi.ts` 是前端窗口关闭入口。
+
+`src/components/SettingsPanel.tsx` 是设置弹窗内容入口。
 
 `src/api/settingsApi.ts` 是设置读写和浏览器 fallback 入口。
 
@@ -268,7 +310,7 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 `cargo test --manifest-path src-tauri/Cargo.toml codex_app` 用于验证 Codex APP app-server adapter。
 
-`./node_modules/.bin/vitest run` 用于验证阶段 7 前端排序、统计、设置默认值和收缩保留草稿。
+`./node_modules/.bin/vitest run` 用于验证阶段 7 前端排序、统计、设置默认值、工具用量聚合和自定义快捷输入。
 
 `cargo test --manifest-path src-tauri/Cargo.toml settings_service` 用于验证设置服务。
 

@@ -43,8 +43,67 @@ describe("settingsApi", () => {
     expect(normalizedSettings?.display.theme).toBe("light");
     expect(normalizedSettings?.display.show_usage).toBe(false);
     expect(normalizedSettings?.display.density).toBe("compact");
-    expect(normalizedSettings?.panel.collapsed).toBe(true);
+    expect(normalizedSettings?.panel.collapsed).toBe(false);
     expect(normalizedSettings?.agents.mock_agent_enabled).toBe(false);
+  });
+
+  it("normalizes custom shortcuts by dropping invalid rows and duplicate ids", () => {
+    const settings = {
+      ...defaultSettings(),
+      replies: {
+        enter_to_send: true,
+        shortcut_replies_enabled: true,
+        custom_shortcuts: [
+          {
+            id: "same",
+            label: " B ",
+            content: " 内容 ",
+            enabled: true,
+            order: 20,
+          },
+          {
+            id: "same",
+            label: "重复",
+            content: "重复内容",
+            enabled: true,
+            order: 10,
+          },
+          {
+            id: "",
+            label: "空 ID",
+            content: "无效",
+            enabled: true,
+            order: 30,
+          },
+          {
+            id: "first",
+            label: "A",
+            content: "A 内容",
+            enabled: false,
+            order: 5,
+          },
+        ],
+      },
+    };
+
+    const normalizedSettings = normalizeFallbackSettings(settings);
+
+    expect(normalizedSettings?.replies.custom_shortcuts).toEqual([
+      {
+        id: "first",
+        label: "A",
+        content: "A 内容",
+        enabled: false,
+        order: 5,
+      },
+      {
+        id: "same",
+        label: "B",
+        content: "内容",
+        enabled: true,
+        order: 20,
+      },
+    ]);
   });
 
   it("rejects fallback settings with invalid provided fields", () => {

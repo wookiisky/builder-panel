@@ -47,9 +47,9 @@ pub fn standard_output_for_response(
     }
 
     match payload.agent_kind {
-        AgentKind::CodexCli => encode_codex_output(payload),
+        AgentKind::CodexCli | AgentKind::CodexApp => encode_codex_output(payload),
         AgentKind::ClaudeCodeCli => encode_claude_output(payload),
-        AgentKind::CodexApp | AgentKind::ClaudeCodeApp => Err(HookOutputError::AgentMismatch),
+        AgentKind::ClaudeCodeApp => Err(HookOutputError::AgentMismatch),
     }
 }
 
@@ -283,6 +283,25 @@ mod tests {
             object["hookSpecificOutput"]["hookEventName"],
             "PermissionRequest"
         );
+        assert_eq!(
+            object["hookSpecificOutput"]["decision"]["behavior"],
+            "allow"
+        );
+    }
+
+    #[test]
+    fn codex_app_permission_output_uses_codex_hook_contract() {
+        let response = BridgeResponseEnvelope::directive(
+            "req-1".to_string(),
+            BridgeDirectivePayload::allow(AgentKind::CodexApp),
+        );
+
+        let output = standard_output_for_response(&response, &AgentKind::CodexApp)
+            .expect("allow should encode")
+            .expect("allow should produce stdout");
+        let object = object_from_output(output);
+
+        assert_eq!(object["continue"], true);
         assert_eq!(
             object["hookSpecificOutput"]["decision"]["behavior"],
             "allow"

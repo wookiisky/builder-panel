@@ -22,13 +22,11 @@ Vite 前端渲染基础 panel。
 
 阶段 0 的 panel 默认处于 `expanded` 模式。
 
-前端读取设置中的 Panel 配置初始化本地 `collapsed` 状态。
+前端读取设置后将 Panel `collapsed` 归一化为 `false`。
 
-用户点击收缩按钮时，前端通过纯状态转换切换 `collapsed`。
+前端不展示收缩按钮。
 
-前端通过 panel 窗口状态局部保存 command 持久化 `collapsed`。
-
-收缩和展开不会触发 session 选中或草稿清理。
+panel 窗口状态局部保存 command 不持久化 `collapsed`。
 
 Tauri 环境读取设置后尝试恢复上次窗口位置和尺寸。
 
@@ -37,6 +35,32 @@ Tauri 环境监听窗口移动和尺寸变化。
 窗口位置或尺寸变化后，前端通过 panel 窗口状态局部保存 command 持久化几何信息。
 
 浏览器开发环境不执行 Tauri 窗口几何恢复。
+
+用户点击关闭按钮时，前端通过窗口 API 请求关闭当前 Tauri 窗口。
+
+浏览器开发环境中的关闭按钮不执行系统窗口关闭。
+
+## session 列表流程
+
+前端读取 mock、Codex CLI 和 Codex APP session 列表。
+
+单一来源读取失败时，前端保留其它来源结果。
+
+前端合并 session 后重新排序，等待用户操作优先，同状态按更新时间倒序。
+
+前端顶部状态区从合并后的 session 计算运行中数量和总数。
+
+前端顶部状态区从非 mock session 聚合工具整体用量。
+
+同一工具同一 `source_key` 的整体用量只保留更新时间最新值。
+
+前端主体以单列列表展示所有 session。
+
+完成、失败或等待用户回复的 session 在行内展示最后一段输出和回复区。
+
+有选项的回复区展示选项按钮。
+
+无选项的回复区展示设置中的自定义快捷输入。
 
 ## 设置流程
 
@@ -60,6 +84,10 @@ Settings Service 通过设置存储端口读取配置。
 
 保存失败时，前端保留当前 UI 选择并展示错误提示。
 
+Settings Service 保存前会清洗自定义快捷输入。
+
+Settings Service 保存前会强制 Panel `collapsed` 为 `false`。
+
 保存设置时，JSON 设置文件 adapter 先写入同目录临时文件。
 
 临时文件写入和刷盘成功后，adapter 替换目标配置文件。
@@ -67,6 +95,8 @@ Settings Service 通过设置存储端口读取配置。
 临时文件写入失败时，旧配置文件保持不变。
 
 浏览器开发环境从 localStorage 读取 fallback 设置，并在使用前校验结构。
+
+浏览器 fallback 设置同样会清洗自定义快捷输入并强制 Panel `collapsed` 为 `false`。
 
 ## hook 安装流程
 
@@ -85,6 +115,8 @@ hook 安装器生成安装预览。
 安装预览列出将修改的配置文件、备份文件和 manifest 文件。
 
 用户点击安装后，hook 安装器备份已存在的第三方配置文件。
+
+hook 安装器在写入前保护本轮会覆盖的旧备份和旧 manifest。
 
 hook 安装器读取 JSON 配置，配置不存在时使用空对象。
 
@@ -212,19 +244,61 @@ bridge server 首次 bind 失败时不会标记为已启动，后续读取 Codex
 
 ## Codex APP app-server 流程
 
+Codex hook helper 仍通过 `--source codex` 接收 Codex hook payload。
+
+hook payload 中 `terminal_app` 为 `Codex.app` 时，payload 被归类为 Codex APP session。
+
+Codex APP hook request 进入 Codex APP runtime，不进入 Codex CLI runtime。
+
+Codex APP `PermissionRequest` 写入 pending approval 后等待 panel 决策。
+
+用户在 panel 点击允许或拒绝后，runtime 唤醒等待中的 hook request。
+
+bridge server 返回 Codex APP allow 或 deny stdout directive。
+
 Codex APP adapter 通过本机 `codex app-server generate-json-schema --experimental` 生成 schema。
 
-schema 探针确认关键 request、response 和 notification schema 文件存在。
+schema 探针确认当前 client request、client response、notification 和回写 response 相关 schema 文件存在。
 
 schema 探针覆盖所有当前 adapter 已消费的 app-server notification schema。
 
-adapter 编码 `initialize`、`initialized`、`thread/start` 和 `turn/start` JSON-RPC 消息。
+adapter 编码 `initialize`、`initialized`、`thread/loaded/list`、`thread/read`、`thread/start` 和 `turn/start` JSON-RPC 消息。
+
+Codex APP 开关开启后，后端尝试启动 `codex app-server --listen stdio://`。
+
+app-server 启动后，后端发送 `initialize` 并写入 `initialized` notification。
+
+后端通过 `thread/loaded/list` 读取已加载 thread ID，再通过 `thread/read` 读取 thread 详情并写入 session 状态。
+
+app-server 启动、初始化和已加载 thread 同步在全局 client slot 锁外执行；slot 在启动期间仅标记为启动中。
+
+app-server stdout 由后台线程按行读取。
+
+app-server response 唤醒对应 pending request。
+
+app-server notification 和 server request 在 adapter 边界清洗后写入 Codex APP runtime。
+
+app-server notification 和 server request 写入 runtime 前，会先用 thread 详情或 hook 记录的 cwd 统一 session key。
 
 adapter 接收 app-server notification 后，在 adapter 边界读取 JSON 字段并转换为归一事件。
 
+Codex APP app-server 审批、文本回复或选项回写成功后，runtime 只清理 pending interaction 并保持运行态，不提前写 `TurnCompleted`。
+
 未识别 notification 不写 session 状态。
 
-Codex APP 当前不生成 follow-up turn 和 process timeline UI 能力。
+未识别或畸形 server request 回写 JSON-RPC error；能识别 thread 时写失败状态。
+
+app-server 启动、初始化或已加载 thread 同步失败时，后端尝试回收子进程，前端本次刷新跳过 Codex APP 来源。
+
+Codex APP follow-up turn 通过 `turn/start` 写入 app-server。
+
+Codex APP follow-up turn 创建前，runtime 校验 session 无 pending interaction 且处于完成或失败状态；`idle` 状态 notification 会先折叠为完成态。
+
+Codex APP follow-up turn 写入 app-server 成功后，runtime 才写入“已提交”activity。
+
+Codex APP session 跳回目标使用 `codex://threads/<thread_id>`。
+
+Codex APP hook 和 app-server 事件写入进程内 timeline 缓存。
 
 ## mock session 主流程
 
@@ -237,8 +311,6 @@ Session Service 从 mock agent runtime 读取 session state。
 Session Service 调用 Domain view model 转换列表和详情。
 
 前端通过 Tauri command 读取 mock session 列表。
-
-前端选中 session 后读取该 session 详情。
 
 浏览器预览环境无法调用 Tauri command 时，前端使用同契约 fallback mock 数据。
 
@@ -264,7 +336,7 @@ Domain reducer 清理 pending interaction。
 
 ## mock 回复链路
 
-前端只在 session view model 生成 `SendReply` 动作时展示回复框。
+前端只在 session view model 生成可回写能力时展示行内回复框。
 
 前端按 session 保存回复草稿。
 
@@ -288,7 +360,9 @@ Domain reducer 清理 pending interaction。
 
 ## mock 选项链路
 
-前端只在 session view model 生成 `SendReply` 动作且 pending interaction 是 choice 时展示选项。
+前端只在 session view model 生成可回写能力且 pending interaction 是 choice 时展示选项。
+
+选项 tooltip 从 interaction 契约映射到 view model 后展示在按钮 tooltip。
 
 单选点击后只保留最后一个选项。
 
@@ -316,6 +390,20 @@ Shortcut Reply Service 根据启用状态、agent 类型、项目 ID 和排序�
 
 快捷回复发送失败时，快捷回复内容填回当前 session 草稿。
 
+## 自定义快捷输入链路
+
+自定义快捷输入从 Settings Service 的 Replies 设置读取。
+
+设置页允许新增、编辑、启用、禁用、排序和删除自定义快捷输入。
+
+设置保存边界会清洗非法自定义快捷输入。
+
+前端只在无选项且文本可回写或可创建 follow-up 时展示自定义快捷输入。
+
+自定义快捷输入点击后复用文本回复或 follow-up 提交流程。
+
+提交失败时，自定义快捷输入内容填回当前 session 草稿。
+
 ## 预设命令链路
 
 Preset Command Service 根据预设命令和创建能力生成计划。
@@ -335,6 +423,12 @@ JumpTargetPort 表达跳回 agent 所在 APP 或终端的能力。
 ReplySenderPort 表达文本回写能力。
 
 跳回和回写必须独立判断。
+
+前端点击 session 时，只对具备跳回能力且存在跳回目标的 session 调用跳回 command。
+
+跳回 command 按 runtime source 读取对应 runtime 的 session 状态。
+
+Codex APP session 的 `codex://` 跳回目标在 macOS 上交给系统打开。
 
 跳回失败时返回复制降级，不触发文本回写补偿。
 
@@ -428,6 +522,10 @@ timeline 释放失败时不阻塞关闭弹层。
 
 `src-tauri/src/adapters/config_file/mod.rs` 是设置文件读写流程入口。
 
+`src/api/sessionJumpApi.ts` 是前端跳回 command 调用入口。
+
+`src/api/panelWindowApi.ts` 是前端窗口关闭调用入口。
+
 `src-tauri/src/services/notification_service.rs` 是通知计划流程入口。
 
 `src-tauri/src/adapters/notification/mod.rs` 是记录型通知 adapter 入口。
@@ -435,8 +533,6 @@ timeline 释放失败时不阻塞关闭弹层。
 ## 相关测试
 
 `src-tauri/src/domain/panel_geometry.rs` 覆盖位置修正正常路径和边界路径。
-
-`src/stores/panelProbeStore.test.ts` 覆盖收缩状态转换。
 
 `src-tauri/src/adapters/bridge/hook_cli.rs` 覆盖 hook helper fail-open 和 directive。
 
@@ -455,6 +551,10 @@ timeline 释放失败时不阻塞关闭弹层。
 `src-tauri/src/services/reply_service.rs` 覆盖文本回复成功、校验失败和回写失败。
 
 `src-tauri/src/services/shortcut_reply_service.rs` 覆盖快捷回复过滤和排序。
+
+`src/api/settingsApi.test.ts` 覆盖自定义快捷输入清洗。
+
+`src/views/BuilderPanelApp.test.ts` 覆盖工具用量聚合。
 
 `src-tauri/src/services/preset_command_service.rs` 覆盖预设命令计划生成。
 

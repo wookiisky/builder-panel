@@ -84,6 +84,15 @@ export const subscribePanelWindowGeometry = async (
   };
 };
 
+/// 关闭当前 panel 窗口。
+export const closePanelWindow = async (): Promise<void> => {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  await getCurrentWindow().close();
+};
+
 /// 浏览器开发环境保存 panel 状态。
 const saveFallbackPanelState = (update: PanelWindowStateUpdate): void => {
   const raw = window.localStorage.getItem("builder-panel-settings");

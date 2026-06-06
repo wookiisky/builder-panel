@@ -75,6 +75,22 @@ export interface ReplySettings {
   readonly enter_to_send: boolean;
   /// 是否启用快捷回复。
   readonly shortcut_replies_enabled: boolean;
+  /// 自定义快捷输入。
+  readonly custom_shortcuts: readonly CustomShortcutInput[];
+}
+
+/// 自定义快捷输入。
+export interface CustomShortcutInput {
+  /// 配置内稳定 ID。
+  readonly id: string;
+  /// 展示标签。
+  readonly label: string;
+  /// 回复或 follow-up 正文。
+  readonly content: string;
+  /// 是否启用。
+  readonly enabled: boolean;
+  /// 排序值，数值越小越靠前。
+  readonly order: number;
 }
 
 /// 预设命令设置。

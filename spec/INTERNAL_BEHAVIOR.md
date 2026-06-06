@@ -28,7 +28,7 @@ ports 不反向依赖 adapter 具体实现。
 
 阶段 0 只存在 `expanded` panel 模式。
 
-`collapsed` 是显式布尔状态。
+Panel `collapsed` 字段保留在设置模型中，但运行时必须归一化为 `false`。
 
 panel 位置修正函数不执行 IO。
 
@@ -37,6 +37,8 @@ panel 位置修正函数不修改 panel 尺寸。
 `SessionKey` 由 agent、项目和对话共同确定。
 
 `UsageValue::Unavailable` 是用量不可用的唯一 Domain 表达。
+
+已验证用量必须显式携带来源键和作用域。
 
 pending interaction 由 reducer 统一管理。
 
@@ -48,6 +50,12 @@ view model 动作由 session 状态、pending interaction 和 capability 共同�
 
 session detail view model 显式暴露 pending interaction ID 和 pending interaction 类型。
 
+session list item view model 显式暴露行内交互摘要。
+
+行内交互摘要必须包含 interaction ID、交互类型、可跳回、可回写、可审批、可 follow-up 和可查看 timeline 能力。
+
+跳回动作只在 session 具备跳回能力且存在跳回目标时生成。
+
 阶段 3 mock agent runtime 是本地内存验证基线，不是持久化事实来源。
 
 阶段 3 mock agent runtime 通过 Domain reducer 写入 session 状态。
@@ -58,7 +66,17 @@ Codex CLI pending approval 必须同时匹配 `SessionKey` 和 `InteractionId` �
 
 Codex CLI pending approval 超时后必须从 runtime 移除，并清理 session pending interaction。
 
-Codex APP app-server notification 只在 adapter 边界读取 `serde_json::Value`，转换后只向 Domain 写归一事件。
+Codex APP hook payload、app-server notification 和 app-server server request 只在 adapter 边界读取 `serde_json::Value`，转换后只向 Domain 写归一事件。
+
+Codex APP runtime 是 Codex APP hook 和 app-server 状态来源，当前仍为进程内内存状态。
+
+Codex APP runtime 必须用 `thread_id -> cwd` 映射统一 hook 通道和 app-server 通道的 `SessionKey`。
+
+Codex APP pending approval 必须同时匹配 `SessionKey` 和 `InteractionId` 后才能唤醒 hook request 或回写 app-server response。
+
+Codex APP app-server 审批、文本回复或选项回写成功后，只写入 `InteractionCompleted` 清理 pending 并保持运行态，等待真实完成或 idle 事件后才允许 follow-up。
+
+Codex APP app-server `notLoaded` 必须清理 session pending interaction 和对应 app-server RPC 上下文。
 
 审批提交必须同时匹配 `SessionKey` 和当前 pending approval 的 `InteractionId`。
 
@@ -77,6 +95,8 @@ Codex APP app-server notification 只在 adapter 边界读取 `serde_json::Value
 前端选项选择按 interaction ID 隔离保存。
 
 快捷回复不得绕过 Reply Service 的能力校验和 pending 校验。
+
+自定义快捷输入不得绕过当前 session 的回写或 follow-up 能力校验。
 
 跳回能力和文本回写能力必须分别建模。
 
@@ -148,25 +168,31 @@ Tauri command 使用进程内 mock runtime 锁收口阶段 3 mock 状态访问�
 
 Tauri command 使用进程内 Codex CLI runtime 锁收口阶段 4 Codex CLI 状态访问。
 
-前端在 panel 打开期间定时刷新 Codex CLI session，避免真实 hook 事件在首次加载后不可见。
+Tauri command 使用进程内 Codex APP runtime 锁收口 Codex APP 状态访问。
 
-前端合并 mock 和 Codex CLI session 后，详情读取和审批提交必须按显式 runtime source 路由。
+前端在 panel 打开期间定时刷新 Codex CLI 和 Codex APP session，避免真实 hook 或 app-server 事件在首次加载后不可见。
 
-前端合并 mock 和 Codex CLI session 后，UI session 选中身份必须包含 runtime source。
+前端合并 mock、Codex CLI 和 Codex APP session 后，详情读取、审批提交、回复提交、follow-up 和 timeline 查询必须按显式 runtime source 路由。
 
-前端合并 mock 和 Codex CLI session 后，必须重新按 UI 排序规则排序。
+前端合并 mock、Codex CLI 和 Codex APP session 后，UI session 选中身份必须包含 runtime source。
+
+前端合并 mock、Codex CLI 和 Codex APP session 后，必须重新按 UI 排序规则排序。
 
 阶段 7 前端设置状态不进入 Domain。
 
 设置模型由 Settings Service 显式建模。
 
-Panel 设置保存收缩状态、窗口位置和窗口尺寸。
+Panel 设置保存窗口位置和窗口尺寸。
+
+Panel 设置中的收缩字段不得保存为 `true`。
 
 设置存储脏数据在 config adapter 和前端 fallback 边界完成校验或降级。
 
 设置缺失字段在反序列化边界补默认值。
 
 设置未知字段在反序列化边界丢弃，不进入设置模型。
+
+自定义快捷输入脏数据在设置边界清洗，不进入 UI 核心流程。
 
 配置损坏时，核心 UI 使用默认设置。
 
@@ -178,7 +204,9 @@ Panel 设置保存收缩状态、窗口位置和窗口尺寸。
 
 panel 窗口移动和尺寸变化通过局部保存 command 更新 Panel 设置，不覆盖其它设置分组。
 
-当前只有 mock agent 和 Codex CLI 开关驱动 session 读取。
+panel 窗口状态局部保存不得把收缩字段写成 `true`。
+
+当前 mock agent、Codex CLI 和 Codex APP 开关驱动 session 读取。
 
 未接入 session 读取链路的 agent 开关必须在 UI 禁用。
 
@@ -200,7 +228,51 @@ Codex CLI 同一 session 收到新的 `PermissionRequest` 时，旧审批等待�
 
 Codex APP schema 探针会执行本机 `codex app-server generate-json-schema --experimental`，属于 adapter 边界副作用。
 
-终端跳回 adapter 当前只记录跳回请求和失败降级，不执行真实终端控制。
+Codex APP app-server stdio 客户端会启动 `codex app-server --listen stdio://`，属于 adapter 边界副作用。
+
+Codex APP app-server stdout 按行解析，单行超过上限时丢弃该行。
+
+Codex APP app-server request 写入前必须登记 pending response，避免快速 response 丢失。
+
+Codex APP app-server request 等待必须有超时。
+
+Codex APP app-server request 或 response 写入不得在等待期间持有全局 app-server client slot 锁。
+
+Codex APP app-server 启动和已加载 thread 同步不得在等待期间持有全局 app-server client slot 锁；slot 只表达空、启动中或已连接。
+
+Codex APP app-server response 必须保留 request 的原始 JSON-RPC `id` 类型。
+
+Codex APP app-server stdout 中带 `method` 的消息必须按 server request 或 notification 处理，不能仅因 id 命中 pending request 就当作 response。
+
+Codex APP 未识别或畸形 app-server server request 必须回写 JSON-RPC error；若消息包含 thread ID，runtime 必须写入失败状态。
+
+Codex APP legacy approval 与新版 item approval 的 response enum 不相同，必须按 server request method 分流编码。
+
+Codex APP follow-up 写入成功前不得更新 session activity 或 timeline。
+
+Codex APP follow-up 必须同时满足无 pending interaction 且 session 状态为 `Completed` 或 `Failed`。
+
+Codex APP follow-up request id 必须由 app-server client 内部递增分配。
+
+Codex APP app-server 子进程在启动初始化、同步或 client drop 失败路径中必须尝试 kill 和 wait 回收。
+
+Codex APP app-server 启动失败必须设置退避，避免前端轮询造成持续 spawn。
+
+Codex APP hook runtime 读取和 hook approval 决策不得依赖 app-server 已连接。
+
+Codex APP session 列表、详情和 timeline 查询可尝试启动 app-server，但必须在 app-server 失败时继续读取现有 hook runtime 状态。
+
+Codex APP app-server client 被复用前必须检查子进程仍存活；已退出时必须清理 client slot。
+
+前端读取 mock、Codex CLI 和 Codex APP session 时，单一来源失败不得阻断其它来源 session 刷新。
+
+前端工具用量聚合只读取非 mock session 的账号窗口用量。
+
+前端工具用量聚合同一工具同一来源键只保留最新值。
+
+前端工具用量聚合不得按 session 求和。
+
+终端跳回 adapter 当前可记录跳回请求、打开系统 URL 和返回失败降级，不执行真实终端控制。
 
 JSON 设置文件读写属于 config adapter 边界副作用。
 
@@ -228,7 +300,7 @@ hook 安装器必须先完成所有目标配置读取和构造，再开始写入
 
 hook 安装器写配置文件和 manifest 时使用临时文件替换目标文件。
 
-hook 安装中途失败时，已写配置必须回滚到安装前状态。
+hook 安装中途失败时，已写配置、旧备份和旧 manifest 必须回滚到安装前状态。
 
 hook 卸载必须以 manifest 为恢复依据。
 
@@ -264,7 +336,11 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 若快捷回复绕过 Reply Service，可能在 pending 已变化后提交到错误交互。
 
+若自定义快捷输入绕过当前 session 能力校验，可能向不可回复或不可 follow-up 的 session 提交文本。
+
 若跳回能力被当成回写能力，UI 可能展示无法可靠完成的发送入口。
+
+若跳回动作在没有跳回目标时生成，用户点击 session 会得到无意义错误而不是普通选中。
 
 若 timeline 关闭后仍保留当前页缓存，长文本过程事件会滞留在前端状态中。
 
@@ -366,6 +442,8 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 `src/components/SettingsPanel.tsx` 是设置 UI 入口。
 
+`src/api/sessionJumpApi.ts` 是前端跳回边界入口。
+
 ## 相关测试
 
 `pnpm architecture:check` 验证边界不变量。
@@ -392,10 +470,10 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 `src/stores/mockPanelStore.test.ts` 验证前端草稿隔离、选项选择隔离和 timeline 缓存释放。
 
-`src/stores/panelProbeStore.test.ts` 验证收缩状态不清理草稿边界。
-
-`src/views/BuilderPanelApp.test.ts` 验证阶段 7 合并排序、统计和动作标签。
+`src/views/BuilderPanelApp.test.ts` 验证阶段 7 合并排序、统计、动作标签和工具用量聚合。
 
 `src-tauri/src/services/settings_service.rs` 验证配置缺失、损坏和保存。
+
+`src/api/settingsApi.test.ts` 验证自定义快捷输入清洗。
 
 `src-tauri/src/services/notification_service.rs` 验证通知抑制、合并和点击定位。

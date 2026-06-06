@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use toml_edit::{value as toml_value, DocumentMut, Item, Table};
 
 use crate::domain::app_error::{AppError, AppErrorCode, FallbackAction};
 
@@ -119,6 +120,8 @@ impl HookInstallAgent {
 pub struct HookInstallPaths {
     /// Codex hooks.json 路径。
     pub codex_hooks_path: PathBuf,
+    /// Codex config.toml 路径。
+    pub codex_config_path: PathBuf,
     /// Claude settings.json 路径。
     pub claude_settings_path: PathBuf,
     /// 安装 manifest 路径。
@@ -139,6 +142,7 @@ impl HookInstallPaths {
 
         Self {
             codex_hooks_path: home.join(".codex").join("hooks.json"),
+            codex_config_path: home.join(".codex").join("config.toml"),
             claude_settings_path: home.join(".claude").join("settings.json"),
             manifest_path: config_home
                 .join("builder-panel")
@@ -152,6 +156,14 @@ impl HookInstallPaths {
         match agent {
             HookInstallAgent::Codex => &self.codex_hooks_path,
             HookInstallAgent::Claude => &self.claude_settings_path,
+        }
+    }
+
+    /// 返回指定 agent 的所有受管配置文件路径。
+    fn config_paths(&self, agent: HookInstallAgent) -> Vec<&Path> {
+        match agent {
+            HookInstallAgent::Codex => vec![&self.codex_hooks_path, &self.codex_config_path],
+            HookInstallAgent::Claude => vec![&self.claude_settings_path],
         }
     }
 }
@@ -205,11 +217,13 @@ impl HookInstaller {
         HookInstallPreview {
             files_to_modify: agents
                 .iter()
-                .map(|agent| self.paths.config_path(*agent).to_path_buf())
+                .flat_map(|agent| self.paths.config_paths(*agent))
+                .map(Path::to_path_buf)
                 .collect(),
             backup_files: agents
                 .iter()
-                .map(|agent| backup_path(self.paths.config_path(*agent)))
+                .flat_map(|agent| self.paths.config_paths(*agent))
+                .map(backup_path)
                 .collect(),
             manifest_path: self.paths.manifest_path.clone(),
         }
@@ -221,28 +235,17 @@ impl HookInstaller {
         let mut plans = Vec::new();
 
         for agent in agents {
-            let config_path = self.paths.config_path(agent);
-            let backup_path = backup_path(config_path);
-            let existed_before_install = config_path.exists();
-            let original_text = if existed_before_install {
-                Some(read_text(config_path, AppErrorCode::HookInstallFailed)?)
-            } else {
-                None
-            };
-            let mut config = read_json_object(config_path)?;
-            install_agent_hooks(&mut config, agent, &self.paths.hook_executable_path)?;
-
-            plans.push(HookInstallPlan {
-                entry: HookInstallManifestEntry {
-                    agent,
-                    config_path: config_path.to_path_buf(),
-                    existed_before_install,
-                    backup_path,
-                },
-                original_text,
-                next_value: Value::Object(config),
-            });
+            match agent {
+                HookInstallAgent::Codex => {
+                    plans.push(self.codex_hooks_plan(agent)?);
+                    plans.push(self.codex_config_plan(agent)?);
+                }
+                HookInstallAgent::Claude => {
+                    plans.push(self.json_hooks_plan(agent, self.paths.config_path(agent))?);
+                }
+            }
         }
+        apply_existing_manifest_backup_policy(&mut plans, &self.paths.manifest_path)?;
 
         let manifest = HookInstallManifest {
             entries: plans.iter().map(|plan| plan.entry.clone()).collect(),
@@ -256,6 +259,7 @@ impl HookInstaller {
         })?;
 
         let mut written_configs = Vec::new();
+        let protected_files = protect_install_files(&plans, &self.paths.manifest_path)?;
         let write_result = (|| {
             for plan in &plans {
                 ensure_parent_dir(&plan.entry.config_path, AppErrorCode::HookInstallFailed)?;
@@ -279,11 +283,22 @@ impl HookInstaller {
                     })?;
                 }
 
-                write_json_file(
-                    &plan.entry.config_path,
-                    &plan.next_value,
-                    AppErrorCode::HookInstallFailed,
-                )?;
+                match &plan.next_content {
+                    HookInstallPlanContent::Json(value) => {
+                        write_json_file(
+                            &plan.entry.config_path,
+                            value,
+                            AppErrorCode::HookInstallFailed,
+                        )?;
+                    }
+                    HookInstallPlanContent::Text(text) => {
+                        write_text_file(
+                            &plan.entry.config_path,
+                            text,
+                            AppErrorCode::HookInstallFailed,
+                        )?;
+                    }
+                }
                 written_configs.push(plan);
             }
 
@@ -296,6 +311,7 @@ impl HookInstaller {
 
         if let Err(error) = write_result {
             rollback_written_configs(written_configs);
+            restore_protected_files(&protected_files);
             return Err(error);
         }
 
@@ -349,6 +365,61 @@ impl HookInstaller {
 
         Ok(())
     }
+
+    fn codex_hooks_plan(&self, agent: HookInstallAgent) -> Result<HookInstallPlan, AppError> {
+        self.json_hooks_plan(agent, &self.paths.codex_hooks_path)
+    }
+
+    fn json_hooks_plan(
+        &self,
+        agent: HookInstallAgent,
+        config_path: &Path,
+    ) -> Result<HookInstallPlan, AppError> {
+        let backup_path = backup_path(config_path);
+        let existed_before_install = config_path.exists();
+        let original_text = if existed_before_install {
+            Some(read_text(config_path, AppErrorCode::HookInstallFailed)?)
+        } else {
+            None
+        };
+        let mut config = read_json_object(config_path)?;
+        install_agent_hooks(&mut config, agent, &self.paths.hook_executable_path)?;
+
+        Ok(HookInstallPlan {
+            entry: HookInstallManifestEntry {
+                agent,
+                config_path: config_path.to_path_buf(),
+                existed_before_install,
+                backup_path,
+            },
+            original_text,
+            next_content: HookInstallPlanContent::Json(Value::Object(config)),
+        })
+    }
+
+    fn codex_config_plan(&self, agent: HookInstallAgent) -> Result<HookInstallPlan, AppError> {
+        let config_path = &self.paths.codex_config_path;
+        let backup_path = backup_path(config_path);
+        let existed_before_install = config_path.exists();
+        let original_text = if existed_before_install {
+            Some(read_text(config_path, AppErrorCode::HookInstallFailed)?)
+        } else {
+            None
+        };
+        let current = original_text.clone().unwrap_or_default();
+        let next_text = enable_codex_hooks_feature(&current)?;
+
+        Ok(HookInstallPlan {
+            entry: HookInstallManifestEntry {
+                agent,
+                config_path: config_path.to_path_buf(),
+                existed_before_install,
+                backup_path,
+            },
+            original_text,
+            next_content: HookInstallPlanContent::Text(next_text),
+        })
+    }
 }
 
 /// hook 安装写入计划。
@@ -358,8 +429,26 @@ struct HookInstallPlan {
     entry: HookInstallManifestEntry,
     /// 安装前配置原文。
     original_text: Option<String>,
-    /// 将写入的配置 JSON。
-    next_value: Value,
+    /// 将写入的配置内容。
+    next_content: HookInstallPlanContent,
+}
+
+/// 安装前需要保护的文件。
+#[derive(Clone, Debug)]
+struct ProtectedInstallFile {
+    /// 文件路径。
+    path: PathBuf,
+    /// 安装前内容。
+    content: Option<Vec<u8>>,
+}
+
+/// hook 安装写入内容。
+#[derive(Clone, Debug)]
+enum HookInstallPlanContent {
+    /// JSON 文件。
+    Json(Value),
+    /// 文本文件。
+    Text(String),
 }
 
 /// 单个 hook 事件配置。
@@ -459,6 +548,38 @@ fn is_builder_panel_hook(value: &Value) -> bool {
         .is_some_and(|command| command.contains("builder-panel-hook"))
 }
 
+fn enable_codex_hooks_feature(contents: &str) -> Result<String, AppError> {
+    let mut document = parse_codex_config_toml(contents)?;
+    let features = document
+        .as_table_mut()
+        .entry("features")
+        .or_insert_with(|| Item::Table(Table::new()));
+    let Some(features_table) = features.as_table_mut() else {
+        return Err(hook_error(
+            AppErrorCode::HookInstallFailed,
+            "Codex 配置格式无效",
+            "features 不是 TOML table".to_string(),
+        ));
+    };
+
+    features_table["hooks"] = toml_value(true);
+    features_table.remove("codex_hooks");
+
+    let next_text = document.to_string();
+    parse_codex_config_toml(&next_text)?;
+    Ok(next_text)
+}
+
+fn parse_codex_config_toml(contents: &str) -> Result<DocumentMut, AppError> {
+    contents.parse::<DocumentMut>().map_err(|error| {
+        hook_error(
+            AppErrorCode::HookInstallFailed,
+            "Codex 配置 TOML 无效",
+            error.to_string(),
+        )
+    })
+}
+
 fn hook_command(path: &Path, agent: HookInstallAgent) -> String {
     let escaped_path = path.to_string_lossy().replace('"', "\\\"");
     format!("\"{escaped_path}\" --source {}", agent.source_arg())
@@ -495,6 +616,11 @@ fn write_json_file(path: &Path, value: &Value, code: AppErrorCode) -> Result<(),
     ensure_parent_dir(path, code.clone())?;
     let text = serde_json::to_string_pretty(value)
         .map_err(|error| hook_error(code.clone(), "hook 配置编码失败", error.to_string()))?;
+    write_text_file(path, &text, code)
+}
+
+fn write_text_file(path: &Path, text: &str, code: AppErrorCode) -> Result<(), AppError> {
+    ensure_parent_dir(path, code.clone())?;
     let temp_path = atomic_temp_path(path);
     let mut temp_file = fs::OpenOptions::new()
         .write(true)
@@ -559,6 +685,102 @@ fn hook_error(code: AppErrorCode, message: &str, detail: String) -> AppError {
     )
 }
 
+fn protect_install_files(
+    plans: &[HookInstallPlan],
+    manifest_path: &Path,
+) -> Result<Vec<ProtectedInstallFile>, AppError> {
+    let mut paths = Vec::new();
+    for plan in plans {
+        if !paths.contains(&plan.entry.backup_path) {
+            paths.push(plan.entry.backup_path.clone());
+        }
+    }
+    if !paths.iter().any(|path| path == manifest_path) {
+        paths.push(manifest_path.to_path_buf());
+    }
+
+    paths
+        .into_iter()
+        .map(|path| {
+            let content = if path.exists() {
+                Some(fs::read(&path).map_err(|error| {
+                    hook_error(
+                        AppErrorCode::HookInstallFailed,
+                        "hook 安装保护文件读取失败",
+                        error.to_string(),
+                    )
+                })?)
+            } else {
+                None
+            };
+            Ok(ProtectedInstallFile { path, content })
+        })
+        .collect()
+}
+
+fn apply_existing_manifest_backup_policy(
+    plans: &mut [HookInstallPlan],
+    manifest_path: &Path,
+) -> Result<(), AppError> {
+    if !manifest_path.exists() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(manifest_path).map_err(|error| {
+        hook_error(
+            AppErrorCode::HookInstallFailed,
+            "旧 hook 安装 manifest 读取失败",
+            error.to_string(),
+        )
+    })?;
+    let manifest: HookInstallManifest = serde_json::from_str(&text).map_err(|error| {
+        hook_error(
+            AppErrorCode::HookInstallFailed,
+            "旧 hook 安装 manifest 格式无效",
+            error.to_string(),
+        )
+    })?;
+
+    for plan in plans {
+        let Some(existing_entry) = manifest
+            .entries
+            .iter()
+            .find(|entry| entry.config_path == plan.entry.config_path)
+        else {
+            continue;
+        };
+        plan.entry.existed_before_install = existing_entry.existed_before_install;
+        plan.entry.backup_path = existing_entry.backup_path.clone();
+        plan.original_text = if existing_entry.existed_before_install {
+            Some(read_text(
+                &existing_entry.backup_path,
+                AppErrorCode::HookInstallFailed,
+            )?)
+        } else {
+            None
+        };
+    }
+
+    Ok(())
+}
+
+fn restore_protected_files(files: &[ProtectedInstallFile]) {
+    for file in files {
+        match &file.content {
+            Some(content) => {
+                if let Some(parent) = file.path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::write(&file.path, content);
+            }
+            None => {
+                if file.path.exists() {
+                    let _ = fs::remove_file(&file.path);
+                }
+            }
+        }
+    }
+}
+
 fn rollback_written_configs(plans: Vec<&HookInstallPlan>) {
     for plan in plans.into_iter().rev() {
         if let Some(original_text) = &plan.original_text {
@@ -584,10 +806,17 @@ fn unique_agents(agents: &[HookInstallAgent]) -> Vec<HookInstallAgent> {
 
 #[cfg(test)]
 mod tests {
-    use super::{HookInstallAgent, HookInstallPaths, HookInstaller};
+    use super::{
+        backup_path, enable_codex_hooks_feature, write_text_file, HookInstallAgent,
+        HookInstallPaths, HookInstaller,
+    };
+    use crate::domain::app_error::AppErrorCode;
     use serde_json::Value;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use toml_edit::DocumentMut;
 
     #[test]
     fn preview_lists_target_configs_backups_and_manifest() {
@@ -600,13 +829,19 @@ mod tests {
             HookInstallAgent::Claude,
         ]);
 
-        assert_eq!(preview.files_to_modify.len(), 2);
+        assert_eq!(preview.files_to_modify.len(), 3);
         assert!(preview
             .files_to_modify
             .contains(&root.join("codex").join("hooks.json")));
         assert!(preview
+            .files_to_modify
+            .contains(&root.join("codex").join("config.toml")));
+        assert!(preview
             .backup_files
             .contains(&root.join("codex").join("hooks.json.builder-panel.bak")));
+        assert!(preview
+            .backup_files
+            .contains(&root.join("codex").join("config.toml.builder-panel.bak")));
         assert_eq!(
             preview.manifest_path,
             root.join("builder-panel")
@@ -620,6 +855,7 @@ mod tests {
         let root = fixture_root("codex-install");
         let hook_path = root.join("bin").join("builder-panel-hook");
         let codex_path = root.join("codex").join("hooks.json");
+        let codex_config_path = root.join("codex").join("config.toml");
         fs::create_dir_all(codex_path.parent().expect("parent should exist"))
             .expect("parent should create");
         fs::write(
@@ -634,10 +870,14 @@ mod tests {
             .expect("hook should install");
         let value = read_json(&codex_path);
 
-        assert_eq!(manifest.entries.len(), 1);
+        assert_eq!(manifest.entries.len(), 2);
         assert!(codex_path
             .with_file_name("hooks.json.builder-panel.bak")
             .exists());
+        assert!(codex_config_path.exists());
+        assert!(fs::read_to_string(&codex_config_path)
+            .expect("config should read")
+            .contains("hooks = true"));
         assert_eq!(
             value["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
             format!("\"{}\" --source codex", hook_path.to_string_lossy())
@@ -676,6 +916,44 @@ mod tests {
 
         assert_eq!(stop_groups.len(), 2);
         assert_eq!(stop_groups[0]["hooks"][0]["command"], "echo other");
+        cleanup(root);
+    }
+
+    #[test]
+    fn repeated_successful_install_uninstalls_to_original_config() {
+        let root = fixture_root("repeat-success-uninstall");
+        let hook_paths = paths(&root);
+        fs::create_dir_all(
+            hook_paths
+                .codex_hooks_path
+                .parent()
+                .expect("codex parent should exist"),
+        )
+        .expect("codex parent should create");
+        let original_hooks = r#"{"hooks":{"Stop":[]}}"#;
+        let original_config = "[features]\nhooks = false\n";
+        fs::write(&hook_paths.codex_hooks_path, original_hooks)
+            .expect("hooks fixture should write");
+        fs::write(&hook_paths.codex_config_path, original_config)
+            .expect("config fixture should write");
+        let installer = HookInstaller::new(hook_paths.clone());
+
+        installer
+            .install(&[HookInstallAgent::Codex])
+            .expect("first install should succeed");
+        installer
+            .install(&[HookInstallAgent::Codex])
+            .expect("second install should succeed");
+        installer.uninstall().expect("uninstall should succeed");
+
+        assert_eq!(
+            fs::read_to_string(&hook_paths.codex_hooks_path).expect("hooks should read"),
+            original_hooks
+        );
+        assert_eq!(
+            fs::read_to_string(&hook_paths.codex_config_path).expect("config should read"),
+            original_config
+        );
         cleanup(root);
     }
 
@@ -720,7 +998,7 @@ mod tests {
         installer.uninstall().expect("hook should uninstall");
         let restored = fs::read_to_string(&codex_path).expect("config should restore");
 
-        assert_eq!(manifest.entries.len(), 1);
+        assert_eq!(manifest.entries.len(), 2);
         assert_eq!(restored, r#"{"hooks":{"Stop":[]}}"#);
         cleanup(root);
     }
@@ -811,6 +1089,86 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn repeated_install_failure_keeps_previous_backups_and_manifest() {
+        let root = fixture_root("repeat-install-backup-rollback");
+        let hook_paths = paths(&root);
+        fs::create_dir_all(
+            hook_paths
+                .codex_hooks_path
+                .parent()
+                .expect("codex parent should exist"),
+        )
+        .expect("codex parent should create");
+        fs::write(&hook_paths.codex_hooks_path, r#"{"hooks":{"Stop":[]}}"#)
+            .expect("hooks fixture should write");
+        fs::write(&hook_paths.codex_config_path, "[features]\nhooks = false\n")
+            .expect("config fixture should write");
+        let installer = HookInstaller::new(hook_paths.clone());
+        installer
+            .install(&[HookInstallAgent::Codex])
+            .expect("first install should succeed");
+        let hooks_backup_path = backup_path(&hook_paths.codex_hooks_path);
+        let config_backup_path = backup_path(&hook_paths.codex_config_path);
+        let hooks_backup =
+            fs::read_to_string(&hooks_backup_path).expect("hooks backup should read");
+        let config_backup =
+            fs::read_to_string(&config_backup_path).expect("config backup should read");
+        let manifest = fs::read_to_string(&hook_paths.manifest_path).expect("manifest should read");
+        let mut permissions = fs::metadata(
+            hook_paths
+                .manifest_path
+                .parent()
+                .expect("manifest parent should exist"),
+        )
+        .expect("manifest parent metadata should read")
+        .permissions();
+        permissions.set_mode(0o555);
+        fs::set_permissions(
+            hook_paths
+                .manifest_path
+                .parent()
+                .expect("manifest parent should exist"),
+            permissions,
+        )
+        .expect("manifest parent permissions should set");
+
+        let result = installer.install(&[HookInstallAgent::Codex]);
+
+        let mut permissions = fs::metadata(
+            hook_paths
+                .manifest_path
+                .parent()
+                .expect("manifest parent should exist"),
+        )
+        .expect("manifest parent metadata should read")
+        .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(
+            hook_paths
+                .manifest_path
+                .parent()
+                .expect("manifest parent should exist"),
+            permissions,
+        )
+        .expect("manifest parent permissions should restore");
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(&hooks_backup_path).expect("hooks backup should reread"),
+            hooks_backup
+        );
+        assert_eq!(
+            fs::read_to_string(&config_backup_path).expect("config backup should reread"),
+            config_backup
+        );
+        assert_eq!(
+            fs::read_to_string(&hook_paths.manifest_path).expect("manifest should reread"),
+            manifest
+        );
+        cleanup(root);
+    }
+
+    #[test]
     fn install_does_not_write_first_agent_when_second_agent_is_invalid() {
         let root = fixture_root("second-agent-invalid");
         let codex_path = root.join("codex").join("hooks.json");
@@ -835,9 +1193,70 @@ mod tests {
         cleanup(root);
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn text_write_failure_keeps_existing_config() {
+        let root = fixture_root("text-write-failure");
+        let config_path = root.join("codex").join("config.toml");
+        fs::create_dir_all(config_path.parent().expect("parent should exist"))
+            .expect("parent should create");
+        fs::write(&config_path, "[features]\nhooks = false\n").expect("fixture should write");
+        let mut permissions = fs::metadata(config_path.parent().expect("parent should exist"))
+            .expect("metadata should read")
+            .permissions();
+        permissions.set_mode(0o555);
+        fs::set_permissions(
+            config_path.parent().expect("parent should exist"),
+            permissions,
+        )
+        .expect("permissions should set");
+
+        let result = write_text_file(
+            &config_path,
+            "[features]\nhooks = true\n",
+            AppErrorCode::HookInstallFailed,
+        );
+
+        let mut permissions = fs::metadata(config_path.parent().expect("parent should exist"))
+            .expect("metadata should read")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(
+            config_path.parent().expect("parent should exist"),
+            permissions,
+        )
+        .expect("permissions should restore");
+        let current = fs::read_to_string(&config_path).expect("config should read");
+
+        assert!(result.is_err());
+        assert_eq!(current, "[features]\nhooks = false\n");
+        cleanup(root);
+    }
+
+    #[test]
+    fn codex_config_feature_edit_handles_toml_format_variants() {
+        let edited =
+            enable_codex_hooks_feature("# user config\n[ features ]\n\"codex_hooks\" = false\n")
+                .expect("config should edit");
+
+        edited
+            .parse::<DocumentMut>()
+            .expect("edited config should remain valid TOML");
+        assert!(edited.contains("hooks = true"));
+        assert!(!edited.contains("codex_hooks"));
+    }
+
+    #[test]
+    fn codex_config_feature_edit_rejects_invalid_toml() {
+        let result = enable_codex_hooks_feature("[features\nhooks = false\n");
+
+        assert!(result.is_err());
+    }
+
     fn paths(root: &PathBuf) -> HookInstallPaths {
         HookInstallPaths {
             codex_hooks_path: root.join("codex").join("hooks.json"),
+            codex_config_path: root.join("codex").join("config.toml"),
             claude_settings_path: root.join("claude").join("settings.json"),
             manifest_path: root
                 .join("builder-panel")

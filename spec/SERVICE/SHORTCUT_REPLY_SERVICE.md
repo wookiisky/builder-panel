@@ -2,11 +2,13 @@
 
 ## 模块职责
 
-Shortcut Reply Service 负责根据当前 session 过滤可用快捷回复。
+Shortcut Reply Service 负责根据当前 session 过滤服务端配置的快捷回复。
 
 Shortcut Reply Service 只处理配置内快捷回复的启用状态、agent 绑定、项目绑定和排序。
 
 Shortcut Reply Service 不直接发送回复，不绕过 Reply Service 的能力校验和 pending 校验。
+
+前端自定义快捷输入属于 Settings Service 的 Replies 设置，不由 Shortcut Reply Service 过滤。
 
 ## 代码入口
 
@@ -15,6 +17,8 @@ Shortcut Reply Service 不直接发送回复，不绕过 Reply Service 的能力
 `src-tauri/src/services/reply_service.rs` 是快捷回复最终发送复用的文本回复入口。
 
 `src/views/BuilderPanelApp.tsx` 是阶段 5 前端快捷回复展示入口。
+
+`src/components/SettingsPanel.tsx` 是前端自定义快捷输入编辑入口。
 
 ## 核心流程
 
@@ -34,6 +38,10 @@ Shortcut Reply Service 按排序值、标签和 ID 输出稳定顺序。
 
 发送失败时，快捷回复内容写回当前 session 草稿。
 
+无选项的行内回复区会展示已启用的自定义快捷输入。
+
+自定义快捷输入点击后复用文本回复或 follow-up 提交流程。
+
 ## 边界与错误
 
 快捷回复不改变 session pending 状态。
@@ -44,8 +52,12 @@ Shortcut Reply Service 按排序值、标签和 ID 输出稳定顺序。
 
 回写失败由 Reply Service 收敛，pending 和草稿保留。
 
+自定义快捷输入不得绕过当前 session 的交互能力校验。
+
 ## 相关测试
 
 `src-tauri/src/services/shortcut_reply_service.rs` 覆盖启用状态、agent 绑定、项目绑定和排序。
 
 `src/stores/mockPanelStore.test.ts` 覆盖回复草稿按 session 隔离和失败保留所需状态。
+
+`src/api/settingsApi.test.ts` 覆盖自定义快捷输入边界清洗。

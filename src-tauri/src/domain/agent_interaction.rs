@@ -110,6 +110,8 @@ pub struct InteractionChoice {
     pub value: String,
     /// 选项展示标签。
     pub label: String,
+    /// 可选悬停说明。
+    pub tooltip: Option<String>,
 }
 
 /// 选择请求交互。

@@ -244,10 +244,12 @@ const fallbackDetails = new Map<string, SessionDetailViewModel>([
           {
             value: "plan-a",
             label: "先完成 mock 闭环",
+            tooltip: "优先验证前端审批、回复和选项闭环",
           },
           {
             value: "plan-b",
             label: "先补真实终端 adapter",
+            tooltip: "优先推进真实终端跳回能力",
           },
         ],
         disabled_reason: null,
@@ -357,12 +359,110 @@ function sessionItem(
     status_kind: statusKind,
     summary: { text: summary, truncated: false, max_chars: 96 },
     updated_at_label: "1000",
-    usage_5h: { value_label: usage5h, source_label: null },
-    usage_weekly: {
-      value_label: usage5h === "--" ? "--" : "64 percent",
-      source_label: null,
-    },
+    usage_5h: usageValue(usage5h, "mock-status-5h"),
+    usage_weekly: usageValue(
+      usage5h === "--" ? "--" : "64 percent",
+      "mock-status-weekly",
+    ),
     actions,
+    inline_interaction: inlineInteraction(
+      sessionKey,
+      statusKind,
+      summary,
+      actions,
+    ),
+  };
+}
+
+/// 创建 fallback 用量值。
+function usageValue(
+  label: string,
+  sourceKey: string,
+): SessionListItemViewModel["usage_5h"] {
+  if (label === "--") {
+    return {
+      value_label: "--",
+      amount_label: null,
+      unit: null,
+      source_key: null,
+      source_label: null,
+      scope: null,
+      updated_at: null,
+    };
+  }
+
+  const [amountLabel, unit] = label.split(" ");
+  return {
+    value_label: label,
+    amount_label: amountLabel,
+    unit: unit ?? null,
+    source_key: sourceKey,
+    source_label: "Mock /status",
+    scope: "session",
+    updated_at: { value: 1000 },
+  };
+}
+
+/// 创建 fallback 行内交互。
+function inlineInteraction(
+  sessionKey: SessionKey,
+  statusKind: SessionListItemViewModel["status_kind"],
+  summary: string,
+  actions: SessionListItemViewModel["actions"],
+): SessionListItemViewModel["inline_interaction"] {
+  const interactionId =
+    statusKind === "waiting_for_approval"
+      ? { value: "approval-1" }
+      : statusKind === "waiting_for_answer" &&
+          sessionKey.conversation_id.value === "reply-turn"
+        ? { value: "reply-1" }
+        : statusKind === "waiting_for_answer" &&
+            sessionKey.conversation_id.value === "choice-turn"
+          ? { value: "choice-1" }
+          : null;
+  const kind =
+    interactionId?.value === "approval-1"
+      ? "approval"
+      : interactionId?.value === "reply-1"
+        ? "text_reply"
+        : interactionId?.value === "choice-1"
+          ? "choice"
+          : null;
+
+  return {
+    summary: interactionId === null ? null : summary,
+    interaction_id: interactionId,
+    kind,
+    can_jump: actions.includes("jump"),
+    can_send_reply: actions.includes("send_reply"),
+    can_resolve_approval: actions.includes("resolve_approval"),
+    can_create_followup_turn: actions.includes("create_followup_turn"),
+    can_view_process_timeline: actions.includes("view_process_timeline"),
+    choice_box:
+      kind === "choice"
+        ? {
+            enabled: true,
+            allows_multiple: false,
+            choices: [
+              {
+                value: "plan-a",
+                label: "先完成 mock 闭环",
+                tooltip: "优先验证前端审批、回复和选项闭环",
+              },
+              {
+                value: "plan-b",
+                label: "先补真实终端 adapter",
+                tooltip: "优先推进真实终端跳回能力",
+              },
+            ],
+            disabled_reason: null,
+          }
+        : {
+            enabled: false,
+            allows_multiple: false,
+            choices: [],
+            disabled_reason: "当前会话没有选项交互",
+          },
   };
 }
 
