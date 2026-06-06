@@ -17,6 +17,7 @@ export const defaultSettings = (): BuilderPanelSettings => ({
   },
   display: {
     show_usage: true,
+    theme: "light",
     density: "comfortable",
     animation_level: "full",
   },
@@ -95,9 +96,10 @@ const readFallbackSettings = (): SettingsViewModel => {
 
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (isBuilderPanelSettings(parsed)) {
+    const normalizedSettings = normalizeFallbackSettings(parsed);
+    if (normalizedSettings !== null) {
       return {
-        settings: parsed,
+        settings: normalizedSettings,
         status_message: null,
       };
     }
@@ -111,102 +113,228 @@ const readFallbackSettings = (): SettingsViewModel => {
   };
 };
 
-/// 校验浏览器 fallback 设置结构。
-const isBuilderPanelSettings = (
+/// 归一浏览器 fallback 设置结构。
+export const normalizeFallbackSettings = (
   value: unknown,
-): value is BuilderPanelSettings => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+): BuilderPanelSettings | null => {
+  if (!isObjectRecord(value)) {
+    return null;
   }
 
   const candidate = value as Partial<BuilderPanelSettings>;
-  return (
-    isGeneralSettings(candidate.general) &&
-    isDisplaySettings(candidate.display) &&
-    isPanelSettings(candidate.panel) &&
-    isAgentSettings(candidate.agents) &&
-    isReplySettings(candidate.replies) &&
-    isPresetSettings(candidate.presets) &&
-    isTerminalSettings(candidate.terminal) &&
-    isAdvancedSettings(candidate.advanced)
+  const defaults = defaultSettings();
+  const general = normalizeGeneralSettings(candidate.general, defaults.general);
+  const display = normalizeDisplaySettings(candidate.display, defaults.display);
+  const panel = normalizePanelSettings(candidate.panel, defaults.panel);
+  const agents = normalizeAgentSettings(candidate.agents, defaults.agents);
+  const replies = normalizeReplySettings(candidate.replies, defaults.replies);
+  const presets = normalizePresetSettings(candidate.presets, defaults.presets);
+  const terminal = normalizeTerminalSettings(
+    candidate.terminal,
+    defaults.terminal,
   );
+  const advanced = normalizeAdvancedSettings(
+    candidate.advanced,
+    defaults.advanced,
+  );
+
+  if (
+    general === null ||
+    display === null ||
+    panel === null ||
+    agents === null ||
+    replies === null ||
+    presets === null ||
+    terminal === null ||
+    advanced === null
+  ) {
+    return null;
+  }
+
+  return {
+    general,
+    display,
+    panel,
+    agents,
+    replies,
+    presets,
+    terminal,
+    advanced,
+  };
 };
 
-/// 校验通用设置。
-const isGeneralSettings = (
+/// 归一通用设置。
+const normalizeGeneralSettings = (
   value: unknown,
-): value is BuilderPanelSettings["general"] => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  defaults: BuilderPanelSettings["general"],
+): BuilderPanelSettings["general"] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!isObjectRecord(value)) {
+    return null;
   }
 
   const candidate = value as Partial<BuilderPanelSettings["general"]>;
-  return (
-    typeof candidate.keep_panel_on_top === "boolean" &&
-    typeof candidate.notify_on_completion === "boolean" &&
-    typeof candidate.notify_on_waiting === "boolean"
+  const keepPanelOnTop = normalizeBoolean(
+    candidate.keep_panel_on_top,
+    defaults.keep_panel_on_top,
   );
+  const notifyOnCompletion = normalizeBoolean(
+    candidate.notify_on_completion,
+    defaults.notify_on_completion,
+  );
+  const notifyOnWaiting = normalizeBoolean(
+    candidate.notify_on_waiting,
+    defaults.notify_on_waiting,
+  );
+
+  if (
+    keepPanelOnTop === null ||
+    notifyOnCompletion === null ||
+    notifyOnWaiting === null
+  ) {
+    return null;
+  }
+
+  return {
+    keep_panel_on_top: keepPanelOnTop,
+    notify_on_completion: notifyOnCompletion,
+    notify_on_waiting: notifyOnWaiting,
+  };
 };
 
-/// 校验展示设置。
-const isDisplaySettings = (
+/// 归一展示设置。
+const normalizeDisplaySettings = (
   value: unknown,
-): value is BuilderPanelSettings["display"] => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  defaults: BuilderPanelSettings["display"],
+): BuilderPanelSettings["display"] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!isObjectRecord(value)) {
+    return null;
   }
 
   const candidate = value as Partial<BuilderPanelSettings["display"]>;
-  return (
-    typeof candidate.show_usage === "boolean" &&
-    (candidate.density === "comfortable" || candidate.density === "compact") &&
-    (candidate.animation_level === "full" ||
-      candidate.animation_level === "reduced")
+  const showUsage = normalizeBoolean(candidate.show_usage, defaults.show_usage);
+  const theme = normalizeStringUnion(candidate.theme, defaults.theme, [
+    "light",
+    "dark",
+  ]);
+  const density = normalizeStringUnion(candidate.density, defaults.density, [
+    "comfortable",
+    "compact",
+  ]);
+  const animationLevel = normalizeStringUnion(
+    candidate.animation_level,
+    defaults.animation_level,
+    ["full", "reduced"],
   );
+
+  if (
+    showUsage === null ||
+    theme === null ||
+    density === null ||
+    animationLevel === null
+  ) {
+    return null;
+  }
+
+  return {
+    show_usage: showUsage,
+    theme,
+    density,
+    animation_level: animationLevel,
+  };
 };
 
-/// 校验 panel 设置。
-const isPanelSettings = (
+/// 归一 panel 设置。
+const normalizePanelSettings = (
   value: unknown,
-): value is BuilderPanelSettings["panel"] => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  defaults: BuilderPanelSettings["panel"],
+): BuilderPanelSettings["panel"] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!isObjectRecord(value)) {
+    return null;
   }
 
   const candidate = value as Partial<BuilderPanelSettings["panel"]>;
-  return (
-    typeof candidate.collapsed === "boolean" &&
-    isPanelWindowPosition(candidate.window_position) &&
-    isPanelWindowSize(candidate.window_size)
+  const collapsed = normalizeBoolean(candidate.collapsed, defaults.collapsed);
+  const windowPosition = normalizePanelWindowPosition(
+    candidate.window_position,
+    defaults.window_position,
   );
+  const windowSize = normalizePanelWindowSize(
+    candidate.window_size,
+    defaults.window_size,
+  );
+
+  if (
+    collapsed === null ||
+    windowPosition === undefined ||
+    windowSize === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    collapsed,
+    window_position: windowPosition,
+    window_size: windowSize,
+  };
 };
 
-/// 校验 panel 位置。
-const isPanelWindowPosition = (
+/// 归一 panel 位置。
+const normalizePanelWindowPosition = (
   value: unknown,
-): value is BuilderPanelSettings["panel"]["window_position"] => {
-  if (value === null) {
-    return true;
+  defaults: BuilderPanelSettings["panel"]["window_position"],
+): BuilderPanelSettings["panel"]["window_position"] | undefined => {
+  if (value === undefined) {
+    return defaults;
   }
-  if (typeof value !== "object") {
-    return false;
+  if (value === null) {
+    return null;
+  }
+  if (!isObjectRecord(value)) {
+    return undefined;
   }
 
   const candidate = value as Partial<
     NonNullable<BuilderPanelSettings["panel"]["window_position"]>
   >;
-  return Number.isInteger(candidate.x) && Number.isInteger(candidate.y);
+  const x = candidate.x;
+  const y = candidate.y;
+  if (
+    x === undefined ||
+    y === undefined ||
+    !Number.isInteger(x) ||
+    !Number.isInteger(y)
+  ) {
+    return undefined;
+  }
+
+  return {
+    x,
+    y,
+  };
 };
 
-/// 校验 panel 尺寸。
-const isPanelWindowSize = (
+/// 归一 panel 尺寸。
+const normalizePanelWindowSize = (
   value: unknown,
-): value is BuilderPanelSettings["panel"]["window_size"] => {
-  if (value === null) {
-    return true;
+  defaults: BuilderPanelSettings["panel"]["window_size"],
+): BuilderPanelSettings["panel"]["window_size"] | undefined => {
+  if (value === undefined) {
+    return defaults;
   }
-  if (typeof value !== "object") {
-    return false;
+  if (value === null) {
+    return null;
+  }
+  if (!isObjectRecord(value)) {
+    return undefined;
   }
 
   const candidate = value as Partial<
@@ -214,86 +342,226 @@ const isPanelWindowSize = (
   >;
   const width = candidate.width;
   const height = candidate.height;
-  return (
-    Number.isInteger(width) &&
-    Number.isInteger(height) &&
-    width !== undefined &&
-    height !== undefined &&
-    width > 0 &&
-    height > 0
-  );
+  if (
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width === undefined ||
+    height === undefined ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    width,
+    height,
+  };
 };
 
-/// 校验 Agent 设置。
-const isAgentSettings = (
+/// 归一 Agent 设置。
+const normalizeAgentSettings = (
   value: unknown,
-): value is BuilderPanelSettings["agents"] => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  defaults: BuilderPanelSettings["agents"],
+): BuilderPanelSettings["agents"] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!isObjectRecord(value)) {
+    return null;
   }
 
   const candidate = value as Partial<BuilderPanelSettings["agents"]>;
-  return (
-    typeof candidate.mock_agent_enabled === "boolean" &&
-    typeof candidate.codex_cli_enabled === "boolean" &&
-    typeof candidate.codex_app_enabled === "boolean" &&
-    typeof candidate.claude_cli_enabled === "boolean" &&
-    typeof candidate.claude_app_enabled === "boolean"
+  const mockAgentEnabled = normalizeBoolean(
+    candidate.mock_agent_enabled,
+    defaults.mock_agent_enabled,
   );
+  const codexCliEnabled = normalizeBoolean(
+    candidate.codex_cli_enabled,
+    defaults.codex_cli_enabled,
+  );
+  const codexAppEnabled = normalizeBoolean(
+    candidate.codex_app_enabled,
+    defaults.codex_app_enabled,
+  );
+  const claudeCliEnabled = normalizeBoolean(
+    candidate.claude_cli_enabled,
+    defaults.claude_cli_enabled,
+  );
+  const claudeAppEnabled = normalizeBoolean(
+    candidate.claude_app_enabled,
+    defaults.claude_app_enabled,
+  );
+
+  if (
+    mockAgentEnabled === null ||
+    codexCliEnabled === null ||
+    codexAppEnabled === null ||
+    claudeCliEnabled === null ||
+    claudeAppEnabled === null
+  ) {
+    return null;
+  }
+
+  return {
+    mock_agent_enabled: mockAgentEnabled,
+    codex_cli_enabled: codexCliEnabled,
+    codex_app_enabled: codexAppEnabled,
+    claude_cli_enabled: claudeCliEnabled,
+    claude_app_enabled: claudeAppEnabled,
+  };
 };
 
-/// 校验回复设置。
-const isReplySettings = (
+/// 归一回复设置。
+const normalizeReplySettings = (
   value: unknown,
-): value is BuilderPanelSettings["replies"] => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  defaults: BuilderPanelSettings["replies"],
+): BuilderPanelSettings["replies"] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!isObjectRecord(value)) {
+    return null;
   }
 
   const candidate = value as Partial<BuilderPanelSettings["replies"]>;
-  return (
-    typeof candidate.enter_to_send === "boolean" &&
-    typeof candidate.shortcut_replies_enabled === "boolean"
+  const enterToSend = normalizeBoolean(
+    candidate.enter_to_send,
+    defaults.enter_to_send,
   );
+  const shortcutRepliesEnabled = normalizeBoolean(
+    candidate.shortcut_replies_enabled,
+    defaults.shortcut_replies_enabled,
+  );
+
+  if (enterToSend === null || shortcutRepliesEnabled === null) {
+    return null;
+  }
+
+  return {
+    enter_to_send: enterToSend,
+    shortcut_replies_enabled: shortcutRepliesEnabled,
+  };
 };
 
-/// 校验预设设置。
-const isPresetSettings = (
+/// 归一预设设置。
+const normalizePresetSettings = (
   value: unknown,
-): value is BuilderPanelSettings["presets"] => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  defaults: BuilderPanelSettings["presets"],
+): BuilderPanelSettings["presets"] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!isObjectRecord(value)) {
+    return null;
   }
 
   const candidate = value as Partial<BuilderPanelSettings["presets"]>;
-  return typeof candidate.prefer_structured_create === "boolean";
+  const preferStructuredCreate = normalizeBoolean(
+    candidate.prefer_structured_create,
+    defaults.prefer_structured_create,
+  );
+  if (preferStructuredCreate === null) {
+    return null;
+  }
+
+  return {
+    prefer_structured_create: preferStructuredCreate,
+  };
 };
 
-/// 校验终端设置。
-const isTerminalSettings = (
+/// 归一终端设置。
+const normalizeTerminalSettings = (
   value: unknown,
-): value is BuilderPanelSettings["terminal"] => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  defaults: BuilderPanelSettings["terminal"],
+): BuilderPanelSettings["terminal"] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!isObjectRecord(value)) {
+    return null;
   }
 
   const candidate = value as Partial<BuilderPanelSettings["terminal"]>;
-  return (
-    typeof candidate.jump_enabled === "boolean" &&
-    typeof candidate.copy_fallback_enabled === "boolean"
+  const jumpEnabled = normalizeBoolean(
+    candidate.jump_enabled,
+    defaults.jump_enabled,
   );
+  const copyFallbackEnabled = normalizeBoolean(
+    candidate.copy_fallback_enabled,
+    defaults.copy_fallback_enabled,
+  );
+
+  if (jumpEnabled === null || copyFallbackEnabled === null) {
+    return null;
+  }
+
+  return {
+    jump_enabled: jumpEnabled,
+    copy_fallback_enabled: copyFallbackEnabled,
+  };
 };
 
-/// 校验高级设置。
-const isAdvancedSettings = (
+/// 归一高级设置。
+const normalizeAdvancedSettings = (
   value: unknown,
-): value is BuilderPanelSettings["advanced"] => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  defaults: BuilderPanelSettings["advanced"],
+): BuilderPanelSettings["advanced"] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!isObjectRecord(value)) {
+    return null;
   }
 
   const candidate = value as Partial<BuilderPanelSettings["advanced"]>;
-  return typeof candidate.developer_diagnostics === "boolean";
+  const developerDiagnostics = normalizeBoolean(
+    candidate.developer_diagnostics,
+    defaults.developer_diagnostics,
+  );
+  if (developerDiagnostics === null) {
+    return null;
+  }
+
+  return {
+    developer_diagnostics: developerDiagnostics,
+  };
+};
+
+/// 归一布尔字段。
+const normalizeBoolean = (
+  value: unknown,
+  defaults: boolean,
+): boolean | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  return null;
+};
+
+/// 归一字符串枚举字段。
+const normalizeStringUnion = <Value extends string>(
+  value: unknown,
+  defaults: Value,
+  allowedValues: readonly Value[],
+): Value | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (typeof value === "string" && allowedValues.includes(value as Value)) {
+    return value as Value;
+  }
+
+  return null;
+};
+
+/// 判断值是否为对象记录。
+const isObjectRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 };
 
 /// 创建保留 cause 的错误。

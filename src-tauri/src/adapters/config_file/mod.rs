@@ -260,6 +260,7 @@ mod tests {
             .expect("settings should exist");
 
         assert_eq!(settings.display.show_usage, false);
+        assert_eq!(settings.display.theme, Default::default());
         assert_eq!(settings.display.density, Default::default());
         assert_eq!(settings.general, Default::default());
         assert_eq!(settings.agents, Default::default());

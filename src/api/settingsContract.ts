@@ -1,6 +1,9 @@
 /// UI 密度。
 export type UiDensity = "comfortable" | "compact";
 
+/// UI 主题。
+export type UiTheme = "light" | "dark";
+
 /// 动画等级。
 export type AnimationLevel = "full" | "reduced";
 
@@ -18,6 +21,8 @@ export interface GeneralSettings {
 export interface DisplaySettings {
   /// 是否展示用量信息。
   readonly show_usage: boolean;
+  /// UI 主题。
+  readonly theme: UiTheme;
   /// UI 密度。
   readonly density: UiDensity;
   /// 动画等级。

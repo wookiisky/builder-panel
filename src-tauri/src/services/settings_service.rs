@@ -22,6 +22,23 @@ impl Default for UiDensity {
     }
 }
 
+/// UI 主题。
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiTheme {
+    /// 浅色主题。
+    Light,
+    /// 深色主题。
+    Dark,
+}
+
+impl Default for UiTheme {
+    /// 返回默认 UI 主题。
+    fn default() -> Self {
+        Self::Light
+    }
+}
+
 /// 动画等级。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +85,8 @@ impl Default for GeneralSettings {
 pub struct DisplaySettings {
     /// 是否展示用量信息。
     pub show_usage: bool,
+    /// UI 主题。
+    pub theme: UiTheme,
     /// UI 密度。
     pub density: UiDensity,
     /// 动画等级。
@@ -120,6 +139,7 @@ impl Default for DisplaySettings {
     fn default() -> Self {
         Self {
             show_usage: true,
+            theme: UiTheme::Light,
             density: UiDensity::Comfortable,
             animation_level: AnimationLevel::Full,
         }
@@ -389,6 +409,7 @@ mod tests {
     fn defaults_include_expanded_panel_without_geometry() {
         let settings = BuilderPanelSettings::defaults();
 
+        assert_eq!(settings.display.theme, Default::default());
         assert_eq!(settings.panel.collapsed, false);
         assert_eq!(settings.panel.window_position, None);
         assert_eq!(settings.panel.window_size, None);

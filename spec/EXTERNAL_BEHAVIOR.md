@@ -48,9 +48,11 @@ session 列表合并 mock 和 Codex CLI session 后，等待用户操作的 sess
 
 长摘要、长路径和长命令不会撑破面板布局。
 
+长摘要通过详情弹层查看。
+
 用户可以在 mock 审批 session 中点击允许、拒绝或允许并记住。
 
-用户可以在 mock 回复 session 中输入单行或多行文本回复。
+用户可以在 mock 回复 session 中打开回复弹层并输入单行或多行文本回复。
 
 用户可以在 mock 选项 session 中提交单选或多选回复。
 
@@ -96,9 +98,11 @@ Codex CLI hook 产生的托管事件可在支持 timeline 的 session 中查询�
 
 设置页不提供自动更新配置项。
 
+用户可以在 Display 分组选择浅色或深色主题。
+
 用户可以在 Hook Install 分组选择 Codex CLI hook 和 Claude CLI hook。
 
-用户可以在 Hook Install 分组预览将修改的文件、备份文件和 manifest 路径。
+用户可以在 Hook Install 分组通过预览弹层查看将修改的文件、备份文件和 manifest 路径。
 
 用户点击安装后才会写入第三方 hook 配置。
 

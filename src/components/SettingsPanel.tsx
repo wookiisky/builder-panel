@@ -1,10 +1,14 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import type {
   HookInstallAgent,
   HookInstallPreview,
 } from "../api/hookInstallApi";
-import type { BuilderPanelSettings, UiDensity } from "../api/settingsContract";
+import type {
+  BuilderPanelSettings,
+  UiDensity,
+  UiTheme,
+} from "../api/settingsContract";
 
 /// hook 安装 UI 状态。
 export interface HookInstallPanelState {
@@ -54,6 +58,8 @@ export const SettingsPanel = ({
   onInstallHooks,
   onUninstallHooks,
 }: SettingsPanelProps) => {
+  const [previewOpen, setPreviewOpen] = useState(false);
+
   const update = (next: BuilderPanelSettings): void => {
     onChange(next);
   };
@@ -125,6 +131,24 @@ export const SettingsPanel = ({
             });
           }}
         />
+        <label className="select-row">
+          <span>主题</span>
+          <select
+            value={settings.display.theme}
+            onChange={(event) => {
+              update({
+                ...settings,
+                display: {
+                  ...settings.display,
+                  theme: event.target.value as UiTheme,
+                },
+              });
+            }}
+          >
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </label>
         <label className="select-row">
           <span>密度</span>
           <select
@@ -248,9 +272,21 @@ export const SettingsPanel = ({
               hookInstall.working || hookInstall.selectedAgents.length === 0
             }
             type="button"
-            onClick={onPreviewHookInstall}
+            onClick={() => {
+              setPreviewOpen(false);
+              onPreviewHookInstall();
+            }}
           >
             预览修改
+          </button>
+          <button
+            disabled={hookInstall.preview === null}
+            type="button"
+            onClick={() => {
+              setPreviewOpen(true);
+            }}
+          >
+            预览详情
           </button>
           <button
             disabled={
@@ -273,20 +309,9 @@ export const SettingsPanel = ({
           <p className="settings-status">{hookInstall.statusMessage}</p>
         )}
         {hookInstall.preview !== null && (
-          <div className="hook-preview" aria-label="hook 安装预览">
-            <PreviewList
-              title="将修改"
-              values={hookInstall.preview.files_to_modify}
-            />
-            <PreviewList
-              title="将备份"
-              values={hookInstall.preview.backup_files}
-            />
-            <PreviewList
-              title="Manifest"
-              values={[hookInstall.preview.manifest_path]}
-            />
-          </div>
+          <p className="settings-note">
+            已生成 {hookInstall.preview.files_to_modify.length} 个修改目标
+          </p>
         )}
       </SettingsGroup>
       <SettingsGroup title="Replies">
@@ -373,6 +398,14 @@ export const SettingsPanel = ({
           }}
         />
       </SettingsGroup>
+      {previewOpen && hookInstall.preview !== null && (
+        <HookPreviewOverlay
+          preview={hookInstall.preview}
+          onClose={() => {
+            setPreviewOpen(false);
+          }}
+        />
+      )}
     </section>
   );
 };
@@ -410,6 +443,34 @@ const PreviewList = ({ title, values }: PreviewListProps) => (
         <li key={value}>{value}</li>
       ))}
     </ul>
+  </div>
+);
+
+/// hook 安装预览弹层属性。
+interface HookPreviewOverlayProps {
+  /// 当前预览结果。
+  readonly preview: HookInstallPreview;
+  /// 关闭回调。
+  readonly onClose: () => void;
+}
+
+/// hook 安装预览弹层。
+const HookPreviewOverlay = ({ preview, onClose }: HookPreviewOverlayProps) => (
+  <div className="overlay-backdrop" role="presentation">
+    <section className="overlay-panel hook-preview" aria-label="hook 安装预览">
+      <header>
+        <div>
+          <strong>Hook Preview</strong>
+          <p>安装前只展示将写入和备份的路径。</p>
+        </div>
+        <button type="button" onClick={onClose}>
+          关闭
+        </button>
+      </header>
+      <PreviewList title="将修改" values={preview.files_to_modify} />
+      <PreviewList title="将备份" values={preview.backup_files} />
+      <PreviewList title="Manifest" values={[preview.manifest_path]} />
+    </section>
   </div>
 );
 

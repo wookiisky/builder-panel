@@ -722,13 +722,7 @@ export const BuilderPanelApp = () => {
   };
 
   return (
-    <main
-      className={
-        settingsView.settings.display.density === "compact"
-          ? "app-surface app-surface-compact"
-          : "app-surface"
-      }
-    >
+    <main className={appSurfaceClassName(settingsView.settings)}>
       <PanelShell
         title="Builder Panel"
         collapsed={collapsed}
@@ -871,6 +865,17 @@ export const BuilderPanelApp = () => {
       </PanelShell>
     </main>
   );
+};
+
+/// 生成应用根节点样式类。
+const appSurfaceClassName = (settings: BuilderPanelSettings): string => {
+  const classNames = [
+    "app-surface",
+    `app-theme-${settings.display.theme}`,
+    settings.display.density === "compact" ? "app-surface-compact" : null,
+  ];
+
+  return classNames.filter((className) => className !== null).join(" ");
 };
 
 /// 读取所有当前可展示 session。
@@ -1238,6 +1243,9 @@ const SessionDetail = ({
   onSubmitChoice,
   onOpenTimeline,
 }: SessionDetailProps) => {
+  const [detailOverlayOpen, setDetailOverlayOpen] = useState(false);
+  const [replyComposerOpen, setReplyComposerOpen] = useState(false);
+
   if (selectedSession === null || detail === null) {
     return <section className="session-detail-empty">暂无 session</section>;
   }
@@ -1261,216 +1269,359 @@ const SessionDetail = ({
   const replyInvalid = isReplyDraftInvalid(draft, 1000);
 
   return (
-    <section className="session-detail" aria-label="session 详情">
-      <header>
-        <div>
-          <strong>{detail.header}</strong>
-          <p>{detail.identity}</p>
+    <>
+      <section className="session-detail" aria-label="session 详情">
+        <header>
+          <div>
+            <strong>{detail.header}</strong>
+            <p>{detail.identity}</p>
+          </div>
+          <span>{detail.execution_info}</span>
+        </header>
+        <div className="detail-summary-line">
+          <p className="detail-summary">{detail.summary.text}</p>
+          <button
+            type="button"
+            onClick={() => {
+              setDetailOverlayOpen(true);
+            }}
+          >
+            详情
+          </button>
         </div>
-        <span>{detail.execution_info}</span>
-      </header>
-      <p className="detail-summary">{detail.summary.text}</p>
-      {settings.display.show_usage && (
-        <div className="detail-metrics">
-          <span>{detail.usage}</span>
-          <span>{selectedSession.usage_5h.value_label}</span>
-        </div>
-      )}
-      {detail.pending_interaction !== null && (
-        <div className="pending-box">
-          <strong>{detail.pending_interaction}</strong>
-          {canResolveApproval && (
-            <div className="button-row">
-              <button
-                type="button"
-                disabled={submitting}
-                onClick={() => {
-                  onResolveApproval("allow", false);
-                }}
-              >
-                允许
-              </button>
-              <button
-                type="button"
-                disabled={submitting}
-                onClick={() => {
-                  onResolveApproval("deny", false);
-                }}
-              >
-                拒绝
-              </button>
-              <button
-                type="button"
-                disabled={submitting}
-                onClick={() => {
-                  onResolveApproval("allow_and_remember", false);
-                }}
-              >
-                允许并记住
-              </button>
-              {isMockSession && (
+        {settings.display.show_usage && (
+          <div className="detail-metrics">
+            <span>{detail.usage}</span>
+            <span>{selectedSession.usage_5h.value_label}</span>
+          </div>
+        )}
+        {detail.pending_interaction !== null && (
+          <div className="pending-box">
+            <strong>{detail.pending_interaction}</strong>
+            {canResolveApproval && (
+              <div className="button-row">
                 <button
                   type="button"
                   disabled={submitting}
                   onClick={() => {
-                    onResolveApproval("allow", true);
+                    onResolveApproval("allow", false);
                   }}
                 >
-                  失败演练
+                  允许
                 </button>
-              )}
-            </div>
-          )}
-          {canSendReply && (
-            <div className="reply-box">
-              {settings.replies.shortcut_replies_enabled && (
-                <div className="shortcut-row" aria-label="快捷回复">
-                  {DEFAULT_SHORTCUT_REPLIES.map((shortcut) => (
-                    <button
-                      key={shortcut.id}
-                      type="button"
-                      disabled={submitting}
-                      onClick={() => {
-                        onUseShortcutReply(shortcut.content, false);
-                      }}
-                    >
-                      {shortcut.label}
-                    </button>
-                  ))}
-                  {isMockSession && (
-                    <button
-                      type="button"
-                      disabled={submitting}
-                      onClick={() => {
-                        onUseShortcutReply(
-                          DEFAULT_SHORTCUT_REPLIES[0].content,
-                          true,
-                        );
-                      }}
-                    >
-                      快捷失败演练
-                    </button>
-                  )}
-                </div>
-              )}
-              <textarea
-                value={draft}
-                placeholder={
-                  settings.replies.enter_to_send
-                    ? "输入回复，Enter 发送，Shift+Enter 换行"
-                    : "输入回复"
-                }
-                onChange={(event) => {
-                  onDraftChange(event.target.value);
-                }}
-                onKeyDown={(event) => {
-                  if (
-                    !settings.replies.enter_to_send ||
-                    event.key !== "Enter" ||
-                    event.shiftKey
-                  ) {
-                    return;
-                  }
-                  event.preventDefault();
-                  if (!replyInvalid && !submitting) {
-                    onSendReply(false);
-                  }
-                }}
-              />
-              <div className="button-row">
-                <span>{replyCharCount}/1000</span>
                 <button
                   type="button"
-                  disabled={replyInvalid || submitting}
+                  disabled={submitting}
                   onClick={() => {
-                    onSendReply(false);
+                    onResolveApproval("deny", false);
                   }}
                 >
-                  发送
+                  拒绝
+                </button>
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => {
+                    onResolveApproval("allow_and_remember", false);
+                  }}
+                >
+                  允许并记住
                 </button>
                 {isMockSession && (
                   <button
                     type="button"
-                    disabled={replyInvalid || submitting}
+                    disabled={submitting}
                     onClick={() => {
-                      onSendReply(true);
+                      onResolveApproval("allow", true);
                     }}
                   >
                     失败演练
                   </button>
                 )}
               </div>
-            </div>
-          )}
-          {canSubmitChoice && (
-            <div className="choice-box">
-              <div className="choice-list">
-                {detail.choice_box.choices.map((choice) => {
-                  const checked = selectedChoiceValues.includes(choice.value);
-                  return (
-                    <label className="choice-row" key={choice.value}>
-                      <input
-                        checked={checked}
-                        name={pendingId ?? "choice"}
-                        type={
-                          detail.choice_box.allows_multiple
-                            ? "checkbox"
-                            : "radio"
-                        }
-                        value={choice.value}
-                        onChange={() => {
-                          onToggleChoice(
-                            choice.value,
-                            detail.choice_box.allows_multiple,
+            )}
+            {canSendReply && (
+              <div className="reply-inline">
+                <div className="shortcut-row" aria-label="快捷回复">
+                  {settings.replies.shortcut_replies_enabled &&
+                    DEFAULT_SHORTCUT_REPLIES.map((shortcut) => (
+                      <button
+                        key={shortcut.id}
+                        type="button"
+                        disabled={submitting}
+                        onClick={() => {
+                          onUseShortcutReply(shortcut.content, false);
+                        }}
+                      >
+                        {shortcut.label}
+                      </button>
+                    ))}
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => {
+                      setReplyComposerOpen(true);
+                    }}
+                  >
+                    打开回复
+                  </button>
+                  {isMockSession &&
+                    settings.replies.shortcut_replies_enabled && (
+                      <button
+                        type="button"
+                        disabled={submitting}
+                        onClick={() => {
+                          onUseShortcutReply(
+                            DEFAULT_SHORTCUT_REPLIES[0].content,
+                            true,
                           );
                         }}
-                      />
-                      <span>{choice.label}</span>
-                    </label>
-                  );
-                })}
+                      >
+                        快捷失败演练
+                      </button>
+                    )}
+                </div>
+                <span className={replyInvalid ? "reply-count-invalid" : ""}>
+                  {replyCharCount}/1000
+                </span>
               </div>
-              <div className="button-row">
-                <button
-                  type="button"
-                  disabled={selectedChoiceValues.length === 0 || submitting}
-                  onClick={() => {
-                    onSubmitChoice(false);
-                  }}
-                >
-                  提交选择
-                </button>
-                {isMockSession && (
+            )}
+            {canSubmitChoice && (
+              <div className="choice-box">
+                <div className="choice-list">
+                  {detail.choice_box.choices.map((choice) => {
+                    const checked = selectedChoiceValues.includes(choice.value);
+                    return (
+                      <label className="choice-row" key={choice.value}>
+                        <input
+                          checked={checked}
+                          name={pendingId ?? "choice"}
+                          type={
+                            detail.choice_box.allows_multiple
+                              ? "checkbox"
+                              : "radio"
+                          }
+                          value={choice.value}
+                          onChange={() => {
+                            onToggleChoice(
+                              choice.value,
+                              detail.choice_box.allows_multiple,
+                            );
+                          }}
+                        />
+                        <span>{choice.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="button-row">
                   <button
                     type="button"
                     disabled={selectedChoiceValues.length === 0 || submitting}
                     onClick={() => {
-                      onSubmitChoice(true);
+                      onSubmitChoice(false);
                     }}
                   >
-                    失败演练
+                    提交选择
                   </button>
-                )}
+                  {isMockSession && (
+                    <button
+                      type="button"
+                      disabled={selectedChoiceValues.length === 0 || submitting}
+                      onClick={() => {
+                        onSubmitChoice(true);
+                      }}
+                    >
+                      失败演练
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
+        {canOpenTimeline && (
+          <footer>
+            <button
+              type="button"
+              onClick={() => {
+                onOpenTimeline(selectedSession.session_key);
+              }}
+            >
+              Timeline
+            </button>
+          </footer>
+        )}
+      </section>
+      {detailOverlayOpen && (
+        <SessionDetailOverlay
+          detail={detail}
+          selectedSession={selectedSession}
+          onClose={() => {
+            setDetailOverlayOpen(false);
+          }}
+        />
       )}
-      {canOpenTimeline && (
-        <footer>
-          <button
-            type="button"
-            onClick={() => {
-              onOpenTimeline(selectedSession.session_key);
-            }}
-          >
-            Timeline
-          </button>
-        </footer>
+      {replyComposerOpen && canSendReply && (
+        <ReplyComposerOverlay
+          draft={draft}
+          isMockSession={isMockSession}
+          replyInvalid={replyInvalid}
+          settings={settings}
+          submitting={submitting}
+          onClose={() => {
+            setReplyComposerOpen(false);
+          }}
+          onDraftChange={onDraftChange}
+          onSendReply={onSendReply}
+        />
       )}
-    </section>
+    </>
   );
 };
+
+/// Session 详情弹层属性。
+interface SessionDetailOverlayProps {
+  /// Session 详情。
+  readonly detail: SessionDetailViewModel;
+  /// 当前选中 session。
+  readonly selectedSession: PanelSessionListItem;
+  /// 关闭回调。
+  readonly onClose: () => void;
+}
+
+/// Session 详情弹层。
+const SessionDetailOverlay = ({
+  detail,
+  selectedSession,
+  onClose,
+}: SessionDetailOverlayProps) => (
+  <div className="overlay-backdrop" role="presentation">
+    <section className="overlay-panel session-detail-overlay" aria-label="详情">
+      <header>
+        <div>
+          <strong>{detail.header}</strong>
+          <p>
+            {selectedSession.agent_label} / {selectedSession.conversation_label}
+          </p>
+        </div>
+        <button type="button" onClick={onClose}>
+          关闭
+        </button>
+      </header>
+      <dl>
+        <div>
+          <dt>身份</dt>
+          <dd>{detail.identity}</dd>
+        </div>
+        <div>
+          <dt>执行</dt>
+          <dd>{detail.execution_info}</dd>
+        </div>
+        <div>
+          <dt>摘要</dt>
+          <dd>{detail.summary.text}</dd>
+        </div>
+      </dl>
+    </section>
+  </div>
+);
+
+/// 回复输入弹层属性。
+interface ReplyComposerOverlayProps {
+  /// 当前草稿。
+  readonly draft: string;
+  /// 是否为 mock session。
+  readonly isMockSession: boolean;
+  /// 当前草稿是否非法。
+  readonly replyInvalid: boolean;
+  /// 当前设置。
+  readonly settings: BuilderPanelSettings;
+  /// 是否正在提交。
+  readonly submitting: boolean;
+  /// 关闭回调。
+  readonly onClose: () => void;
+  /// 草稿更新回调。
+  readonly onDraftChange: (draft: string) => void;
+  /// 回复发送回调。
+  readonly onSendReply: (injectFailure: boolean) => void;
+}
+
+/// 回复输入弹层。
+const ReplyComposerOverlay = ({
+  draft,
+  isMockSession,
+  replyInvalid,
+  settings,
+  submitting,
+  onClose,
+  onDraftChange,
+  onSendReply,
+}: ReplyComposerOverlayProps) => (
+  <div className="overlay-backdrop" role="presentation">
+    <section className="overlay-panel reply-composer" aria-label="回复输入">
+      <header>
+        <div>
+          <strong>Reply</strong>
+          <p>{settings.replies.enter_to_send ? "Enter 发送" : "手动发送"}</p>
+        </div>
+        <button type="button" onClick={onClose}>
+          关闭
+        </button>
+      </header>
+      <textarea
+        value={draft}
+        autoFocus={true}
+        placeholder={
+          settings.replies.enter_to_send
+            ? "输入回复，Enter 发送，Shift+Enter 换行"
+            : "输入回复"
+        }
+        onChange={(event) => {
+          onDraftChange(event.target.value);
+        }}
+        onKeyDown={(event) => {
+          if (
+            !settings.replies.enter_to_send ||
+            event.key !== "Enter" ||
+            event.shiftKey
+          ) {
+            return;
+          }
+          event.preventDefault();
+          if (!replyInvalid && !submitting) {
+            onSendReply(false);
+          }
+        }}
+      />
+      <div className="button-row">
+        <span className={replyInvalid ? "reply-count-invalid" : ""}>
+          {countReplyChars(draft)}/1000
+        </span>
+        <button
+          type="button"
+          disabled={replyInvalid || submitting}
+          onClick={() => {
+            onSendReply(false);
+          }}
+        >
+          发送
+        </button>
+        {isMockSession && (
+          <button
+            type="button"
+            disabled={replyInvalid || submitting}
+            onClick={() => {
+              onSendReply(true);
+            }}
+          >
+            失败演练
+          </button>
+        )}
+      </div>
+    </section>
+  </div>
+);
 
 /// Timeline 弹层属性。
 interface TimelineOverlayProps {
@@ -1511,94 +1662,99 @@ const TimelineOverlay = ({
     state.timeline.page !== null && state.timeline.page.items.length > 0;
 
   return (
-    <section className="timeline-overlay" aria-label="过程时间线">
-      <header>
-        <div>
-          <strong>Timeline</strong>
-          <p>
-            {selectedSession.project_label} /{" "}
-            {selectedSession.conversation_label}
-          </p>
-        </div>
-        <button type="button" onClick={onClose}>
-          关闭
-        </button>
-      </header>
-      <div className="timeline-filters">
-        <input
-          value={state.timeline.search}
-          placeholder="搜索"
-          onChange={(event) => {
-            onSearch(event.target.value);
-          }}
-        />
-        <select
-          value={state.timeline.kind}
-          onChange={(event) => {
-            onKind(event.target.value as TimelineKindFilter);
-          }}
-        >
-          <option value="all">全部</option>
-          <option value="activity">活动</option>
-          <option value="tool">工具</option>
-          <option value="approval">审批</option>
-          <option value="reply">回复</option>
-          <option value="system">系统</option>
-        </select>
-      </div>
-      <div className="timeline-actions">
-        <span>
-          {state.timeline.page === null
-            ? "0 条"
-            : `${state.timeline.page.total} 条`}
-        </span>
-        <button
-          type="button"
-          disabled={!canCopyFiltered}
-          onClick={() => {
-            if (state.timeline.page !== null) {
-              void copyText(timelinePageToCopyText(state.timeline.page));
-            }
-          }}
-        >
-          复制筛选结果
-        </button>
-        <button
-          type="button"
-          disabled={items.length === 0}
-          onClick={() => {
-            const list = listRef.current;
-            if (list !== null) {
-              list.scrollTop = list.scrollHeight;
-            }
-          }}
-        >
-          跳到最新
-        </button>
-      </div>
-      {state.timeline.loading && <p className="timeline-empty">读取中</p>}
-      {state.timeline.errorMessage !== null && (
-        <p className="timeline-empty">{state.timeline.errorMessage}</p>
-      )}
-      <div
-        className="timeline-list"
-        ref={listRef}
-        onScroll={(event) => {
-          setScrollTop(event.currentTarget.scrollTop);
-        }}
+    <div className="overlay-backdrop" role="presentation">
+      <section
+        className="overlay-panel timeline-overlay"
+        aria-label="过程时间线"
       >
-        <div style={{ height: topSpacerHeight }} />
-        {visibleItems.map((item) => (
-          <TimelineRow item={item} key={item.item_id} />
-        ))}
-        <div style={{ height: bottomSpacerHeight }} />
-        {state.timeline.page !== null &&
-          state.timeline.page.items.length === 0 &&
-          !state.timeline.loading && (
-            <p className="timeline-empty">没有匹配的过程事件</p>
-          )}
-      </div>
-    </section>
+        <header>
+          <div>
+            <strong>Timeline</strong>
+            <p>
+              {selectedSession.project_label} /{" "}
+              {selectedSession.conversation_label}
+            </p>
+          </div>
+          <button type="button" onClick={onClose}>
+            关闭
+          </button>
+        </header>
+        <div className="timeline-filters">
+          <input
+            value={state.timeline.search}
+            placeholder="搜索"
+            onChange={(event) => {
+              onSearch(event.target.value);
+            }}
+          />
+          <select
+            value={state.timeline.kind}
+            onChange={(event) => {
+              onKind(event.target.value as TimelineKindFilter);
+            }}
+          >
+            <option value="all">全部</option>
+            <option value="activity">活动</option>
+            <option value="tool">工具</option>
+            <option value="approval">审批</option>
+            <option value="reply">回复</option>
+            <option value="system">系统</option>
+          </select>
+        </div>
+        <div className="timeline-actions">
+          <span>
+            {state.timeline.page === null
+              ? "0 条"
+              : `${state.timeline.page.total} 条`}
+          </span>
+          <button
+            type="button"
+            disabled={!canCopyFiltered}
+            onClick={() => {
+              if (state.timeline.page !== null) {
+                void copyText(timelinePageToCopyText(state.timeline.page));
+              }
+            }}
+          >
+            复制筛选结果
+          </button>
+          <button
+            type="button"
+            disabled={items.length === 0}
+            onClick={() => {
+              const list = listRef.current;
+              if (list !== null) {
+                list.scrollTop = list.scrollHeight;
+              }
+            }}
+          >
+            跳到最新
+          </button>
+        </div>
+        {state.timeline.loading && <p className="timeline-empty">读取中</p>}
+        {state.timeline.errorMessage !== null && (
+          <p className="timeline-empty">{state.timeline.errorMessage}</p>
+        )}
+        <div
+          className="timeline-list"
+          ref={listRef}
+          onScroll={(event) => {
+            setScrollTop(event.currentTarget.scrollTop);
+          }}
+        >
+          <div style={{ height: topSpacerHeight }} />
+          {visibleItems.map((item) => (
+            <TimelineRow item={item} key={item.item_id} />
+          ))}
+          <div style={{ height: bottomSpacerHeight }} />
+          {state.timeline.page !== null &&
+            state.timeline.page.items.length === 0 &&
+            !state.timeline.loading && (
+              <p className="timeline-empty">没有匹配的过程事件</p>
+            )}
+        </div>
+      </section>
+    </div>
   );
 };
 
