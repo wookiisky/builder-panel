@@ -6,9 +6,11 @@ Process Timeline Service 负责读取指定 session 的过程事件时间线，�
 
 Process Timeline Service 不负责生成 timeline 原始事件，不负责审批或回复回写，不负责持久化过程事件。
 
-阶段 3 中，timeline 数据来自 mock agent runtime。
+mock 测试基线中，timeline 数据可来自 mock agent runtime。
 
 阶段 6 中，Codex CLI hook 事件由 timeline adapter 写入进程内内存缓存。
+
+Codex APP hook 和 app-server 事件由 Codex APP runtime 写入进程内 timeline。
 
 timeline 不进入 `SessionState`。
 
@@ -24,9 +26,11 @@ timeline 不支持导出过程事件文件。
 
 `src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存、去重、淘汰和大文本释放入口。
 
-`src-tauri/src/adapters/mock_agent/mod.rs` 是阶段 3 mock timeline 数据源入口。
+`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock 测试基线 timeline 数据源入口。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是阶段 6 Codex CLI hook timeline 接收入口。
+
+`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP timeline 接收入口。
 
 `src-tauri/src/tauri_api/commands.rs` 是 timeline 查询 command 入口。
 

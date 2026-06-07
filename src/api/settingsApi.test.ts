@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { defaultSettings, normalizeFallbackSettings } from "./settingsApi";
 
 describe("settingsApi", () => {
-  it("creates stage seven default settings without auto update option", () => {
+  it("creates default real runtime settings without auto update option", () => {
     const settings = defaultSettings();
 
     expect(settings.display.show_usage).toBe(true);
@@ -11,12 +11,13 @@ describe("settingsApi", () => {
     expect(settings.panel.collapsed).toBe(false);
     expect(settings.panel.window_position).toBeNull();
     expect(settings.panel.window_size).toBeNull();
-    expect(settings.agents.mock_agent_enabled).toBe(true);
     expect(settings.agents.codex_cli_enabled).toBe(true);
+    expect(settings.agents.codex_app_enabled).toBe(true);
+    expect("mock_agent_enabled" in settings.agents).toBe(false);
     expect("auto_update" in settings).toBe(false);
   });
 
-  it("normalizes legacy fallback settings with missing display theme", () => {
+  it("normalizes legacy fallback settings and drops mock agent flag", () => {
     const legacySettings = {
       ...defaultSettings(),
       display: {
@@ -32,7 +33,7 @@ describe("settingsApi", () => {
       agents: {
         mock_agent_enabled: false,
         codex_cli_enabled: true,
-        codex_app_enabled: false,
+        codex_app_enabled: true,
         claude_cli_enabled: false,
         claude_app_enabled: false,
       },
@@ -44,7 +45,10 @@ describe("settingsApi", () => {
     expect(normalizedSettings?.display.show_usage).toBe(false);
     expect(normalizedSettings?.display.density).toBe("compact");
     expect(normalizedSettings?.panel.collapsed).toBe(false);
-    expect(normalizedSettings?.agents.mock_agent_enabled).toBe(false);
+    expect(normalizedSettings?.agents.codex_app_enabled).toBe(true);
+    expect("mock_agent_enabled" in (normalizedSettings?.agents ?? {})).toBe(
+      false,
+    );
   });
 
   it("normalizes custom shortcuts by dropping invalid rows and duplicate ids", () => {

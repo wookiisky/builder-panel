@@ -179,6 +179,44 @@ pub struct HookInstallPreview {
     pub manifest_path: PathBuf,
 }
 
+/// hook 安装总状态。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct HookInstallStatus {
+    /// 各 agent hook 安装状态。
+    pub agents: Vec<HookInstallAgentStatus>,
+}
+
+/// 单个 agent hook 安装状态。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct HookInstallAgentStatus {
+    /// 目标 agent。
+    pub agent: HookInstallAgent,
+    /// 当前状态。
+    pub state: HookInstallStateKind,
+    /// 用户可读状态文案。
+    pub message: String,
+    /// 状态原因。
+    pub reasons: Vec<String>,
+    /// 当前是否允许安装。
+    pub can_install: bool,
+    /// 当前是否允许卸载。
+    pub can_uninstall: bool,
+}
+
+/// hook 安装状态类型。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookInstallStateKind {
+    /// 未安装。
+    NotInstalled,
+    /// 已完整安装。
+    Installed,
+    /// 配置存在但不完整或与当前规则不一致。
+    Partial,
+    /// 状态读取或配置解析失败。
+    Error,
+}
+
 /// hook 安装 manifest。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct HookInstallManifest {
@@ -229,27 +267,56 @@ impl HookInstaller {
         }
     }
 
+    /// 查询当前 hook 安装状态，不修改文件。
+    pub fn status(&self) -> HookInstallStatus {
+        let manifest = match read_manifest_optional(
+            &self.paths.manifest_path,
+            AppErrorCode::HookInstallFailed,
+        ) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                return HookInstallStatus {
+                    agents: vec![
+                        manifest_error_status(HookInstallAgent::Codex, &error.user_message),
+                        manifest_error_status(HookInstallAgent::Claude, &error.user_message),
+                    ],
+                };
+            }
+        };
+
+        HookInstallStatus {
+            agents: vec![
+                self.agent_status(HookInstallAgent::Codex, manifest.as_ref()),
+                self.agent_status(HookInstallAgent::Claude, manifest.as_ref()),
+            ],
+        }
+    }
+
     /// 安装 hook 配置并写入 manifest。
     pub fn install(&self, agents: &[HookInstallAgent]) -> Result<HookInstallManifest, AppError> {
         let agents = unique_agents(agents);
+        let status = self.status();
+        let agents_to_install = installable_agents(&agents, &status)?;
+        if agents_to_install.is_empty() {
+            return Ok(self.current_manifest_or_empty()?);
+        }
+
         let mut plans = Vec::new();
 
-        for agent in agents {
+        for agent in &agents_to_install {
             match agent {
                 HookInstallAgent::Codex => {
-                    plans.push(self.codex_hooks_plan(agent)?);
-                    plans.push(self.codex_config_plan(agent)?);
+                    plans.push(self.codex_hooks_plan(*agent)?);
+                    plans.push(self.codex_config_plan(*agent)?);
                 }
                 HookInstallAgent::Claude => {
-                    plans.push(self.json_hooks_plan(agent, self.paths.config_path(agent))?);
+                    plans.push(self.json_hooks_plan(*agent, self.paths.config_path(*agent))?);
                 }
             }
         }
         apply_existing_manifest_backup_policy(&mut plans, &self.paths.manifest_path)?;
 
-        let manifest = HookInstallManifest {
-            entries: plans.iter().map(|plan| plan.entry.clone()).collect(),
-        };
+        let manifest = self.merge_manifest_after_install(&agents_to_install, &plans)?;
         let manifest_value = serde_json::to_value(&manifest).map_err(|error| {
             hook_error(
                 AppErrorCode::HookInstallFailed,
@@ -318,52 +385,208 @@ impl HookInstaller {
         Ok(manifest)
     }
 
+    /// 根据 manifest 卸载指定 agent hook。
+    pub fn uninstall_agents(&self, agents: &[HookInstallAgent]) -> Result<(), AppError> {
+        let agents = unique_agents(agents);
+        if agents.is_empty() || !self.paths.manifest_path.exists() {
+            return Ok(());
+        }
+
+        let manifest = read_manifest_required(
+            &self.paths.manifest_path,
+            AppErrorCode::HookUninstallFailed,
+        )?;
+        let (target_entries, remaining_entries): (Vec<_>, Vec<_>) = manifest
+            .entries
+            .into_iter()
+            .partition(|entry| agents.contains(&entry.agent));
+        if target_entries.is_empty() {
+            return Ok(());
+        }
+
+        let protected_files = protect_uninstall_files(&target_entries, &self.paths.manifest_path)?;
+        let result = (|| {
+            for entry in &target_entries {
+                if entry.existed_before_install {
+                    ensure_parent_dir(&entry.config_path, AppErrorCode::HookUninstallFailed)?;
+                    fs::copy(&entry.backup_path, &entry.config_path).map_err(|error| {
+                        hook_error(
+                            AppErrorCode::HookUninstallFailed,
+                            "hook 配置恢复失败",
+                            error.to_string(),
+                        )
+                    })?;
+                } else if entry.config_path.exists() {
+                    fs::remove_file(&entry.config_path).map_err(|error| {
+                        hook_error(
+                            AppErrorCode::HookUninstallFailed,
+                            "hook 配置删除失败",
+                            error.to_string(),
+                        )
+                    })?;
+                }
+            }
+
+            write_remaining_manifest(&self.paths.manifest_path, remaining_entries)
+        })();
+
+        if let Err(error) = result {
+            restore_protected_files(&protected_files);
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
     /// 根据 manifest 卸载 hook 并恢复安装前配置。
     pub fn uninstall(&self) -> Result<(), AppError> {
-        let text = fs::read_to_string(&self.paths.manifest_path).map_err(|error| {
-            hook_error(
-                AppErrorCode::HookUninstallFailed,
-                "hook 安装 manifest 读取失败",
-                error.to_string(),
-            )
-        })?;
-        let manifest: HookInstallManifest = serde_json::from_str(&text).map_err(|error| {
-            hook_error(
-                AppErrorCode::HookUninstallFailed,
-                "hook 安装 manifest 格式无效",
-                error.to_string(),
-            )
-        })?;
+        self.uninstall_agents(&[HookInstallAgent::Codex, HookInstallAgent::Claude])
+    }
 
-        for entry in manifest.entries {
-            if entry.existed_before_install {
-                fs::copy(&entry.backup_path, &entry.config_path).map_err(|error| {
-                    hook_error(
-                        AppErrorCode::HookUninstallFailed,
-                        "hook 配置恢复失败",
-                        error.to_string(),
-                    )
-                })?;
-            } else if entry.config_path.exists() {
-                fs::remove_file(&entry.config_path).map_err(|error| {
-                    hook_error(
-                        AppErrorCode::HookUninstallFailed,
-                        "hook 配置删除失败",
-                        error.to_string(),
-                    )
-                })?;
+    fn agent_status(
+        &self,
+        agent: HookInstallAgent,
+        manifest: Option<&HookInstallManifest>,
+    ) -> HookInstallAgentStatus {
+        let manifest_entries = manifest
+            .map(|item| {
+                item.entries
+                    .iter()
+                    .filter(|entry| entry.agent == agent)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let can_uninstall = !manifest_entries.is_empty();
+        let expected_paths = self.paths.config_paths(agent);
+        let mut reasons = Vec::new();
+        let mut has_managed_config = can_uninstall;
+        let mut has_error = false;
+
+        if !manifest_entries.is_empty() {
+            for path in &expected_paths {
+                if !manifest_entries
+                    .iter()
+                    .any(|entry| entry.config_path == path.to_path_buf())
+                {
+                    reasons.push(format!("manifest 缺少 {}", path.display()));
+                }
             }
         }
 
-        fs::remove_file(&self.paths.manifest_path).map_err(|error| {
-            hook_error(
-                AppErrorCode::HookUninstallFailed,
-                "hook 安装 manifest 删除失败",
-                error.to_string(),
-            )
-        })?;
+        match self.agent_config_check(agent) {
+            Ok(check) => {
+                has_managed_config = has_managed_config || check.has_builder_panel_hook;
+                reasons.extend(check.reasons);
+            }
+            Err(reason) => {
+                has_error = true;
+                reasons.push(reason);
+            }
+        }
 
-        Ok(())
+        if has_error {
+            return HookInstallAgentStatus {
+                agent,
+                state: HookInstallStateKind::Error,
+                message: "状态读取失败".to_string(),
+                reasons,
+                can_install: false,
+                can_uninstall,
+            };
+        }
+
+        if manifest_entries.is_empty() && !has_managed_config {
+            return HookInstallAgentStatus {
+                agent,
+                state: HookInstallStateKind::NotInstalled,
+                message: "未安装".to_string(),
+                reasons,
+                can_install: true,
+                can_uninstall: false,
+            };
+        }
+
+        if !manifest_entries.is_empty() && reasons.is_empty() {
+            return HookInstallAgentStatus {
+                agent,
+                state: HookInstallStateKind::Installed,
+                message: "已安装".to_string(),
+                reasons,
+                can_install: false,
+                can_uninstall: true,
+            };
+        }
+
+        HookInstallAgentStatus {
+            agent,
+            state: HookInstallStateKind::Partial,
+            message: "需要修复".to_string(),
+            reasons,
+            can_install: true,
+            can_uninstall,
+        }
+    }
+
+    fn agent_config_check(
+        &self,
+        agent: HookInstallAgent,
+    ) -> Result<HookConfigCheck, String> {
+        match agent {
+            HookInstallAgent::Codex => self.codex_config_check(),
+            HookInstallAgent::Claude => self.json_config_check(agent, self.paths.config_path(agent)),
+        }
+    }
+
+    fn codex_config_check(&self) -> Result<HookConfigCheck, String> {
+        let mut check = self.json_config_check(HookInstallAgent::Codex, &self.paths.codex_hooks_path)?;
+        check
+            .reasons
+            .extend(codex_feature_check(&self.paths.codex_config_path)?);
+        Ok(check)
+    }
+
+    fn json_config_check(
+        &self,
+        agent: HookInstallAgent,
+        config_path: &Path,
+    ) -> Result<HookConfigCheck, String> {
+        if !config_path.exists() {
+            return Ok(HookConfigCheck {
+                has_builder_panel_hook: false,
+                reasons: vec![format!("{} 不存在", config_path.display())],
+            });
+        }
+
+        let config = read_json_object(config_path).map_err(|error| error.user_message)?;
+        Ok(json_hook_config_check(
+            &config,
+            agent,
+            &self.paths.hook_executable_path,
+            config_path,
+        ))
+    }
+
+    fn current_manifest_or_empty(&self) -> Result<HookInstallManifest, AppError> {
+        read_manifest_optional(&self.paths.manifest_path, AppErrorCode::HookInstallFailed)
+            .map(|manifest| manifest.unwrap_or(HookInstallManifest { entries: Vec::new() }))
+    }
+
+    fn merge_manifest_after_install(
+        &self,
+        agents: &[HookInstallAgent],
+        plans: &[HookInstallPlan],
+    ) -> Result<HookInstallManifest, AppError> {
+        let mut entries = read_manifest_optional(
+            &self.paths.manifest_path,
+            AppErrorCode::HookInstallFailed,
+        )?
+        .map(|manifest| manifest.entries)
+        .unwrap_or_default();
+        entries.retain(|entry| !agents.contains(&entry.agent));
+        entries.extend(plans.iter().map(|plan| plan.entry.clone()));
+
+        Ok(HookInstallManifest { entries })
     }
 
     fn codex_hooks_plan(&self, agent: HookInstallAgent) -> Result<HookInstallPlan, AppError> {
@@ -449,6 +672,15 @@ enum HookInstallPlanContent {
     Json(Value),
     /// 文本文件。
     Text(String),
+}
+
+/// hook 配置检查结果。
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HookConfigCheck {
+    /// 配置中是否存在 Builder Panel hook handler。
+    has_builder_panel_hook: bool,
+    /// 不满足当前安装规则的原因。
+    reasons: Vec<String>,
 }
 
 /// 单个 hook 事件配置。
@@ -548,6 +780,89 @@ fn is_builder_panel_hook(value: &Value) -> bool {
         .is_some_and(|command| command.contains("builder-panel-hook"))
 }
 
+fn json_hook_config_check(
+    config: &Map<String, Value>,
+    agent: HookInstallAgent,
+    hook_executable_path: &Path,
+    config_path: &Path,
+) -> HookConfigCheck {
+    let mut reasons = Vec::new();
+    let command = hook_command(hook_executable_path, agent);
+    let has_builder_panel_hook = config
+        .get("hooks")
+        .and_then(Value::as_object)
+        .is_some_and(object_has_builder_panel_hook);
+    let Some(hooks_object) = config.get("hooks").and_then(Value::as_object) else {
+        reasons.push(format!("{} 缺少 hooks 对象", config_path.display()));
+        return HookConfigCheck {
+            has_builder_panel_hook,
+            reasons,
+        };
+    };
+
+    for event in agent.events() {
+        let Some(groups) = hooks_object.get(event.name).and_then(Value::as_array) else {
+            reasons.push(format!("{} 缺少 {} hook", config_path.display(), event.name));
+            continue;
+        };
+        let expected_group = hook_group(event, &command);
+        if !groups.iter().any(|group| group == &expected_group) {
+            reasons.push(format!(
+                "{} 的 {} hook 与当前安装规则不一致",
+                config_path.display(),
+                event.name
+            ));
+        }
+    }
+
+    HookConfigCheck {
+        has_builder_panel_hook,
+        reasons,
+    }
+}
+
+fn object_has_builder_panel_hook(hooks_object: &Map<String, Value>) -> bool {
+    hooks_object.values().any(|event_value| {
+        event_value.as_array().is_some_and(|groups| {
+            groups.iter().any(|group| {
+                group
+                    .as_object()
+                    .and_then(|group_object| group_object.get("hooks"))
+                    .and_then(Value::as_array)
+                    .is_some_and(|hooks| hooks.iter().any(is_builder_panel_hook))
+            })
+        })
+    })
+}
+
+fn codex_feature_check(config_path: &Path) -> Result<Vec<String>, String> {
+    if !config_path.exists() {
+        return Ok(vec![format!("{} 不存在", config_path.display())]);
+    }
+
+    let text = fs::read_to_string(config_path)
+        .map_err(|error| format!("Codex 配置读取失败：{}", error))?;
+    let document = text
+        .parse::<DocumentMut>()
+        .map_err(|error| format!("Codex 配置 TOML 无效：{}", error))?;
+    let hooks_enabled = document
+        .get("features")
+        .and_then(Item::as_table)
+        .and_then(|features| features.get("hooks"))
+        .and_then(Item::as_value)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+
+    if hooks_enabled {
+        return Ok(Vec::new());
+    }
+
+    Ok(vec![format!(
+        "{} 未启用 [features].hooks",
+        config_path.display()
+    )])
+}
+
 fn enable_codex_hooks_feature(contents: &str) -> Result<String, AppError> {
     let mut document = parse_codex_config_toml(contents)?;
     let features = document
@@ -610,6 +925,37 @@ fn read_json_object(path: &Path) -> Result<Map<String, Value>, AppError> {
 fn read_text(path: &Path, code: AppErrorCode) -> Result<String, AppError> {
     fs::read_to_string(path)
         .map_err(|error| hook_error(code, "hook 配置读取失败", error.to_string()))
+}
+
+fn read_manifest_optional(
+    path: &Path,
+    code: AppErrorCode,
+) -> Result<Option<HookInstallManifest>, AppError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    read_manifest_required(path, code).map(Some)
+}
+
+fn read_manifest_required(
+    path: &Path,
+    code: AppErrorCode,
+) -> Result<HookInstallManifest, AppError> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        hook_error(
+            code.clone(),
+            "hook 安装 manifest 读取失败",
+            error.to_string(),
+        )
+    })?;
+    serde_json::from_str(&text).map_err(|error| {
+        hook_error(
+            code,
+            "hook 安装 manifest 格式无效",
+            error.to_string(),
+        )
+    })
 }
 
 fn write_json_file(path: &Path, value: &Value, code: AppErrorCode) -> Result<(), AppError> {
@@ -691,6 +1037,9 @@ fn protect_install_files(
 ) -> Result<Vec<ProtectedInstallFile>, AppError> {
     let mut paths = Vec::new();
     for plan in plans {
+        if !paths.contains(&plan.entry.config_path) {
+            paths.push(plan.entry.config_path.clone());
+        }
         if !paths.contains(&plan.entry.backup_path) {
             paths.push(plan.entry.backup_path.clone());
         }
@@ -791,6 +1140,114 @@ fn rollback_written_configs(plans: Vec<&HookInstallPlan>) {
     }
 }
 
+fn protect_uninstall_files(
+    entries: &[HookInstallManifestEntry],
+    manifest_path: &Path,
+) -> Result<Vec<ProtectedInstallFile>, AppError> {
+    let mut paths = Vec::new();
+    for entry in entries {
+        if !paths.contains(&entry.config_path) {
+            paths.push(entry.config_path.clone());
+        }
+    }
+    if !paths.iter().any(|path| path == manifest_path) {
+        paths.push(manifest_path.to_path_buf());
+    }
+
+    paths
+        .into_iter()
+        .map(|path| {
+            let content = if path.exists() {
+                Some(fs::read(&path).map_err(|error| {
+                    hook_error(
+                        AppErrorCode::HookUninstallFailed,
+                        "hook 卸载保护文件读取失败",
+                        error.to_string(),
+                    )
+                })?)
+            } else {
+                None
+            };
+            Ok(ProtectedInstallFile { path, content })
+        })
+        .collect()
+}
+
+fn write_remaining_manifest(
+    manifest_path: &Path,
+    entries: Vec<HookInstallManifestEntry>,
+) -> Result<(), AppError> {
+    if entries.is_empty() {
+        if manifest_path.exists() {
+            fs::remove_file(manifest_path).map_err(|error| {
+                hook_error(
+                    AppErrorCode::HookUninstallFailed,
+                    "hook 安装 manifest 删除失败",
+                    error.to_string(),
+                )
+            })?;
+        }
+        return Ok(());
+    }
+
+    let manifest = HookInstallManifest { entries };
+    let value = serde_json::to_value(&manifest).map_err(|error| {
+        hook_error(
+            AppErrorCode::HookUninstallFailed,
+            "hook 安装 manifest 编码失败",
+            error.to_string(),
+        )
+    })?;
+    write_json_file(
+        manifest_path,
+        &value,
+        AppErrorCode::HookUninstallFailed,
+    )
+}
+
+fn manifest_error_status(agent: HookInstallAgent, reason: &str) -> HookInstallAgentStatus {
+    HookInstallAgentStatus {
+        agent,
+        state: HookInstallStateKind::Error,
+        message: "状态读取失败".to_string(),
+        reasons: vec![reason.to_string()],
+        can_install: false,
+        can_uninstall: false,
+    }
+}
+
+fn installable_agents(
+    agents: &[HookInstallAgent],
+    status: &HookInstallStatus,
+) -> Result<Vec<HookInstallAgent>, AppError> {
+    let mut installable = Vec::new();
+    for agent in agents {
+        let Some(agent_status) = status.agents.iter().find(|item| item.agent == *agent) else {
+            return Err(hook_error(
+                AppErrorCode::HookInstallFailed,
+                "hook 状态缺失",
+                format!("{agent:?} 未返回安装状态"),
+            ));
+        };
+
+        if agent_status.can_install {
+            installable.push(*agent);
+            continue;
+        }
+        if agent_status.state == HookInstallStateKind::Installed {
+            continue;
+        }
+
+        return Err(hook_error(
+            AppErrorCode::HookInstallFailed,
+            "hook 状态异常，无法安装",
+            agent_status.reasons.join("；"),
+        ));
+    }
+
+    Ok(installable)
+}
+
 fn unique_agents(agents: &[HookInstallAgent]) -> Vec<HookInstallAgent> {
     let mut unique = Vec::new();
     for agent in agents {
@@ -808,7 +1265,7 @@ fn unique_agents(agents: &[HookInstallAgent]) -> Vec<HookInstallAgent> {
 mod tests {
     use super::{
         backup_path, enable_codex_hooks_feature, write_text_file, HookInstallAgent,
-        HookInstallPaths, HookInstaller,
+        HookInstallManifest, HookInstallPaths, HookInstallStateKind, HookInstaller,
     };
     use crate::domain::app_error::AppErrorCode;
     use serde_json::Value;
@@ -890,6 +1347,188 @@ mod tests {
             .join("builder-panel")
             .join("hook-install-manifest.json")
             .exists());
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_reports_not_installed_when_no_managed_config_exists() {
+        let root = fixture_root("status-not-installed");
+        let installer = HookInstaller::new(paths(&root));
+
+        let status = installer.status();
+        let codex = status_for(&status, HookInstallAgent::Codex);
+
+        assert_eq!(codex.state, HookInstallStateKind::NotInstalled);
+        assert!(codex.can_install);
+        assert!(!codex.can_uninstall);
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_reports_installed_when_manifest_and_configs_match() {
+        let root = fixture_root("status-installed");
+        let installer = HookInstaller::new(paths(&root));
+
+        installer
+            .install(&[HookInstallAgent::Codex])
+            .expect("hook should install");
+        let status = installer.status();
+        let codex = status_for(&status, HookInstallAgent::Codex);
+
+        assert_eq!(codex.state, HookInstallStateKind::Installed);
+        assert!(!codex.can_install);
+        assert!(codex.can_uninstall);
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_reports_partial_when_codex_feature_is_disabled() {
+        let root = fixture_root("status-feature-disabled");
+        let hook_paths = paths(&root);
+        let installer = HookInstaller::new(hook_paths.clone());
+
+        installer
+            .install(&[HookInstallAgent::Codex])
+            .expect("hook should install");
+        fs::write(&hook_paths.codex_config_path, "[features]\nhooks = false\n")
+            .expect("config should drift");
+        let status = installer.status();
+        let codex = status_for(&status, HookInstallAgent::Codex);
+
+        assert_eq!(codex.state, HookInstallStateKind::Partial);
+        assert!(codex.can_install);
+        assert!(codex.can_uninstall);
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_reports_partial_when_hook_command_drifted() {
+        let root = fixture_root("status-command-drift");
+        let hook_paths = paths(&root);
+        let installer = HookInstaller::new(hook_paths.clone());
+
+        installer
+            .install(&[HookInstallAgent::Codex])
+            .expect("hook should install");
+        let mut drifted_paths = hook_paths.clone();
+        drifted_paths.hook_executable_path = root.join("bin").join("new-builder-panel-hook");
+        let drifted_installer = HookInstaller::new(drifted_paths);
+        let status = drifted_installer.status();
+        let codex = status_for(&status, HookInstallAgent::Codex);
+
+        assert_eq!(codex.state, HookInstallStateKind::Partial);
+        assert!(codex.can_install);
+        cleanup(root);
+    }
+
+    #[test]
+    fn single_agent_install_preserves_other_agent_manifest_entries() {
+        let root = fixture_root("single-install-preserve-manifest");
+        let hook_paths = paths(&root);
+        let installer = HookInstaller::new(hook_paths.clone());
+
+        installer
+            .install(&[HookInstallAgent::Codex])
+            .expect("codex hook should install");
+        installer
+            .install(&[HookInstallAgent::Claude])
+            .expect("claude hook should install");
+        let manifest = read_manifest(&hook_paths.manifest_path);
+
+        assert_eq!(
+            manifest
+                .entries
+                .iter()
+                .filter(|entry| entry.agent == HookInstallAgent::Codex)
+                .count(),
+            2
+        );
+        assert_eq!(
+            manifest
+                .entries
+                .iter()
+                .filter(|entry| entry.agent == HookInstallAgent::Claude)
+                .count(),
+            1
+        );
+        cleanup(root);
+    }
+
+    #[test]
+    fn single_agent_uninstall_keeps_other_agent_manifest_entries() {
+        let root = fixture_root("single-uninstall-keep-manifest");
+        let hook_paths = paths(&root);
+        let installer = HookInstaller::new(hook_paths.clone());
+
+        installer
+            .install(&[HookInstallAgent::Codex, HookInstallAgent::Claude])
+            .expect("hooks should install");
+        installer
+            .uninstall_agents(&[HookInstallAgent::Codex])
+            .expect("codex hook should uninstall");
+        let manifest = read_manifest(&hook_paths.manifest_path);
+
+        assert!(!hook_paths.codex_hooks_path.exists());
+        assert!(!hook_paths.codex_config_path.exists());
+        assert!(hook_paths.claude_settings_path.exists());
+        assert!(manifest
+            .entries
+            .iter()
+            .all(|entry| entry.agent == HookInstallAgent::Claude));
+        cleanup(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn single_agent_uninstall_rolls_back_when_manifest_write_fails() {
+        let root = fixture_root("single-uninstall-rollback");
+        let hook_paths = paths(&root);
+        let installer = HookInstaller::new(hook_paths.clone());
+
+        installer
+            .install(&[HookInstallAgent::Codex, HookInstallAgent::Claude])
+            .expect("hooks should install");
+        let codex_hooks = fs::read_to_string(&hook_paths.codex_hooks_path)
+            .expect("codex hooks should read");
+        let codex_config = fs::read_to_string(&hook_paths.codex_config_path)
+            .expect("codex config should read");
+        let manifest = fs::read_to_string(&hook_paths.manifest_path)
+            .expect("manifest should read");
+        let manifest_parent = hook_paths
+            .manifest_path
+            .parent()
+            .expect("manifest parent should exist");
+        let mut permissions = fs::metadata(manifest_parent)
+            .expect("manifest parent metadata should read")
+            .permissions();
+        permissions.set_mode(0o555);
+        fs::set_permissions(manifest_parent, permissions)
+            .expect("manifest parent permissions should set");
+
+        let result = installer.uninstall_agents(&[HookInstallAgent::Codex]);
+
+        let mut permissions = fs::metadata(manifest_parent)
+            .expect("manifest parent metadata should reread")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(manifest_parent, permissions)
+            .expect("manifest parent permissions should restore");
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(&hook_paths.codex_hooks_path)
+                .expect("codex hooks should reread"),
+            codex_hooks
+        );
+        assert_eq!(
+            fs::read_to_string(&hook_paths.codex_config_path)
+                .expect("codex config should reread"),
+            codex_config
+        );
+        assert_eq!(
+            fs::read_to_string(&hook_paths.manifest_path)
+                .expect("manifest should reread"),
+            manifest
+        );
         cleanup(root);
     }
 
@@ -1060,7 +1699,7 @@ mod tests {
         let result = installer.uninstall();
         let current = fs::read_to_string(&codex_path).expect("config should read");
 
-        assert!(result.is_err());
+        assert!(result.is_ok());
         assert_eq!(current, r#"{"hooks":{"Stop":[{"hooks":[]}]}}"#);
         cleanup(root);
     }
@@ -1090,7 +1729,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn repeated_install_failure_keeps_previous_backups_and_manifest() {
+    fn repeated_install_skips_when_hook_is_already_current() {
         let root = fixture_root("repeat-install-backup-rollback");
         let hook_paths = paths(&root);
         fs::create_dir_all(
@@ -1152,7 +1791,7 @@ mod tests {
             permissions,
         )
         .expect("manifest parent permissions should restore");
-        assert!(result.is_err());
+        assert!(result.is_ok());
         assert_eq!(
             fs::read_to_string(&hooks_backup_path).expect("hooks backup should reread"),
             hooks_backup
@@ -1163,6 +1802,54 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(&hook_paths.manifest_path).expect("manifest should reread"),
+            manifest
+        );
+        cleanup(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn repair_install_failure_restores_config_from_operation_start() {
+        let root = fixture_root("repair-install-rollback");
+        let hook_paths = paths(&root);
+        let installer = HookInstaller::new(hook_paths.clone());
+
+        installer
+            .install(&[HookInstallAgent::Codex])
+            .expect("first install should succeed");
+        let drifted_hooks = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo user drift"}]}]}}"#;
+        fs::write(&hook_paths.codex_hooks_path, drifted_hooks)
+            .expect("drifted hooks should write");
+        let manifest = fs::read_to_string(&hook_paths.manifest_path)
+            .expect("manifest should read");
+        let manifest_parent = hook_paths
+            .manifest_path
+            .parent()
+            .expect("manifest parent should exist");
+        let mut permissions = fs::metadata(manifest_parent)
+            .expect("manifest parent metadata should read")
+            .permissions();
+        permissions.set_mode(0o555);
+        fs::set_permissions(manifest_parent, permissions)
+            .expect("manifest parent permissions should set");
+
+        let result = installer.install(&[HookInstallAgent::Codex]);
+
+        let mut permissions = fs::metadata(manifest_parent)
+            .expect("manifest parent metadata should reread")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(manifest_parent, permissions)
+            .expect("manifest parent permissions should restore");
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(&hook_paths.codex_hooks_path)
+                .expect("codex hooks should reread"),
+            drifted_hooks
+        );
+        assert_eq!(
+            fs::read_to_string(&hook_paths.manifest_path)
+                .expect("manifest should reread"),
             manifest
         );
         cleanup(root);
@@ -1277,6 +1964,23 @@ mod tests {
     fn read_json(path: &PathBuf) -> Value {
         let text = fs::read_to_string(path).expect("json should read");
         serde_json::from_str(&text).expect("json should parse")
+    }
+
+    fn read_manifest(path: &PathBuf) -> HookInstallManifest {
+        let text = fs::read_to_string(path).expect("manifest should read");
+        serde_json::from_str(&text).expect("manifest should parse")
+    }
+
+    fn status_for(
+        status: &super::HookInstallStatus,
+        agent: HookInstallAgent,
+    ) -> super::HookInstallAgentStatus {
+        status
+            .agents
+            .iter()
+            .find(|item| item.agent == agent)
+            .cloned()
+            .expect("agent status should exist")
     }
 
     fn cleanup(root: PathBuf) {

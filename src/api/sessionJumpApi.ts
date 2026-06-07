@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { SessionKey } from "./mockPanelContract";
 
 /// 前端运行时来源。
-export type SessionJumpRuntimeSource = "mock" | "codex_cli" | "codex_app";
+export type SessionJumpRuntimeSource = "codex_cli" | "codex_app";
 
 /// 跳回 session 请求。
 export interface JumpToSessionRequest {

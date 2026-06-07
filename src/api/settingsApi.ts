@@ -28,9 +28,8 @@ export const defaultSettings = (): BuilderPanelSettings => ({
     window_size: null,
   },
   agents: {
-    mock_agent_enabled: true,
     codex_cli_enabled: true,
-    codex_app_enabled: false,
+    codex_app_enabled: true,
     claude_cli_enabled: false,
     claude_app_enabled: false,
   },
@@ -275,10 +274,7 @@ const normalizePanelSettings = (
     defaults.window_size,
   );
 
-  if (
-    windowPosition === undefined ||
-    windowSize === undefined
-  ) {
+  if (windowPosition === undefined || windowSize === undefined) {
     return null;
   }
 
@@ -374,10 +370,6 @@ const normalizeAgentSettings = (
   }
 
   const candidate = value as Partial<BuilderPanelSettings["agents"]>;
-  const mockAgentEnabled = normalizeBoolean(
-    candidate.mock_agent_enabled,
-    defaults.mock_agent_enabled,
-  );
   const codexCliEnabled = normalizeBoolean(
     candidate.codex_cli_enabled,
     defaults.codex_cli_enabled,
@@ -396,7 +388,6 @@ const normalizeAgentSettings = (
   );
 
   if (
-    mockAgentEnabled === null ||
     codexCliEnabled === null ||
     codexAppEnabled === null ||
     claudeCliEnabled === null ||
@@ -406,7 +397,6 @@ const normalizeAgentSettings = (
   }
 
   return {
-    mock_agent_enabled: mockAgentEnabled,
     codex_cli_enabled: codexCliEnabled,
     codex_app_enabled: codexAppEnabled,
     claude_cli_enabled: claudeCliEnabled,
@@ -508,7 +498,9 @@ export const normalizeCustomShortcuts = (
 };
 
 /// 归一单条自定义快捷输入。
-const normalizeCustomShortcut = (value: unknown): CustomShortcutInput | null => {
+const normalizeCustomShortcut = (
+  value: unknown,
+): CustomShortcutInput | null => {
   if (!isObjectRecord(value)) {
     return null;
   }

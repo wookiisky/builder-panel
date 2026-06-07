@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   actionLabel,
   aggregateToolUsage,
+  applyPanelWindowControlError,
   canExpandSessionRow,
   canShowTimelineEntry,
   countSessionsByStatus,
@@ -10,7 +11,8 @@ import {
   isLatestSettingsSaveResponse,
   isCodexCliRuntime,
   isCodexAppRuntime,
-  canInstallHooksAfterPreview,
+  defaultHookAgentStatuses,
+  isHookActionDisabled,
   mergePanelWindowStateUpdate,
   panelSessionToId,
   selectPanelSession,
@@ -18,7 +20,6 @@ import {
   shouldSubmitReplyOnKeyDown,
   shouldUseFollowupShortcut,
   sortPanelSessions,
-  toggleHookInstallAgent,
   type PanelSessionListItem,
 } from "./BuilderPanelApp";
 import type { SessionKey } from "../api/mockPanelContract";
@@ -30,10 +31,10 @@ const codexSessionKey: SessionKey = {
   conversation_id: { value: "codex-session-1" },
 };
 
-const mockSessionKey: SessionKey = {
-  agent_kind: "claude_code_cli",
-  project_id: { value: "mock-project-1" },
-  conversation_id: { value: "mock-session-1" },
+const codexAppSessionKey: SessionKey = {
+  agent_kind: "codex_app",
+  project_id: { value: "/tmp/builder-panel-app" },
+  conversation_id: { value: "codex-app-session-1" },
 };
 
 describe("BuilderPanelApp session refresh", () => {
@@ -58,23 +59,23 @@ describe("BuilderPanelApp session refresh", () => {
   it("keeps the user selected session during later refreshes", () => {
     const selectedState = selectPanelSession(
       createDefaultMockPanelUiState(),
-      sessionItem(mockSessionKey, "mock"),
+      sessionItem(codexAppSessionKey, "codex_app"),
     );
 
     const refreshedState = selectFirstSessionWhenMissing(selectedState, [
       sessionItem(codexSessionKey, "codex_cli"),
-      sessionItem(mockSessionKey, "mock"),
+      sessionItem(codexAppSessionKey, "codex_app"),
     ]);
 
     expect(refreshedState.selectedSessionId).toBe(
-      panelSessionToId(sessionItem(mockSessionKey, "mock")),
+      panelSessionToId(sessionItem(codexAppSessionKey, "codex_app")),
     );
   });
 
   it("selects the first available session when the previous selection disappears", () => {
     const selectedState = selectPanelSession(
       createDefaultMockPanelUiState(),
-      sessionItem(mockSessionKey, "mock"),
+      sessionItem(codexAppSessionKey, "codex_app"),
     );
     const refreshedState = selectFirstSessionWhenMissing(selectedState, [
       sessionItem(codexSessionKey, "codex_cli"),
@@ -86,8 +87,8 @@ describe("BuilderPanelApp session refresh", () => {
   });
 
   it("routes by runtime source instead of agent kind", () => {
-    const mockCodexLikeSession = sessionItem(codexSessionKey, "mock");
-    const realCodexSession = sessionItem(codexSessionKey, "codex_cli");
+    const codexAppRuntimeSession = sessionItem(codexSessionKey, "codex_app");
+    const codexCliRuntimeSession = sessionItem(codexSessionKey, "codex_cli");
     const codexAppSession = sessionItem(
       {
         ...codexSessionKey,
@@ -96,30 +97,30 @@ describe("BuilderPanelApp session refresh", () => {
       "codex_app",
     );
 
-    expect(isCodexCliRuntime(mockCodexLikeSession)).toBe(false);
-    expect(isCodexCliRuntime(realCodexSession)).toBe(true);
+    expect(isCodexCliRuntime(codexAppRuntimeSession)).toBe(false);
+    expect(isCodexCliRuntime(codexCliRuntimeSession)).toBe(true);
     expect(isCodexAppRuntime(codexAppSession)).toBe(true);
     expect(isCodexCliRuntime(codexAppSession)).toBe(false);
   });
 
   it("keeps runtime source in selected session identity", () => {
-    const mockCodexLikeSession = sessionItem(codexSessionKey, "mock");
-    const realCodexSession = sessionItem(codexSessionKey, "codex_cli");
+    const codexAppRuntimeSession = sessionItem(codexSessionKey, "codex_app");
+    const codexCliRuntimeSession = sessionItem(codexSessionKey, "codex_cli");
     const selectedState = selectPanelSession(
       createDefaultMockPanelUiState(),
-      mockCodexLikeSession,
+      codexAppRuntimeSession,
     );
-    const sessions = [realCodexSession, mockCodexLikeSession];
+    const sessions = [codexCliRuntimeSession, codexAppRuntimeSession];
 
     const selectedSession = sessions.find(
       (session) =>
         panelSessionToId(session) === selectedState.selectedSessionId,
     );
 
-    expect(panelSessionToId(mockCodexLikeSession)).not.toBe(
-      panelSessionToId(realCodexSession),
+    expect(panelSessionToId(codexAppRuntimeSession)).not.toBe(
+      panelSessionToId(codexCliRuntimeSession),
     );
-    expect(selectedSession?.runtimeSource).toBe("mock");
+    expect(selectedSession?.runtimeSource).toBe("codex_app");
   });
 
   it("only shows timeline entry when capability exists", () => {
@@ -132,7 +133,7 @@ describe("BuilderPanelApp session refresh", () => {
       throw new Error("Codex APP 不可用");
     });
     const disabledSessions = await fetchSessionsForSource(false, async () => [
-      sessionItem(mockSessionKey, "mock"),
+      sessionItem(codexAppSessionKey, "codex_app"),
     ]);
 
     expect(sessions).toEqual([]);
@@ -142,21 +143,21 @@ describe("BuilderPanelApp session refresh", () => {
   it("sorts waiting sessions before running sessions and then by updated time", () => {
     const running = sessionItem(
       sessionKey("project-a", "running"),
-      "mock",
+      "codex_app",
       "running",
       "运行中",
       3000,
     );
     const olderWaiting = sessionItem(
       sessionKey("project-a", "older-waiting"),
-      "mock",
+      "codex_app",
       "waiting_for_answer",
       "等待回复",
       1000,
     );
     const newerWaiting = sessionItem(
       sessionKey("project-a", "newer-waiting"),
-      "mock",
+      "codex_app",
       "waiting_for_approval",
       "等待审批",
       2000,
@@ -175,28 +176,28 @@ describe("BuilderPanelApp session refresh", () => {
     const counts = countSessionsByStatus([
       sessionItem(
         sessionKey("project-a", "approval"),
-        "mock",
+        "codex_app",
         "waiting_for_approval",
         "等待审批",
         1000,
       ),
       sessionItem(
         sessionKey("project-a", "answer"),
-        "mock",
+        "codex_app",
         "waiting_for_answer",
         "等待回复",
         1000,
       ),
       sessionItem(
         sessionKey("project-a", "running"),
-        "mock",
+        "codex_app",
         "running",
         "运行中",
         1000,
       ),
       sessionItem(
         sessionKey("project-a", "completed"),
-        "mock",
+        "codex_app",
         "completed",
         "已完成",
         1000,
@@ -227,12 +228,7 @@ describe("BuilderPanelApp session refresh", () => {
       ),
       usage_5h: verifiedUsage("20 tokens", "codex-account", 2000),
     };
-    const mock = {
-      ...sessionItem(sessionKey("project-a", "mock"), "mock"),
-      usage_5h: verifiedUsage("99 tokens", "mock", 3000),
-    };
-
-    const usage = aggregateToolUsage([olderCodex, newerCodex, mock]);
+    const usage = aggregateToolUsage([olderCodex, newerCodex]);
 
     expect(usage).toEqual([
       {
@@ -286,45 +282,32 @@ describe("BuilderPanelApp session refresh", () => {
     expect(isLatestSettingsSaveResponse(2, 2)).toBe(true);
   });
 
-  it("toggles hook install agents without mutating the original selection", () => {
-    const selected = ["codex", "claude"] as const;
+  it("creates default hook install statuses for the settings list", () => {
+    const statuses = defaultHookAgentStatuses();
 
-    const withoutCodex = toggleHookInstallAgent(selected, "codex");
-    const withCodexAgain = toggleHookInstallAgent(withoutCodex, "codex");
-
-    expect(selected).toEqual(["codex", "claude"]);
-    expect(withoutCodex).toEqual(["claude"]);
-    expect(withCodexAgain).toEqual(["claude", "codex"]);
+    expect(statuses.map((status) => status.agent)).toEqual([
+      "codex",
+      "claude",
+    ]);
+    expect(statuses.every((status) => status.can_install)).toBe(true);
+    expect(statuses.every((status) => status.can_uninstall)).toBe(false);
   });
 
-  it("requires preview for the current hook install selection before install", () => {
-    const preview = {
-      files_to_modify: ["/tmp/hooks.json"],
-      backup_files: ["/tmp/hooks.json.builder-panel.bak"],
-      manifest_path: "/tmp/manifest.json",
+  it("disables duplicate hook install and uninstall actions", () => {
+    const installed = {
+      ...defaultHookAgentStatuses()[0],
+      state: "installed" as const,
+      message: "已安装",
+      can_install: false,
+      can_uninstall: true,
     };
+    const notInstalled = defaultHookAgentStatuses()[1];
 
-    expect(
-      canInstallHooksAfterPreview({
-        selectedAgents: ["codex"],
-        previewAgents: null,
-        preview: null,
-      }),
-    ).toBe(false);
-    expect(
-      canInstallHooksAfterPreview({
-        selectedAgents: ["codex", "claude"],
-        previewAgents: ["codex"],
-        preview,
-      }),
-    ).toBe(false);
-    expect(
-      canInstallHooksAfterPreview({
-        selectedAgents: ["claude", "codex"],
-        previewAgents: ["codex", "claude"],
-        preview,
-      }),
-    ).toBe(true);
+    expect(isHookActionDisabled(installed, "install", null)).toBe(true);
+    expect(isHookActionDisabled(installed, "uninstall", null)).toBe(false);
+    expect(isHookActionDisabled(notInstalled, "install", null)).toBe(false);
+    expect(isHookActionDisabled(notInstalled, "uninstall", null)).toBe(true);
+    expect(isHookActionDisabled(installed, "uninstall", "codex")).toBe(true);
   });
 
   it("merges panel window updates during the debounce window", () => {
@@ -341,6 +324,18 @@ describe("BuilderPanelApp session refresh", () => {
       window_position: { x: 12, y: 20 },
       window_size: { width: 860, height: 640 },
     });
+  });
+
+  it("keeps submitting state when panel window controls fail", () => {
+    const current = {
+      ...createDefaultMockPanelUiState(),
+      submittingInteractionId: "approval-1",
+    };
+
+    const next = applyPanelWindowControlError(current, "最小化窗口失败");
+
+    expect(next.errorMessage).toBe("最小化窗口失败");
+    expect(next.submittingInteractionId).toBe("approval-1");
   });
 });
 

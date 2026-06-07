@@ -143,7 +143,7 @@ textarea:focus-visible {
 .session-detail > footer button,
 .timeline-overlay button,
 .shortcut-row button,
-.hook-actions button,
+.hook-install-row-actions button,
 .shortcut-editor button,
 .overlay-panel button,
 .detail-summary-line button {
@@ -777,13 +777,6 @@ button:disabled {
   max-width: 58%;
 }
 
-.hook-actions {
-  display: flex !important;
-  grid-column: 1 / -1;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
 .shortcut-editor {
   grid-column: 1 / -1;
   display: grid !important;
@@ -889,6 +882,53 @@ button:disabled {
   font-size: 12px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.hook-install-list {
+  grid-column: 1 / -1;
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  gap: 6px;
+}
+
+.hook-install-row {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  background: var(--panel-soft);
+}
+
+.hook-install-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.hook-install-copy strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hook-install-copy span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hook-install-row-actions {
+  display: flex !important;
+  gap: 5px;
+  justify-content: flex-end;
 }
 
 .hook-preview {

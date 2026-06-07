@@ -93,6 +93,19 @@ export const closePanelWindow = async (): Promise<void> => {
   await getCurrentWindow().close();
 };
 
+/// 最小化当前 panel 窗口。
+export const minimizePanelWindow = async (): Promise<void> => {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  try {
+    await getCurrentWindow().minimize();
+  } catch (error) {
+    throw errorWithCause(error, "最小化窗口失败");
+  }
+};
+
 /// 浏览器开发环境保存 panel 状态。
 const saveFallbackPanelState = (update: PanelWindowStateUpdate): void => {
   const raw = window.localStorage.getItem("builder-panel-settings");

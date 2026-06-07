@@ -8,7 +8,7 @@ Interaction Service 只处理已经存在于当前 session 中的审批和选项
 
 Interaction Service 不负责文本回复，不负责时间线查询，不负责真实 agent 私有协议。
 
-阶段 5 中，审批结果和选项结果回写到 mock agent runtime 的 directive 记录。
+mock 测试基线中，审批结果和选项结果回写到 mock agent runtime 的 directive 记录。
 
 ## 代码入口
 
@@ -16,11 +16,11 @@ Interaction Service 不负责文本回复，不负责时间线查询，不负责
 
 `src-tauri/src/ports/agent_adapter_port.rs` 定义审批决策、选项提交和回写端口。
 
-`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock directive 记录入口。
+`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock 测试基线 directive 记录入口。
 
 `src-tauri/src/domain/agent_interaction.rs` 是 pending approval 事实入口。
 
-`src-tauri/src/tauri_api/commands.rs` 是审批提交 command 入口。
+`src-tauri/src/tauri_api/commands.rs` 是真实 Codex 审批提交 command 入口。
 
 ## 对外接口
 
@@ -32,7 +32,7 @@ Interaction Service 不负责文本回复，不负责时间线查询，不负责
 
 选项请求必须包含 `SessionKey`、`InteractionId` 和已选选项值。
 
-阶段 5 支持注入一次 mock 回写失败，用于验证失败路径。
+mock 测试基线支持注入一次 mock 回写失败，用于验证失败路径。
 
 ## 核心流程
 
@@ -46,7 +46,7 @@ Interaction Service 校验请求中的 `InteractionId` 与当前 pending approva
 
 校验通过后，Interaction Service 调用 agent interaction writer 端口回写审批决策。
 
-Mock runtime 记录 directive 后写入 `TurnCompleted` 事件并清理 pending。
+mock 测试基线 runtime 记录 directive 后写入 `TurnCompleted` 事件并清理 pending。
 
 Interaction Service 处理选项时先读取当前 session。
 
@@ -80,7 +80,7 @@ Interaction Service 校验单选 choice 不提交多个值。
 
 选项空选择、非法选项值、重复选项值或单选提交多个值时，返回应用错误。
 
-Mock 回写失败时，返回可重试错误。
+mock 测试基线回写失败时，返回可重试错误。
 
 失败不写 `TurnCompleted`。
 
@@ -90,13 +90,13 @@ Mock 回写失败时，返回可重试错误。
 
 ## 观测与验收
 
-点击允许后，mock agent 收到 allow directive。
+测试基线点击允许后，mock agent 收到 allow directive。
 
-点击拒绝后，mock agent 收到 deny directive。
+测试基线点击拒绝后，mock agent 收到 deny directive。
 
-点击允许并记住后，mock agent 收到 allow and remember directive。
+测试基线点击允许并记住后，mock agent 收到 allow and remember directive。
 
-提交选项后，mock agent 收到 choice directive。
+测试基线提交选项后，mock agent 收到 choice directive。
 
 提交中按钮不能重复点击。
 

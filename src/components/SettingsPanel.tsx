@@ -1,8 +1,8 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import type {
   HookInstallAgent,
-  HookInstallPreview,
+  HookInstallAgentStatus,
 } from "../api/hookInstallApi";
 import type {
   BuilderPanelSettings,
@@ -12,16 +12,14 @@ import type {
 
 /// hook 安装 UI 状态。
 export interface HookInstallPanelState {
-  /// 当前选择的安装目标。
-  readonly selectedAgents: readonly HookInstallAgent[];
-  /// 当前预览对应的安装目标。
-  readonly previewAgents: readonly HookInstallAgent[] | null;
-  /// 当前预览结果。
-  readonly preview: HookInstallPreview | null;
+  /// 当前 agent hook 安装状态。
+  readonly agentStatuses: readonly HookInstallAgentStatus[];
   /// 当前 hook 操作状态提示。
   readonly statusMessage: string | null;
-  /// 是否正在执行 hook 操作。
-  readonly working: boolean;
+  /// 正在执行操作的 agent。
+  readonly workingAgent: HookInstallAgent | null;
+  /// 是否正在刷新 hook 状态。
+  readonly refreshing: boolean;
 }
 
 /// 设置页属性。
@@ -36,14 +34,10 @@ export interface SettingsPanelProps {
   readonly hookInstall: HookInstallPanelState;
   /// 设置变化回调。
   readonly onChange: (settings: BuilderPanelSettings) => void;
-  /// hook agent 选择变化回调。
-  readonly onToggleHookAgent: (agent: HookInstallAgent) => void;
-  /// 预览 hook 安装回调。
-  readonly onPreviewHookInstall: () => void;
-  /// 安装 hook 回调。
-  readonly onInstallHooks: () => void;
-  /// 卸载 hook 回调。
-  readonly onUninstallHooks: () => void;
+  /// 安装单个 hook 回调。
+  readonly onInstallHook: (agent: HookInstallAgent) => void;
+  /// 卸载单个 hook 回调。
+  readonly onUninstallHook: (agent: HookInstallAgent) => void;
 }
 
 /// Builder Panel 设置页。
@@ -53,13 +47,9 @@ export const SettingsPanel = ({
   saving,
   hookInstall,
   onChange,
-  onToggleHookAgent,
-  onPreviewHookInstall,
-  onInstallHooks,
-  onUninstallHooks,
+  onInstallHook,
+  onUninstallHook,
 }: SettingsPanelProps) => {
-  const [previewOpen, setPreviewOpen] = useState(false);
-
   const update = (next: BuilderPanelSettings): void => {
     onChange(next);
   };
@@ -183,19 +173,6 @@ export const SettingsPanel = ({
       </SettingsGroup>
       <SettingsGroup title="Agents">
         <ToggleRow
-          checked={settings.agents.mock_agent_enabled}
-          label="Mock Agent"
-          onChange={(checked) => {
-            update({
-              ...settings,
-              agents: {
-                ...settings.agents,
-                mock_agent_enabled: checked,
-              },
-            });
-          }}
-        />
-        <ToggleRow
           checked={settings.agents.codex_cli_enabled}
           label="Codex CLI"
           onChange={(checked) => {
@@ -251,66 +228,22 @@ export const SettingsPanel = ({
         />
       </SettingsGroup>
       <SettingsGroup title="Hook Install">
-        <ToggleRow
-          checked={hookInstall.selectedAgents.includes("codex")}
-          label="Codex CLI hook"
-          onChange={() => {
-            onToggleHookAgent("codex");
-          }}
-        />
-        <ToggleRow
-          checked={hookInstall.selectedAgents.includes("claude")}
-          label="Claude CLI hook"
-          onChange={() => {
-            onToggleHookAgent("claude");
-          }}
-        />
-        <div className="hook-actions">
-          <button
-            disabled={
-              hookInstall.working || hookInstall.selectedAgents.length === 0
-            }
-            type="button"
-            onClick={() => {
-              setPreviewOpen(false);
-              onPreviewHookInstall();
-            }}
-          >
-            预览修改
-          </button>
-          <button
-            disabled={hookInstall.preview === null}
-            type="button"
-            onClick={() => {
-              setPreviewOpen(true);
-            }}
-          >
-            预览详情
-          </button>
-          <button
-            disabled={
-              hookInstall.working || !canInstallHooksFromPreview(hookInstall)
-            }
-            type="button"
-            onClick={onInstallHooks}
-          >
-            安装
-          </button>
-          <button
-            disabled={hookInstall.working}
-            type="button"
-            onClick={onUninstallHooks}
-          >
-            卸载
-          </button>
+        <div className="hook-install-list">
+          {hookInstall.agentStatuses.map((status) => (
+            <HookInstallRow
+              key={status.agent}
+              status={status}
+              workingAgent={hookInstall.workingAgent}
+              onInstall={onInstallHook}
+              onUninstall={onUninstallHook}
+            />
+          ))}
         </div>
         {hookInstall.statusMessage !== null && (
           <p className="settings-status">{hookInstall.statusMessage}</p>
         )}
-        {hookInstall.preview !== null && (
-          <p className="settings-note">
-            已生成 {hookInstall.preview.files_to_modify.length} 个修改目标
-          </p>
+        {hookInstall.refreshing && (
+          <p className="settings-note">正在读取 hook 状态</p>
         )}
       </SettingsGroup>
       <SettingsGroup title="Replies">
@@ -551,14 +484,6 @@ export const SettingsPanel = ({
           }}
         />
       </SettingsGroup>
-      {previewOpen && hookInstall.preview !== null && (
-        <HookPreviewOverlay
-          preview={hookInstall.preview}
-          onClose={() => {
-            setPreviewOpen(false);
-          }}
-        />
-      )}
     </section>
   );
 };
@@ -626,73 +551,66 @@ const SettingsGroup = ({ title, children }: SettingsGroupProps) => (
   </section>
 );
 
-/// 预览列表属性。
-interface PreviewListProps {
-  /// 标题。
-  readonly title: string;
-  /// 路径列表。
-  readonly values: readonly string[];
+/// hook 安装行属性。
+interface HookInstallRowProps {
+  /// 当前 agent 状态。
+  readonly status: HookInstallAgentStatus;
+  /// 正在执行操作的 agent。
+  readonly workingAgent: HookInstallAgent | null;
+  /// 安装回调。
+  readonly onInstall: (agent: HookInstallAgent) => void;
+  /// 卸载回调。
+  readonly onUninstall: (agent: HookInstallAgent) => void;
 }
 
-/// hook 安装预览路径列表。
-const PreviewList = ({ title, values }: PreviewListProps) => (
-  <div>
-    <strong>{title}</strong>
-    <ul>
-      {values.map((value) => (
-        <li key={value}>{value}</li>
-      ))}
-    </ul>
-  </div>
-);
+/// hook 安装单行。
+const HookInstallRow = ({
+  status,
+  workingAgent,
+  onInstall,
+  onUninstall,
+}: HookInstallRowProps) => {
+  const busy = workingAgent === status.agent;
+  const blocked = workingAgent !== null;
+  const reasonText = status.reasons.join("；");
 
-/// hook 安装预览弹层属性。
-interface HookPreviewOverlayProps {
-  /// 当前预览结果。
-  readonly preview: HookInstallPreview;
-  /// 关闭回调。
-  readonly onClose: () => void;
-}
-
-/// hook 安装预览弹层。
-const HookPreviewOverlay = ({ preview, onClose }: HookPreviewOverlayProps) => (
-  <div className="overlay-backdrop" role="presentation">
-    <section className="overlay-panel hook-preview" aria-label="hook 安装预览">
-      <header>
-        <div>
-          <strong>Hook Preview</strong>
-          <p>安装前只展示将写入和备份的路径。</p>
-        </div>
-        <button type="button" onClick={onClose}>
-          关闭
+  return (
+    <div className="hook-install-row" title={reasonText}>
+      <div className="hook-install-copy">
+        <strong>{hookInstallAgentLabel(status.agent)}</strong>
+        <span>{busy ? "处理中" : status.message}</span>
+      </div>
+      <div className="hook-install-row-actions">
+        <button
+          disabled={blocked || !status.can_install}
+          type="button"
+          onClick={() => {
+            onInstall(status.agent);
+          }}
+        >
+          安装
         </button>
-      </header>
-      <PreviewList title="将修改" values={preview.files_to_modify} />
-      <PreviewList title="将备份" values={preview.backup_files} />
-      <PreviewList title="Manifest" values={[preview.manifest_path]} />
-    </section>
-  </div>
-);
-
-/// 判断当前预览是否允许安装。
-const canInstallHooksFromPreview = (state: HookInstallPanelState): boolean => {
-  if (state.preview === null || state.previewAgents === null) {
-    return false;
-  }
-
-  return sameHookInstallAgents(state.previewAgents, state.selectedAgents);
+        <button
+          disabled={blocked || !status.can_uninstall}
+          type="button"
+          onClick={() => {
+            onUninstall(status.agent);
+          }}
+        >
+          卸载
+        </button>
+      </div>
+    </div>
+  );
 };
 
-/// 判断两个 hook agent 集合是否一致。
-const sameHookInstallAgents = (
-  left: readonly HookInstallAgent[],
-  right: readonly HookInstallAgent[],
-): boolean => {
-  if (left.length !== right.length) {
-    return false;
+/// 返回 hook 安装行展示名。
+const hookInstallAgentLabel = (agent: HookInstallAgent): string => {
+  if (agent === "codex") {
+    return "codex & codex cli";
   }
 
-  return left.every((agent) => right.includes(agent));
+  return "Claude CLI hook";
 };
 
 /// 开关行属性。

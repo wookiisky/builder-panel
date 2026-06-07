@@ -28,11 +28,11 @@ Settings Service 会将 `collapsed` 归一化为 `false`。
 
 Panel `collapsed` 字段不再驱动主界面布局。
 
-Agents 设置控制 mock agent、Codex CLI、Codex APP、Claude Code CLI 和 Claude Code APP 开关。
+Agents 设置控制 Codex CLI、Codex APP、Claude Code CLI 和 Claude Code APP 开关。
 
-当前 UI 允许修改 mock agent、Codex CLI 和 Codex APP 开关。
+当前 UI 允许修改 Codex CLI 和 Codex APP 开关。
 
-Codex APP 开关当前保存在模型中并驱动 Codex APP session 读取。
+Codex APP 开关当前保存在模型中并驱动 Codex APP session 读取；默认值为开启。
 
 Claude Code CLI 和 Claude Code APP 开关当前保存在模型中，但 UI 禁用，不驱动 session 读取。
 
@@ -88,4 +88,4 @@ JSON 设置文件 adapter 使用同目录临时文件写入后替换目标文件
 
 `src/api/settingsApi.test.ts` 覆盖前端默认设置、默认 panel 状态事实和自定义快捷输入归一化。
 
-`src/views/BuilderPanelApp.test.ts` 覆盖 hook 安装目标选择的前端纯状态转换。
+`src/views/BuilderPanelApp.test.ts` 覆盖 hook 安装按钮禁用规则。

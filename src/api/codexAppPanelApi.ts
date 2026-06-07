@@ -3,11 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ApprovalDecision,
   InteractionId,
-  SendReplyRequest,
   SessionDetailViewModel,
   SessionKey,
   SessionListItemViewModel,
-  SubmitChoiceRequest,
   TimelinePage,
   TimelineQuery,
 } from "./mockPanelContract";
@@ -20,6 +18,26 @@ export interface ResolveCodexAppApprovalRequest {
   readonly interaction_id: InteractionId;
   /// 审批决策。
   readonly decision: ApprovalDecision;
+}
+
+/// Codex APP 文本回复请求。
+export interface SendCodexAppReplyRequest {
+  /// 所属会话。
+  readonly session_key: SessionKey;
+  /// 所属交互。
+  readonly interaction_id: InteractionId;
+  /// 文本内容。
+  readonly content: string;
+}
+
+/// Codex APP 选项提交请求。
+export interface SubmitCodexAppChoiceRequest {
+  /// 所属会话。
+  readonly session_key: SessionKey;
+  /// 所属交互。
+  readonly interaction_id: InteractionId;
+  /// 用户选择的选项值。
+  readonly selected_values: readonly string[];
 }
 
 /// Codex APP follow-up turn 请求。
@@ -74,7 +92,7 @@ export const submitCodexAppApproval = async (
 
 /// 提交 Codex APP 文本回复。
 export const submitCodexAppReply = async (
-  request: SendReplyRequest,
+  request: SendCodexAppReplyRequest,
 ): Promise<void> => {
   try {
     await invoke("send_codex_app_reply", { request });
@@ -85,7 +103,7 @@ export const submitCodexAppReply = async (
 
 /// 提交 Codex APP 选项回复。
 export const submitCodexAppChoice = async (
-  request: SubmitChoiceRequest,
+  request: SubmitCodexAppChoiceRequest,
 ): Promise<void> => {
   try {
     await invoke("submit_codex_app_choice", { request });

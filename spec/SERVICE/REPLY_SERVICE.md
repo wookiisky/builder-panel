@@ -8,7 +8,7 @@ Reply Service 只处理当前 session 中的 pending text reply。
 
 Reply Service 不负责审批，不负责选项交互，不负责快捷回复过滤，不负责真实 agent 私有协议。
 
-阶段 5 中，文本回复和快捷回复最终都通过本文本回复路径回写到 mock agent runtime 的 directive 记录。
+mock 测试基线中，文本回复通过本文本回复路径回写到 mock agent runtime 的 directive 记录。
 
 ## 代码入口
 
@@ -16,11 +16,11 @@ Reply Service 不负责审批，不负责选项交互，不负责快捷回复过
 
 `src-tauri/src/ports/reply_sender_port.rs` 定义文本回复发送端口。
 
-`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock 文本回复记录入口。
+`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock 测试基线文本回复记录入口。
 
 `src-tauri/src/domain/agent_interaction.rs` 是 pending text reply 事实入口。
 
-`src-tauri/src/tauri_api/commands.rs` 是文本回复提交 command 入口。
+`src-tauri/src/tauri_api/commands.rs` 是 Codex APP 文本回复提交 command 入口。
 
 `src-tauri/src/services/shortcut_reply_service.rs` 是快捷回复过滤入口。
 
@@ -30,7 +30,7 @@ Reply Service 不负责审批，不负责选项交互，不负责快捷回复过
 
 请求必须包含 `SessionKey`、`InteractionId` 和文本内容。
 
-阶段 3 支持注入一次 mock 回写失败，用于验证失败路径。
+mock 测试基线支持注入一次 mock 回写失败，用于验证失败路径。
 
 文本回复最大长度为 1000 个字符。
 
@@ -52,7 +52,7 @@ Reply Service 校验请求中的 `InteractionId` 与当前 pending text reply �
 
 校验通过后，Reply Service 调用 reply sender 端口回写文本。
 
-Mock runtime 记录 directive 后写入 `TurnCompleted` 事件并清理 pending。
+mock 测试基线 runtime 记录 directive 后写入 `TurnCompleted` 事件并清理 pending。
 
 ## 状态与幂等
 
@@ -76,7 +76,7 @@ Mock runtime 记录 directive 后写入 `TurnCompleted` 事件并清理 pending�
 
 空内容、超长内容、会话不存在、状态不匹配、交互类型不匹配或交互 ID 不匹配时，返回应用错误。
 
-Mock 回写失败时，返回可重试错误。
+mock 测试基线回写失败时，返回可重试错误。
 
 失败不写 `TurnCompleted`。
 

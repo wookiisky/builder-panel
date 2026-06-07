@@ -151,8 +151,6 @@ impl Default for DisplaySettings {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub struct AgentSettings {
-    /// 是否启用 mock agent。
-    pub mock_agent_enabled: bool,
     /// 是否启用 Codex CLI。
     pub codex_cli_enabled: bool,
     /// 是否启用 Codex APP 探针。
@@ -167,9 +165,8 @@ impl Default for AgentSettings {
     /// 返回 Agent 接入默认值。
     fn default() -> Self {
         Self {
-            mock_agent_enabled: true,
             codex_cli_enabled: true,
-            codex_app_enabled: false,
+            codex_app_enabled: true,
             claude_cli_enabled: false,
             claude_app_enabled: false,
         }

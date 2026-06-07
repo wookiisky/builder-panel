@@ -44,13 +44,13 @@ Codex APP app-server server request 可能缺少必填字段或字段类型错�
 
 Domain 失败事件可能携带统一 `AppError`。
 
-mock 审批提交可能遇到会话不存在、状态不匹配、交互类型不匹配、交互 ID 不匹配或回写失败。
+Codex APP 审批提交可能遇到会话不存在、状态不匹配、交互类型不匹配、交互 ID 不匹配或回写失败。
 
-mock 选项提交可能遇到空选择、非法选项值、单选提交多个值、会话不存在、状态不匹配、交互类型不匹配、交互 ID 不匹配或回写失败。
+Codex APP 选项提交可能遇到空选择、非法选项值、单选提交多个值、会话不存在、状态不匹配、交互类型不匹配、交互 ID 不匹配或回写失败。
 
-mock 文本回复提交可能遇到空内容、超长内容、会话不存在、状态不匹配、交互类型不匹配、交互 ID 不匹配或回写失败。
+Codex APP 文本回复提交可能遇到空内容、超长内容、会话不存在、状态不匹配、交互类型不匹配、交互 ID 不匹配或回写失败。
 
-mock timeline 查询可能遇到 reader 端口错误。
+Codex APP timeline 查询可能遇到 reader 端口错误。
 
 Codex CLI timeline 查询可能遇到 reader 端口错误。
 
@@ -104,13 +104,13 @@ Tauri 应用启动失败时，进程直接失败，不写入业务状态。
 
 `Failed` 事件写入 session 最近错误，并清理不可继续的 pending interaction。
 
-mock 审批、选项和回复校验失败返回应用错误，不写 session 状态。
+Codex APP 审批、选项和回复校验失败返回应用错误，不写 session 状态。
 
-mock 审批、选项和回复回写失败返回可重试应用错误，不写 `TurnCompleted`。
+Codex APP 审批、选项和回复回写失败返回可重试应用错误，不写 `InteractionCompleted`。
 
-mock 审批、选项和回复回写失败不清理 pending interaction。
+Codex APP 审批、选项和回复回写失败不清理 pending interaction。
 
-mock timeline 查询失败不写 session 状态。
+Codex APP timeline 查询失败不写 session 状态。
 
 Codex CLI timeline 查询失败不写 session 状态。
 
@@ -184,11 +184,15 @@ panel 窗口状态恢复、监听或保存失败时返回前端可展示错误�
 
 通知发送失败时返回应用错误，不写 session 状态。
 
+hook 状态读取失败时，前端保留已有 hook 状态并展示错误提示。
+
 hook 安装失败时返回应用错误，不声明 hook 已安装。
 
 hook 安装失败时，已写配置会尽量回滚到安装前状态。
 
 hook 卸载失败时返回应用错误，不声明 hook 已卸载。
+
+hook 单项卸载写回剩余 manifest 失败时，已恢复或删除的目标配置会尽量回滚。
 
 ## 降级规则
 
@@ -200,11 +204,11 @@ bridge 不可用时，hook helper 不输出阻塞 directive。
 
 directive 编码失败时，hook helper 不输出 stdout。
 
-mock 回写失败时，前端展示错误并允许用户继续处理当前 pending interaction。
+Codex APP 回写失败时，前端展示错误并允许用户继续处理当前 pending interaction。
 
-mock 选项回写失败时，前端保留当前 interaction 的已选选项。
+Codex APP 选项回写失败时，前端保留当前 interaction 的已选选项。
 
-mock 回复回写失败时，前端保留当前 session 草稿。
+Codex APP 回复回写失败时，前端保留当前 session 草稿。
 
 快捷回复回写失败时，前端将快捷回复内容写回当前 session 草稿。
 
@@ -222,7 +226,7 @@ timeline 大文本释放失败时，用户仍可关闭弹层。
 
 Codex APP schema 或 app-server 不可用时，不展示 Codex APP 结构化控制能力。
 
-Codex APP session 来源读取失败时，前端跳过 Codex APP 来源，不阻断 mock 和 Codex CLI session 展示。
+Codex APP session 来源读取失败时，前端跳过 Codex APP 来源，不阻断 Codex CLI session 展示。
 
 Rust 工具链不可用时，只能完成前端测试、架构脚本和静态文件检查。
 
@@ -238,7 +242,7 @@ panel 窗口移动或尺寸保存失败时，不影响 session 刷新、审批�
 
 真实系统通知不可用时，当前仅保留记录型通知 adapter 验证路径。
 
-hook 安装失败时，用户可根据预览和备份路径人工检查配置。
+hook 安装失败时，用户可根据状态原因和备份路径人工检查配置。
 
 hook 安装 manifest 写入失败时，不应留下可被卸载流程当作成功安装使用的新 manifest，且旧 manifest 和旧备份不得被污染。
 
@@ -254,11 +258,11 @@ hook helper 可输出简短 stderr 诊断。
 
 阶段 0 不展示真实 agent 状态。
 
-阶段 3 展示 mock agent 状态，但不声明真实 agent 已连接。
+产品运行时不展示 mock agent 状态。
 
-mock 审批或回复失败时，前端显示错误提示。
+Codex APP 审批或回复失败时，前端显示错误提示。
 
-mock 选项失败时，前端显示错误提示，并保留已选选项。
+Codex APP 选项失败时，前端显示错误提示，并保留已选选项。
 
 timeline 查询失败时，前端在 timeline 弹层中展示错误状态。
 
@@ -304,15 +308,15 @@ hook 安装或卸载失败时，调用方应展示用户可读错误消息。
 
 `src-tauri/src/domain/session_state.rs` 是失败事件收敛入口。
 
-`src-tauri/src/services/interaction_service.rs` 是 mock 审批错误收敛入口。
+`src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP 审批、选项和回复错误收敛入口。
 
-`src-tauri/src/services/interaction_service.rs` 是 mock 选项错误收敛入口。
+`src-tauri/src/services/interaction_service.rs` 是 mock 测试基线审批和选项错误收敛入口。
 
-`src-tauri/src/services/reply_service.rs` 是 mock 回复错误收敛入口。
+`src-tauri/src/services/reply_service.rs` 是 mock 测试基线回复错误收敛入口。
 
-`src-tauri/src/services/process_timeline_service.rs` 是 mock timeline 错误收敛入口。
+`src-tauri/src/services/process_timeline_service.rs` 是 Codex CLI 和 Codex APP timeline 查询错误收敛入口。
 
-`src-tauri/src/services/process_timeline_service.rs` 是 Codex CLI timeline 查询错误收敛入口。
+`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock 测试基线 timeline 数据源入口。
 
 `src-tauri/src/services/preset_command_service.rs` 是预设命令复制降级入口。
 
@@ -334,7 +338,7 @@ hook 安装或卸载失败时，调用方应展示用户可读错误消息。
 
 `src/api/settingsApi.ts` 是浏览器 fallback 设置结构校验入口。
 
-`src/views/BuilderPanelApp.tsx` 是 mock 前端错误提示入口。
+`src/views/BuilderPanelApp.tsx` 是 Codex CLI 和 Codex APP 前端错误提示入口。
 
 ## 相关测试
 
@@ -358,11 +362,11 @@ hook 安装或卸载失败时，调用方应展示用户可读错误消息。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 覆盖 Codex APP hook 分流、schema 探针、app-server request 和 notification 字段校验。
 
-`src-tauri/src/services/interaction_service.rs` 覆盖 mock 审批回写失败不清理 pending。
+`src-tauri/src/services/interaction_service.rs` 覆盖 mock 测试基线审批回写失败不清理 pending。
 
-`src-tauri/src/services/interaction_service.rs` 覆盖 mock 选项校验失败和回写失败不清理 pending。
+`src-tauri/src/services/interaction_service.rs` 覆盖 mock 测试基线选项校验失败和回写失败不清理 pending。
 
-`src-tauri/src/services/reply_service.rs` 覆盖 mock 回复校验失败和回写失败不清理 pending。
+`src-tauri/src/services/reply_service.rs` 覆盖 mock 测试基线回复校验失败和回写失败不清理 pending。
 
 `src-tauri/src/services/preset_command_service.rs` 覆盖复制降级计划。
 
@@ -370,7 +374,7 @@ hook 安装或卸载失败时，调用方应展示用户可读错误消息。
 
 `src-tauri/src/domain/view_model.rs` 覆盖缺少跳回目标时不生成跳回动作。
 
-`src/stores/mockPanelStore.test.ts` 覆盖 mock 回复失败时草稿保留和选项失败时选择保留所需的状态隔离。
+`src/stores/mockPanelStore.test.ts` 覆盖回复失败时草稿保留和选项失败时选择保留所需的状态隔离。
 
 `src-tauri/src/services/settings_service.rs` 覆盖设置缺失、损坏和保存失败边界。
 
@@ -380,6 +384,6 @@ hook 安装或卸载失败时，调用方应展示用户可读错误消息。
 
 `src-tauri/src/services/notification_service.rs` 覆盖通知抑制、合并和点击定位。
 
-`src-tauri/src/adapters/hook_install/mod.rs` 覆盖 hook 安装预览、备份恢复和卸载失败边界。
+`src-tauri/src/adapters/hook_install/mod.rs` 覆盖 hook 状态查询、安装预览、备份恢复和卸载失败边界。
 
 `src-tauri/src/adapters/log_sanitizer/mod.rs` 覆盖敏感日志字段脱敏和长文本截断。

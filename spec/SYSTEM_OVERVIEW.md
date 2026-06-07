@@ -34,11 +34,11 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 阶段 2 建立本地 bridge codec、Mac Unix Domain Socket 传输、Windows Named Pipe 传输代码、hook helper 读取 stdin 和 stdout directive 编码。
 
-阶段 3 建立 mock agent adapter、mock agent runtime、session 读取、审批回写、文本回复回写和过程事件时间线查询闭环。
+阶段 3 曾建立 mock agent adapter、mock agent runtime、session 读取、审批回写、文本回复回写和过程事件时间线查询闭环。
 
 阶段 4 开始接入 Codex CLI 真实 hook 闭环和 Codex APP app-server schema 探针。
 
-阶段 5 建立 mock 选项处理、允许并记住审批、快捷回复过滤、预设命令计划和跳回端口边界。
+阶段 5 建立选项处理、允许并记住审批、快捷回复过滤、预设命令计划和跳回端口边界。
 
 阶段 6 建立托管过程事件 timeline 内存缓存、分页查询、搜索筛选、去重淘汰和关闭释放边界。
 
@@ -46,7 +46,7 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 阶段 8 建立设置文件原子读写、hook 安装器、日志脱敏、性能预算脚本和 spec 文档门禁。
 
-阶段 8 设置页已接入 hook 安装预览、安装和卸载入口。
+阶段 8 设置页已接入 hook 状态查询、安装和卸载入口。
 
 阶段 8 设置已保存 panel 窗口位置和窗口尺寸。
 
@@ -68,11 +68,15 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 当前 Codex APP hook 与 app-server 事件通过 thread ID 和 cwd 映射统一为同一个 session。
 
+当前产品运行时只读取 Codex CLI 和 Codex APP session。
+
+当前 Tauri 产品 command 不注册 mock session、mock 审批、mock 回复、mock 选项或 mock timeline 入口。
+
 当前系统不声明 Claude Code 真实闭环已完成。
 
 当前 Windows Named Pipe 代码未在 Windows 本机完成人工验收。
 
-当前 mock agent 只作为核心流程验证基线，不代表真实 Codex 或 Claude Code 能力。
+当前 mock agent 只作为测试基线，不作为产品运行时 session 来源，也不代表真实 Codex 或 Claude Code 能力。
 
 当前跳回能力和文本回写能力是两个独立能力。
 
@@ -100,7 +104,7 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 `src-tauri/src/adapters/bridge/hook_cli.rs` 是 hook helper 运行逻辑入口。
 
-`src-tauri/src/adapters/mock_agent/mod.rs` 是阶段 3 mock agent adapter 和 runtime 入口。
+`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock agent 测试基线 adapter 和 runtime 入口。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook adapter、runtime 和 bridge server 入口。
 
@@ -148,7 +152,7 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
-`src/api/hookInstallApi.ts` 是前端 hook 安装 command 调用入口。
+`src/api/hookInstallApi.ts` 是前端 hook 状态查询和安装 command 调用入口。
 
 `src-tauri/src/domain/session_state.rs` 是 session 状态入口。
 
@@ -166,7 +170,7 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 `src-tauri/src/adapters/bridge/hook_cli.rs` 验证 hook helper fail-open 和 directive。
 
-`src-tauri/src/adapters/mock_agent/mod.rs` 验证 mock event、用量、directive 和失败保留。
+`src-tauri/src/adapters/mock_agent/mod.rs` 验证 mock 测试基线 event、用量、directive 和失败保留。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 验证 Codex CLI hook 事件转换和审批 directive 等待。
 
@@ -194,7 +198,7 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 `src-tauri/src/adapters/config_file/mod.rs` 验证配置缺字段默认化和原子写失败不覆盖旧配置。
 
-`src-tauri/src/adapters/hook_install/mod.rs` 验证 hook 安装预览、备份恢复和卸载。
+`src-tauri/src/adapters/hook_install/mod.rs` 验证 hook 状态查询、安装预览、备份恢复和卸载。
 
 `src-tauri/src/adapters/log_sanitizer/mod.rs` 验证日志脱敏。
 

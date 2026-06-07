@@ -110,4 +110,4 @@ Codex hook stdout directive 由本项目测试固定，不由 Domain 推导。
 
 `src-tauri/src/adapters/bridge/hook_output.rs` 覆盖 Codex allow 和 deny stdout。
 
-`src-tauri/src/adapters/hook_install/mod.rs` 覆盖 Codex hook 写入、重复安装替换和备份恢复。
+`src-tauri/src/adapters/hook_install/mod.rs` 覆盖 Codex hook 写入、重复安装跳过、漂移状态修复和备份恢复。

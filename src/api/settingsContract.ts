@@ -57,8 +57,6 @@ export interface PanelSettings {
 
 /// Agent 接入设置。
 export interface AgentSettings {
-  /// 是否启用 mock agent。
-  readonly mock_agent_enabled: boolean;
   /// 是否启用 Codex CLI。
   readonly codex_cli_enabled: boolean;
   /// 是否启用 Codex APP。

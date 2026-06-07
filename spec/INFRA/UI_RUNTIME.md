@@ -14,7 +14,7 @@ UI Runtime 不记录 React 组件内部私有状态细节，不替代外部行�
 
 Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
 
-前端合并 mock、Codex CLI 和 Codex APP session 后再次排序，等待用户操作优先，同状态按更新时间倒序。
+前端合并 Codex CLI 和 Codex APP session 后再次排序，等待用户操作优先，同状态按更新时间倒序。
 
 前端读取 session 时按来源独立收敛失败；单一来源失败不会阻断其它来源展示。
 
@@ -22,11 +22,13 @@ Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
 
 顶部状态区按工具展示整体用量摘要。
 
-工具整体用量按 runtime 来源中的非 mock session 计算。
+工具整体用量按真实 session 的账号窗口用量计算。
 
 同一工具同一 `source_key` 的账号窗口用量只取 `updated_at` 最新值，不按 session 求和。
 
 顶部状态区最右侧提供设置按钮和关闭窗口按钮。
+
+顶部状态区最右侧提供最小化窗口按钮。
 
 前端支持浅色和深色两种主题，由 Display 设置控制。
 
@@ -50,6 +52,10 @@ Tauri 环境会在设置读取后尝试恢复上次窗口位置和尺寸。
 
 Tauri 环境会监听主窗口移动和尺寸变化，并以局部保存 command 持久化窗口几何。
 
+Tauri 环境依赖 `core:window:allow-start-dragging` 允许顶部拖动区移动窗口。
+
+Tauri 环境依赖 `core:window:allow-minimize` 允许前端最小化主窗口。
+
 浏览器开发环境不执行 Tauri 窗口几何恢复。
 
 session 选中和回复草稿由前端 UI 状态管理。
@@ -64,7 +70,9 @@ session 选中和回复草稿由前端 UI 状态管理。
 
 设置弹窗不提供自动更新配置项。
 
-Hook Install 分组提供 Codex CLI hook 和 Claude CLI hook 选择、预览、安装和卸载入口。
+Hook Install 分组以列表展示 Codex CLI hook 和 Claude CLI hook 状态。
+
+Hook Install 每个 hook 项只提供安装和卸载入口。
 
 Hook Install 分组不因 agent 开关变化自动写入第三方配置。
 
@@ -72,9 +80,9 @@ Hook Install 分组不因 agent 开关变化自动写入第三方配置。
 
 设置保存响应带有前端请求版本保护，旧响应不覆盖较新的 UI 设置状态。
 
-当前 UI 启用 mock agent、Codex CLI 和 Codex APP 开关。
+当前 UI 启用 Codex CLI 和 Codex APP 开关。
 
-Codex APP 开关驱动 Codex APP session 读取。
+Codex APP 开关默认开启，并驱动 Codex APP session 读取。
 
 Claude Code CLI 和 Claude Code APP 开关当前禁用。
 
@@ -96,11 +104,11 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 `src/api/settingsApi.ts` 是前端设置读写和 fallback 校验入口。
 
-`src/api/panelWindowApi.ts` 是前端 panel 窗口几何恢复、监听、局部保存和关闭窗口入口。
+`src/api/panelWindowApi.ts` 是前端 panel 窗口几何恢复、监听、局部保存、最小化和关闭窗口入口。
 
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
-`src/api/hookInstallApi.ts` 是前端 hook 安装 command 调用入口。
+`src/api/hookInstallApi.ts` 是前端 hook 状态查询和安装 command 调用入口。
 
 `src/stores/mockPanelStore.ts` 是 session 草稿和 timeline 弹层状态入口。
 
@@ -118,7 +126,9 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 `src/api/settingsApi.test.ts` 覆盖阶段 7 默认设置、收缩状态归一化和自定义快捷输入校验。
 
-`src/views/BuilderPanelApp.test.ts` 覆盖 hook 安装目标选择。
+`src/views/BuilderPanelApp.test.ts` 覆盖 hook 安装按钮禁用规则。
+
+`src/components/SettingsPanel.test.tsx` 覆盖 hook 状态列表展示和单项安装卸载按钮。
 
 `src-tauri/src/services/settings_service.rs` 覆盖配置缺失、配置损坏和保存。
 

@@ -201,42 +201,6 @@ export interface SessionDetailViewModel {
   readonly toolbar_actions: readonly UiAction[];
 }
 
-/// 审批提交请求。
-export interface ResolveApprovalRequest {
-  /// 所属会话。
-  readonly session_key: SessionKey;
-  /// 所属交互。
-  readonly interaction_id: InteractionId;
-  /// 审批决策。
-  readonly decision: ApprovalDecision;
-  /// 是否注入一次 mock 回写失败。
-  readonly inject_failure: boolean;
-}
-
-/// 文本回复请求。
-export interface SendReplyRequest {
-  /// 所属会话。
-  readonly session_key: SessionKey;
-  /// 所属交互。
-  readonly interaction_id: InteractionId;
-  /// 文本内容。
-  readonly content: string;
-  /// 是否注入一次 mock 回写失败。
-  readonly inject_failure: boolean;
-}
-
-/// 选项提交请求。
-export interface SubmitChoiceRequest {
-  /// 所属会话。
-  readonly session_key: SessionKey;
-  /// 所属交互。
-  readonly interaction_id: InteractionId;
-  /// 用户选择的选项值。
-  readonly selected_values: readonly string[];
-  /// 是否注入一次 mock 回写失败。
-  readonly inject_failure: boolean;
-}
-
 /// 时间线条目。
 export interface ProcessTimelineItem {
   /// 条目唯一标识。

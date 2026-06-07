@@ -4,7 +4,7 @@
 
 本文档记录已建立的主流程、恢复流程和异常收敛流程。
 
-本文档记录已实现的真实 Codex 接入流程。阶段 3 的 mock agent 流程仍作为核心闭环验证基线。
+本文档记录已实现的真实 Codex 接入流程。mock agent 流程只作为测试基线，不作为产品运行时流程。
 
 ## APP 启动流程
 
@@ -42,7 +42,7 @@ Tauri 环境监听窗口移动和尺寸变化。
 
 ## session 列表流程
 
-前端读取 mock、Codex CLI 和 Codex APP session 列表。
+前端读取 Codex CLI 和 Codex APP session 列表。
 
 单一来源读取失败时，前端保留其它来源结果。
 
@@ -50,7 +50,7 @@ Tauri 环境监听窗口移动和尺寸变化。
 
 前端顶部状态区从合并后的 session 计算运行中数量和总数。
 
-前端顶部状态区从非 mock session 聚合工具整体用量。
+前端顶部状态区从 Codex CLI 和 Codex APP session 聚合工具整体用量。
 
 同一工具同一 `source_key` 的整体用量只保留更新时间最新值。
 
@@ -100,9 +100,9 @@ Settings Service 保存前会强制 Panel `collapsed` 为 `false`。
 
 ## hook 安装流程
 
-设置页展示 Codex CLI hook 和 Claude CLI hook 选择项。
+设置页以列表展示 Codex CLI hook 和 Claude CLI hook 状态。
 
-用户选择安装目标后点击预览。
+设置页打开后读取 hook 安装状态。
 
 Tauri hook 安装 command 使用默认路径生成安装器。
 
@@ -110,11 +110,15 @@ Tauri hook 安装 command 使用默认路径生成安装器。
 
 环境变量 `BUILDER_PANEL_HOOK_PATH` 存在时覆盖默认 hook helper 路径。
 
-hook 安装器生成安装预览。
+hook 安装器读取 manifest 和实际配置文件生成状态。
 
-安装预览列出将修改的配置文件、备份文件和 manifest 文件。
+严格已安装状态会禁用安装入口。
 
-用户点击安装后，hook 安装器备份已存在的第三方配置文件。
+未安装且没有目标 manifest 记录时会禁用卸载入口。
+
+需要修复状态允许用户点击安装重写受管 handler。
+
+用户点击单项安装后，hook 安装器备份已存在的第三方配置文件。
 
 hook 安装器在写入前保护本轮会覆盖的旧备份和旧 manifest。
 
@@ -124,13 +128,19 @@ hook 安装器移除已有 Builder Panel hook handler。
 
 hook 安装器写入当前 agent 支持的命令型 hook handler。
 
-hook 安装器写入安装 manifest。
+hook 安装器写入安装 manifest，并保留其它 agent 的 manifest 记录。
 
-用户点击卸载后，hook 安装器读取 manifest。
+用户点击单项卸载后，hook 安装器读取 manifest。
 
 安装前配置存在时，卸载恢复备份文件。
 
 安装前配置不存在时，卸载删除本次创建的配置文件。
+
+单项卸载写回剩余 manifest 失败时，hook 安装器回滚目标配置和旧 manifest。
+
+最后一个 agent 卸载成功后，hook 安装器删除 manifest。
+
+安装或卸载完成后，设置页重新读取 hook 安装状态。
 
 hook 安装器不执行真实 Codex 或 Claude Code 进程。
 
@@ -300,85 +310,33 @@ Codex APP session 跳回目标使用 `codex://threads/<thread_id>`。
 
 Codex APP hook 和 app-server 事件写入进程内 timeline 缓存。
 
-## mock session 主流程
+## mock 测试基线流程
 
-Mock agent adapter 生成已清洗的归一事件。
+Mock agent adapter 生成已清洗的归一事件，用于 Rust adapter 和 service 测试。
 
 Mock agent runtime 使用 Domain reducer 折叠事件。
 
-Session Service 从 mock agent runtime 读取 session state。
+Session Service 的 mock 测试从 mock agent runtime 读取 session state。
 
 Session Service 调用 Domain view model 转换列表和详情。
 
-前端通过 Tauri command 读取 mock session 列表。
+Tauri 产品运行时不注册 mock session、mock 审批、mock 回复、mock 选项或 mock timeline command。
 
-浏览器预览环境无法调用 Tauri command 时，前端使用同契约 fallback mock 数据。
+前端产品运行时不读取 mock session 列表。
 
-## mock 审批链路
+## 交互测试基线
 
-前端只在 session view model 生成 `ResolveApproval` 动作时展示审批按钮。
+Interaction Service 的 mock 测试校验 pending approval、pending choice 和失败保留规则。
 
-用户点击允许、拒绝或允许并记住后，前端提交 `SessionKey`、`InteractionId` 和审批决策。
+Reply Service 的 mock 测试校验文本回复内容、pending text reply 和失败保留规则。
 
-Interaction Service 校验当前 session 仍等待同一个 pending approval。
+Mock agent runtime 记录 allow、allow and remember、deny、choice 和 text reply directive。
 
-Mock agent runtime 记录 allow、allow and remember 或 deny directive。
+Mock agent runtime 写入 `TurnCompleted` 事件，用于验证 Domain reducer 清理 pending interaction。
 
-Mock agent runtime 写入 `TurnCompleted` 事件。
+mock 回写失败测试断言 pending interaction 不被清理。
 
-Domain reducer 清理 pending interaction。
-
-前端刷新 session 列表和详情。
-
-回写失败时，Interaction Service 返回错误。
-
-回写失败时，pending approval 不被清理。
-
-## mock 回复链路
-
-前端只在 session view model 生成可回写能力时展示行内回复框。
-
-前端按 session 保存回复草稿。
-
-`Enter` 提交文本回复。
-
-`Shift+Enter` 在文本框中换行。
-
-Reply Service 拒绝空内容和超长内容。
-
-Reply Service 校验当前 session 仍等待同一个 pending text reply。
-
-Mock agent runtime 记录文本回复 directive。
-
-Mock agent runtime 写入 `TurnCompleted` 事件。
-
-Domain reducer 清理 pending interaction。
-
-前端发送成功后只清理当前 session 草稿。
-
-回写失败时，pending text reply 和前端草稿都保留。
-
-## mock 选项链路
-
-前端只在 session view model 生成可回写能力且 pending interaction 是 choice 时展示选项。
-
-选项 tooltip 从 interaction 契约映射到 view model 后展示在按钮 tooltip。
-
-单选点击后只保留最后一个选项。
-
-多选至少选择一项后才能提交。
-
-Interaction Service 校验当前 session 仍等待同一个 pending choice。
-
-Interaction Service 校验选项值来自当前交互，且单选不能提交多个值。
-
-Mock agent runtime 记录 choice directive。
-
-Mock agent runtime 写入 `TurnCompleted` 事件。
-
-Domain reducer 清理 pending interaction。
-
-回写失败时，pending choice 和前端已选选项都保留。
+前端 store 测试覆盖草稿、提交中、选项选择和 timeline 弹层状态，不依赖产品 mock session 来源。
 
 ## 快捷回复链路
 
@@ -438,8 +396,6 @@ Codex APP session 的 `codex://` 跳回目标在 macOS 上交给系统打开。
 
 用户打开 timeline 后，前端请求第一页过程事件。
 
-mock session 的 timeline 条目来自 mock agent runtime。
-
 Codex CLI session 的 timeline 条目来自 hook 事件内存缓存。
 
 Codex CLI hook adapter 生成归一事件后，runtime 同步写入 session state 和 timeline 缓存。
@@ -472,9 +428,9 @@ timeline 不提供导出过程事件文件入口。
 
 hook helper fail-open 时不写业务状态。
 
-mock 审批和回复回写失败时不清理 pending interaction。
+Codex APP app-server 回写失败时不清理 pending interaction。
 
-mock 回复回写失败时前端不清理草稿。
+Codex APP 回复回写失败时前端不清理草稿。
 
 timeline 查询失败时不写 session 状态。
 
@@ -496,17 +452,17 @@ timeline 释放失败时不阻塞关闭弹层。
 
 `src-tauri/src/adapters/bridge/transport.rs` 是 bridge 传输流程入口。
 
-`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock agent 事件、directive 和 timeline 数据源入口。
+`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock 测试基线事件、directive 和 timeline 数据源入口。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook 流程入口。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP app-server 探针和 notification 转换入口。
 
-`src-tauri/src/services/session_service.rs` 是 mock session 读取流程入口。
+`src-tauri/src/services/session_service.rs` 是 mock 测试基线 session 读取流程入口。
 
-`src-tauri/src/services/interaction_service.rs` 是 mock 审批链路入口。
+`src-tauri/src/services/interaction_service.rs` 是 mock 测试基线审批和选项链路入口。
 
-`src-tauri/src/services/reply_service.rs` 是 mock 回复链路入口。
+`src-tauri/src/services/reply_service.rs` 是 mock 测试基线回复链路入口。
 
 `src-tauri/src/services/shortcut_reply_service.rs` 是快捷回复链路入口。
 

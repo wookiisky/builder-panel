@@ -90,7 +90,7 @@
 
 ## Service 文档
 
-`spec/SERVICE/SESSION_SERVICE.md` 回答 session 列表与详情读取、view model 输出和 mock session 状态来源。
+`spec/SERVICE/SESSION_SERVICE.md` 回答 session 列表与详情读取、view model 输出和 mock 测试基线状态来源。
 
 `spec/SERVICE/INTERACTION_SERVICE.md` 回答审批提交、pending 校验、directive 回写和失败不清理规则。
 
@@ -172,7 +172,7 @@
 
 `src-tauri/src/adapters/bridge/hook_output.rs` 是 hook stdout directive 编码入口。
 
-`src-tauri/src/adapters/mock_agent/mod.rs` 是阶段 3 mock agent adapter、runtime、directive 记录和 timeline 数据源入口。
+`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock agent 测试基线 adapter、runtime、directive 记录和 timeline 数据源入口。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook 事件转换、runtime 和 bridge server 入口。
 
@@ -210,9 +210,7 @@
 
 `src/api/panelProbeContract.ts` 是前端基础探针契约入口。
 
-`src/api/mockPanelContract.ts` 是前端 mock panel 契约入口。
-
-`src/api/mockPanelApi.ts` 是前端 mock Tauri API 入口。
+`src/api/mockPanelContract.ts` 是前端 session、交互、timeline 和 view model 契约入口。
 
 `src/api/codexCliPanelApi.ts` 是前端 Codex CLI Tauri API 入口。
 
@@ -224,9 +222,9 @@
 
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
-`src/api/hookInstallApi.ts` 是前端 hook 安装预览、安装和卸载 command 调用入口。
+`src/api/hookInstallApi.ts` 是前端 hook 状态查询、安装预览、安装和卸载 command 调用入口。
 
-`src/stores/mockPanelStore.ts` 是前端 mock session 草稿、提交和 timeline 弹层状态入口。
+`src/stores/mockPanelStore.ts` 是前端 session 草稿、提交和 timeline 弹层状态入口。
 
 `src/components/SettingsPanel.tsx` 是阶段 7 设置弹窗内容组件入口。
 
@@ -266,7 +264,7 @@
 
 `src-tauri/src/adapters/bridge/hook_output.rs` 包含 stdout directive 编码测试。
 
-`src-tauri/src/adapters/mock_agent/mod.rs` 包含 mock event、directive 和 pending 保留测试。
+`src-tauri/src/adapters/mock_agent/mod.rs` 包含 mock 测试基线 event、directive 和 pending 保留测试。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 包含 Codex CLI hook 事件转换和审批 directive 等待测试。
 
@@ -274,7 +272,7 @@
 
 `src-tauri/src/adapters/config_file/mod.rs` 包含 JSON 设置文件读写、缺字段默认化、原子写失败和损坏文件测试。
 
-`src-tauri/src/adapters/hook_install/mod.rs` 包含 hook 安装预览、写入、备份恢复和卸载测试。
+`src-tauri/src/adapters/hook_install/mod.rs` 包含 hook 状态查询、安装预览、写入、备份恢复和卸载测试。
 
 `src-tauri/src/adapters/log_sanitizer/mod.rs` 包含敏感字段脱敏、长文本截断和中文业务事件名测试。
 
@@ -298,7 +296,7 @@
 
 `src-tauri/src/services/notification_service.rs` 包含通知抑制、合并和点击定位测试。
 
-`src/stores/mockPanelStore.test.ts` 包含前端 mock 草稿、提交中和 timeline 缓存测试。
+`src/stores/mockPanelStore.test.ts` 包含前端草稿、提交中和 timeline 缓存测试。
 
 `src/api/settingsApi.test.ts` 包含前端设置默认值和自定义快捷输入清洗测试。
 

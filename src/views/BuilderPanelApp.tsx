@@ -16,23 +16,16 @@ import {
   submitCodexCliApproval,
 } from "../api/codexCliPanelApi";
 import {
+  getHookInstallStatus,
   installHooks,
-  previewHookInstall,
   uninstallHooks,
   type HookInstallAgent,
-  type HookInstallPreview,
+  type HookInstallAgentStatus,
 } from "../api/hookInstallApi";
-import {
-  fetchMockSessions,
-  fetchMockTimeline,
-  releaseMockTimelineCache,
-  submitMockApproval,
-  submitMockChoice,
-  submitMockReply,
-} from "../api/mockPanelApi";
 import {
   applyPanelWindowGeometry,
   closePanelWindow,
+  minimizePanelWindow,
   savePanelWindowState,
   subscribePanelWindowGeometry,
   type PanelWindowStateUpdate,
@@ -86,25 +79,23 @@ import {
   type TimelineKindFilter,
 } from "../stores/mockPanelStore";
 /// 会话运行时来源。
-type RuntimeSource = "mock" | "codex_cli" | "codex_app";
+type RuntimeSource = "codex_cli" | "codex_app";
 
 /// hook 安装前端状态。
 interface HookInstallUiState {
-  /// 当前选择的安装目标。
-  readonly selectedAgents: readonly HookInstallAgent[];
-  /// 当前预览对应的安装目标。
-  readonly previewAgents: readonly HookInstallAgent[] | null;
-  /// 当前预览结果。
-  readonly preview: HookInstallPreview | null;
+  /// 当前 agent hook 安装状态。
+  readonly agentStatuses: readonly HookInstallAgentStatus[];
   /// 当前状态提示。
   readonly statusMessage: string | null;
-  /// 是否正在执行 hook 操作。
-  readonly working: boolean;
+  /// 正在执行操作的 agent。
+  readonly workingAgent: HookInstallAgent | null;
+  /// 是否正在刷新 hook 状态。
+  readonly refreshing: boolean;
 }
 
 /// 前端合并后的 session 列表项。
 export type PanelSessionListItem = SessionListItemViewModel & {
-  /// 该 session 来源，用于隔离 mock 专用控制。
+  /// 该 session 来源，用于隔离不同真实运行时。
   readonly runtimeSource: RuntimeSource;
 };
 
@@ -148,11 +139,10 @@ export const BuilderPanelApp = () => {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [hookInstallState, setHookInstallState] = useState<HookInstallUiState>(
     () => ({
-      selectedAgents: ["codex", "claude"],
-      previewAgents: null,
-      preview: null,
+      agentStatuses: defaultHookAgentStatuses(),
       statusMessage: null,
-      working: false,
+      workingAgent: null,
+      refreshing: false,
     }),
   );
   const settingsSaveVersion = useRef(0);
@@ -402,99 +392,93 @@ export const BuilderPanelApp = () => {
     }, 400);
   };
 
-  const toggleHookInstallAgentSelection = (agent: HookInstallAgent): void => {
+  const refreshHookInstallStatus = async (): Promise<void> => {
     setHookInstallState((current) => ({
       ...current,
-      selectedAgents: toggleHookInstallAgent(current.selectedAgents, agent),
-      previewAgents: null,
-      preview: null,
-      statusMessage: null,
-    }));
-  };
-
-  const runHookInstallPreview = async (): Promise<void> => {
-    if (hookInstallState.selectedAgents.length === 0) {
-      return;
-    }
-
-    setHookInstallState((current) => ({
-      ...current,
-      working: true,
+      refreshing: true,
       statusMessage: null,
     }));
     try {
-      const preview = await previewHookInstall({
-        agents: hookInstallState.selectedAgents,
-      });
+      const status = await getHookInstallStatus();
       setHookInstallState((current) => ({
         ...current,
-        preview,
-        previewAgents: [...hookInstallState.selectedAgents],
-        working: false,
-        statusMessage: "已生成 hook 安装预览",
+        agentStatuses: status.agents,
+        refreshing: false,
       }));
     } catch (error: unknown) {
       setHookInstallState((current) => ({
         ...current,
-        working: false,
-        statusMessage: readableError(error, "hook 安装预览失败"),
+        refreshing: false,
+        statusMessage: readableError(error, "hook 状态读取失败"),
       }));
     }
   };
 
-  const runHookInstall = async (): Promise<void> => {
-    if (!canInstallHooksAfterPreview(hookInstallState)) {
+  const runHookInstall = async (agent: HookInstallAgent): Promise<void> => {
+    const status = hookInstallState.agentStatuses.find(
+      (item) => item.agent === agent,
+    );
+    if (status === undefined || !status.can_install) {
       setHookInstallState((current) => ({
         ...current,
-        statusMessage: "请先预览当前 hook 安装目标",
+        statusMessage: "当前 hook 状态不允许安装",
       }));
       return;
     }
 
     setHookInstallState((current) => ({
       ...current,
-      working: true,
+      workingAgent: agent,
       statusMessage: null,
     }));
     try {
-      const manifest = await installHooks({
-        agents: hookInstallState.selectedAgents,
-      });
+      await installHooks({ agents: [agent] });
+      const nextStatus = await getHookInstallStatus();
       setHookInstallState((current) => ({
         ...current,
-        preview: null,
-        previewAgents: null,
-        working: false,
-        statusMessage: `hook 已安装：${manifest.entries.length} 个目标`,
+        agentStatuses: nextStatus.agents,
+        workingAgent: null,
+        statusMessage: "hook 状态已更新",
       }));
     } catch (error: unknown) {
       setHookInstallState((current) => ({
         ...current,
-        working: false,
+        workingAgent: null,
         statusMessage: readableError(error, "hook 安装失败"),
       }));
     }
   };
 
-  const runHookUninstall = async (): Promise<void> => {
+  const runHookUninstall = async (agent: HookInstallAgent): Promise<void> => {
+    const status = hookInstallState.agentStatuses.find(
+      (item) => item.agent === agent,
+    );
+    if (status === undefined || !status.can_uninstall) {
+      setHookInstallState((current) => ({
+        ...current,
+        statusMessage: "当前 hook 状态不允许卸载",
+      }));
+      return;
+    }
+
     setHookInstallState((current) => ({
       ...current,
-      working: true,
+      workingAgent: agent,
       statusMessage: null,
     }));
     try {
-      await uninstallHooks();
+      await uninstallHooks({ agents: [agent] });
+      const nextStatus = await getHookInstallStatus();
       setHookInstallState((current) => ({
         ...current,
-        preview: null,
-        previewAgents: null,
-        working: false,
-        statusMessage: "hook 已卸载",
+        agentStatuses: nextStatus.agents,
+        workingAgent: null,
+        statusMessage: "hook 状态已更新",
       }));
     } catch (error: unknown) {
       setHookInstallState((current) => ({
         ...current,
-        working: false,
+        workingAgent: null,
         statusMessage: readableError(error, "hook 卸载失败"),
       }));
     }
@@ -504,7 +488,6 @@ export const BuilderPanelApp = () => {
     session: PanelSessionListItem,
     interactionId: InteractionId,
     decision: ApprovalDecision,
-    injectFailure: boolean,
   ): Promise<void> => {
     setMockUiState((current) => beginSubmit(current, interactionId.value));
     try {
@@ -520,13 +503,6 @@ export const BuilderPanelApp = () => {
           interaction_id: interactionId,
           decision,
         });
-      } else {
-        await submitMockApproval({
-          session_key: session.session_key,
-          interaction_id: interactionId,
-          decision,
-          inject_failure: injectFailure,
-        });
       }
       await refreshSessions();
       setMockUiState((current) => endSubmit(current, null));
@@ -540,7 +516,6 @@ export const BuilderPanelApp = () => {
   const sendReplyForSession = async (
     session: PanelSessionListItem,
     interactionId: InteractionId,
-    injectFailure: boolean,
     contentOverride: string | null = null,
   ): Promise<void> => {
     const draft =
@@ -557,14 +532,6 @@ export const BuilderPanelApp = () => {
           session_key: session.session_key,
           interaction_id: interactionId,
           content: effectiveContent,
-          inject_failure: false,
-        });
-      } else {
-        await submitMockReply({
-          session_key: session.session_key,
-          interaction_id: interactionId,
-          content: effectiveContent,
-          inject_failure: injectFailure,
         });
       }
       await refreshSessions();
@@ -587,7 +554,6 @@ export const BuilderPanelApp = () => {
     session: PanelSessionListItem,
     interactionId: InteractionId,
     selectedValues: readonly string[],
-    injectFailure: boolean,
   ): Promise<void> => {
     if (selectedValues.length === 0) {
       return;
@@ -600,14 +566,6 @@ export const BuilderPanelApp = () => {
           session_key: session.session_key,
           interaction_id: interactionId,
           selected_values: selectedValues,
-          inject_failure: false,
-        });
-      } else {
-        await submitMockChoice({
-          session_key: session.session_key,
-          interaction_id: interactionId,
-          selected_values: selectedValues,
-          inject_failure: injectFailure,
         });
       }
       await refreshSessions();
@@ -685,11 +643,32 @@ export const BuilderPanelApp = () => {
     try {
       await closePanelWindow();
     } catch (error: unknown) {
-      setMockUiState((current) =>
-        endSubmit(current, readableError(error, "关闭窗口失败")),
-      );
+      reportPanelWindowError(readableError(error, "关闭窗口失败"));
     }
   };
+
+  const minimizeWindow = async (): Promise<void> => {
+    try {
+      await minimizePanelWindow();
+    } catch (error: unknown) {
+      reportPanelWindowError(readableError(error, "最小化窗口失败"));
+    }
+  };
+
+  /// 显示窗口控制错误，不改变交互提交状态。
+  const reportPanelWindowError = (errorMessage: string): void => {
+    setMockUiState((current) =>
+      applyPanelWindowControlError(current, errorMessage),
+    );
+  };
+
+  useEffect(() => {
+    if (!settingsModalOpen) {
+      return;
+    }
+
+    void refreshHookInstallStatus();
+  }, [settingsModalOpen]);
 
   return (
     <main className={appSurfaceClassName(settingsView.settings)}>
@@ -699,6 +678,9 @@ export const BuilderPanelApp = () => {
           settings={settingsView.settings}
           onClose={() => {
             void closeWindow();
+          }}
+          onMinimize={() => {
+            void minimizeWindow();
           }}
           onOpenSettings={() => {
             setSettingsModalOpen(true);
@@ -727,32 +709,20 @@ export const BuilderPanelApp = () => {
           }}
           onOpenTimeline={(session) => {
             setMockUiState((current) =>
-              openTimeline(selectPanelSession(current, session), session.session_key),
+              openTimeline(
+                selectPanelSession(current, session),
+                session.session_key,
+              ),
             );
           }}
-          onResolveApproval={(session, interactionId, decision, injectFailure) => {
-            void resolveApprovalForSession(
-              session,
-              interactionId,
-              decision,
-              injectFailure,
-            );
+          onResolveApproval={(session, interactionId, decision) => {
+            void resolveApprovalForSession(session, interactionId, decision);
           }}
-          onSendReply={(session, interactionId, injectFailure, content) => {
-            void sendReplyForSession(
-              session,
-              interactionId,
-              injectFailure,
-              content,
-            );
+          onSendReply={(session, interactionId, content) => {
+            void sendReplyForSession(session, interactionId, content);
           }}
-          onSubmitChoice={(session, interactionId, values, injectFailure) => {
-            void submitChoiceForSession(
-              session,
-              interactionId,
-              values,
-              injectFailure,
-            );
+          onSubmitChoice={(session, interactionId, values) => {
+            void submitChoiceForSession(session, interactionId, values);
           }}
           onToggleChoice={(interactionId, choiceValue, allowsMultiple) => {
             setMockUiState((current) =>
@@ -790,15 +760,11 @@ export const BuilderPanelApp = () => {
                 onChange={(settings) => {
                   void updateSettings(settings);
                 }}
-                onInstallHooks={() => {
-                  void runHookInstall();
+                onInstallHook={(agent) => {
+                  void runHookInstall(agent);
                 }}
-                onPreviewHookInstall={() => {
-                  void runHookInstallPreview();
-                }}
-                onToggleHookAgent={toggleHookInstallAgentSelection}
-                onUninstallHooks={() => {
-                  void runHookUninstall();
+                onUninstallHook={(agent) => {
+                  void runHookUninstall(agent);
                 }}
               />
             </section>
@@ -827,6 +793,15 @@ export const BuilderPanelApp = () => {
   );
 };
 
+/// 记录窗口控制错误，不结束正在提交的交互。
+export const applyPanelWindowControlError = (
+  state: MockPanelUiState,
+  errorMessage: string,
+): MockPanelUiState => ({
+  ...state,
+  errorMessage,
+});
+
 /// 生成应用根节点样式类。
 const appSurfaceClassName = (settings: BuilderPanelSettings): string => {
   const classNames = [
@@ -853,8 +828,7 @@ const forceExpandedPanelSettings = (
 const fetchAllSessions = async (
   settings: BuilderPanelSettings,
 ): Promise<readonly PanelSessionListItem[]> => {
-  const [mockSessions, codexCliSessions, codexAppSessions] = await Promise.all([
-    fetchSessionsForSource(settings.agents.mock_agent_enabled, fetchMockSessions),
+  const [codexCliSessions, codexAppSessions] = await Promise.all([
     fetchSessionsForSource(
       settings.agents.codex_cli_enabled,
       fetchCodexCliSessions,
@@ -872,7 +846,6 @@ const fetchAllSessions = async (
     ...codexCliSessions.map((session) =>
       withRuntimeSource(session, "codex_cli"),
     ),
-    ...mockSessions.map((session) => withRuntimeSource(session, "mock")),
   ]);
 };
 
@@ -949,30 +922,27 @@ export const isLatestSettingsSaveResponse = (
   return responseVersion === currentVersion;
 };
 
-/// 切换 hook 安装目标选择。
-export const toggleHookInstallAgent = (
-  agents: readonly HookInstallAgent[],
-  agent: HookInstallAgent,
-): readonly HookInstallAgent[] => {
-  if (agents.includes(agent)) {
-    return agents.filter((item) => item !== agent);
-  }
+/// 创建默认 hook 安装状态。
+export const defaultHookAgentStatuses = (): readonly HookInstallAgentStatus[] => [
+  defaultHookAgentStatus("codex"),
+  defaultHookAgentStatus("claude"),
+];
 
-  return [...agents, agent];
-};
-
-/// 判断 hook 安装是否已有当前选择对应的预览。
-export const canInstallHooksAfterPreview = (
-  state: Pick<
-    HookInstallUiState,
-    "preview" | "previewAgents" | "selectedAgents"
-  >,
+/// 判断 hook 安装按钮是否应该禁用。
+export const isHookActionDisabled = (
+  status: HookInstallAgentStatus,
+  action: "install" | "uninstall",
+  workingAgent: HookInstallAgent | null,
 ): boolean => {
-  if (state.preview === null || state.previewAgents === null) {
-    return false;
+  if (workingAgent !== null) {
+    return true;
   }
 
-  return sameHookInstallAgents(state.previewAgents, state.selectedAgents);
+  if (action === "install") {
+    return !status.can_install;
+  }
+
+  return !status.can_uninstall;
 };
 
 /// 合并 panel 窗口状态局部更新。
@@ -986,17 +956,17 @@ export const mergePanelWindowStateUpdate = (
   };
 };
 
-/// 判断两个 hook agent 集合是否一致。
-const sameHookInstallAgents = (
-  left: readonly HookInstallAgent[],
-  right: readonly HookInstallAgent[],
-): boolean => {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  return left.every((agent) => right.includes(agent));
-};
+/// 创建默认单 agent hook 安装状态。
+const defaultHookAgentStatus = (
+  agent: HookInstallAgent,
+): HookInstallAgentStatus => ({
+  agent,
+  state: "not_installed",
+  message: "未安装",
+  reasons: [],
+  can_install: true,
+  can_uninstall: false,
+});
 
 /// 首次或空选中时自动选择第一条 session。
 export const selectFirstSessionWhenMissing = (
@@ -1050,6 +1020,8 @@ interface PanelTopBarProps {
   readonly settings: BuilderPanelSettings;
   /// 打开设置回调。
   readonly onOpenSettings: () => void;
+  /// 最小化窗口回调。
+  readonly onMinimize: () => void;
   /// 关闭窗口回调。
   readonly onClose: () => void;
 }
@@ -1059,6 +1031,7 @@ const PanelTopBar = ({
   sessions,
   settings,
   onOpenSettings,
+  onMinimize,
   onClose,
 }: PanelTopBarProps) => {
   const counts = countSessionsByStatus(sessions);
@@ -1070,6 +1043,9 @@ const PanelTopBar = ({
       </strong>
       {settings.display.show_usage && <ToolUsageSummary sessions={sessions} />}
       <div className="panel-topbar-actions">
+        <button type="button" onClick={onMinimize}>
+          最小化
+        </button>
         <button type="button" onClick={onOpenSettings}>
           设置
         </button>
@@ -1155,16 +1131,21 @@ const fetchTimelinePage = async (
     return fetchCodexAppTimeline(query);
   }
 
-  return fetchMockTimeline(query);
+  return {
+    items: [],
+    page: query.page,
+    page_size: query.page_size,
+    total: 0,
+    has_next: false,
+    filter_count: 0,
+  };
 };
 
 /// 按运行时来源释放 timeline 大文本缓存。
 const releaseTimelineCache = (session: PanelSessionListItem): void => {
   const releaseTask = isCodexCliRuntime(session)
     ? releaseCodexCliTimelineCache(session.session_key)
-    : isCodexAppRuntime(session)
-      ? releaseCodexAppTimelineCache(session.session_key)
-      : releaseMockTimelineCache(session.session_key);
+    : releaseCodexAppTimelineCache(session.session_key);
 
   releaseTask.catch(() => {
     // 关闭弹层不能被释放失败阻塞；下次查询仍可重新读取可用缓存。
@@ -1184,19 +1165,20 @@ interface SessionStreamProps {
   /// 跳回回调。
   readonly onJump: (session: PanelSessionListItem) => void;
   /// 草稿变化回调。
-  readonly onDraftChange: (session: PanelSessionListItem, draft: string) => void;
+  readonly onDraftChange: (
+    session: PanelSessionListItem,
+    draft: string,
+  ) => void;
   /// 审批回调。
   readonly onResolveApproval: (
     session: PanelSessionListItem,
     interactionId: InteractionId,
     decision: ApprovalDecision,
-    injectFailure: boolean,
   ) => void;
   /// 回复回调。
   readonly onSendReply: (
     session: PanelSessionListItem,
     interactionId: InteractionId,
-    injectFailure: boolean,
     content: string | null,
   ) => void;
   /// 切换选项回调。
@@ -1210,7 +1192,6 @@ interface SessionStreamProps {
     session: PanelSessionListItem,
     interactionId: InteractionId,
     values: readonly string[],
-    injectFailure: boolean,
   ) => void;
   /// 打开时间线回调。
   readonly onOpenTimeline: (session: PanelSessionListItem) => void;
@@ -1360,17 +1341,17 @@ const latestUsageValue = (
     }
   }
 
-  return [...bySource.values()].sort(
-    (left, right) => right.updatedAt - left.updatedAt,
-  )[0] ?? null;
+  return (
+    [...bySource.values()].sort(
+      (left, right) => right.updatedAt - left.updatedAt,
+    )[0] ?? null
+  );
 };
 
 /// 返回工具族。
-const toolFamily = (session: PanelSessionListItem): "Codex" | "Claude" | null => {
-  if (session.runtimeSource === "mock") {
-    return null;
-  }
-
+const toolFamily = (
+  session: PanelSessionListItem,
+): "Codex" | "Claude" | null => {
   switch (session.session_key.agent_kind) {
     case "codex_app":
     case "codex_cli":
@@ -1394,7 +1375,10 @@ interface SessionRowProps {
   /// 跳回回调。
   readonly onJump: (session: PanelSessionListItem) => void;
   /// 草稿变化回调。
-  readonly onDraftChange: (session: PanelSessionListItem, draft: string) => void;
+  readonly onDraftChange: (
+    session: PanelSessionListItem,
+    draft: string,
+  ) => void;
   /// 审批回调。
   readonly onResolveApproval: SessionStreamProps["onResolveApproval"];
   /// 回复回调。
@@ -1454,12 +1438,16 @@ const SessionRow = ({
       }}
     >
       <div className="session-row-main">
-        <span className={`session-status session-status-${session.status_kind}`}>
+        <span
+          className={`session-status session-status-${session.status_kind}`}
+        >
           {session.status_label}
         </span>
         <span className="session-source">{sourceTag(session)}</span>
         <strong>{session.project_label}</strong>
-        <p title={session.summary.text}>{lastParagraph(session.summary.text)}</p>
+        <p title={session.summary.text}>
+          {lastParagraph(session.summary.text)}
+        </p>
       </div>
       {expanded && (
         <div
@@ -1468,14 +1456,16 @@ const SessionRow = ({
             event.stopPropagation();
           }}
         >
-          <span>{interaction.summary ?? lastParagraph(session.summary.text)}</span>
+          <span>
+            {interaction.summary ?? lastParagraph(session.summary.text)}
+          </span>
           {interaction.can_resolve_approval && interactionId !== null && (
             <div className="button-row">
               <button
                 disabled={submitting}
                 type="button"
                 onClick={() => {
-                  onResolveApproval(session, interactionId, "allow", false);
+                  onResolveApproval(session, interactionId, "allow");
                 }}
               >
                 允许
@@ -1484,7 +1474,7 @@ const SessionRow = ({
                 disabled={submitting}
                 type="button"
                 onClick={() => {
-                  onResolveApproval(session, interactionId, "deny", false);
+                  onResolveApproval(session, interactionId, "deny");
                 }}
               >
                 拒绝
@@ -1497,23 +1487,11 @@ const SessionRow = ({
                     session,
                     interactionId,
                     "allow_and_remember",
-                    false,
                   );
                 }}
               >
                 允许并记住
               </button>
-              {session.runtimeSource === "mock" && (
-                <button
-                  disabled={submitting}
-                  type="button"
-                  onClick={() => {
-                    onResolveApproval(session, interactionId, "allow", true);
-                  }}
-                >
-                  失败演练
-                </button>
-              )}
             </div>
           )}
           {interaction.kind === "choice" && interactionId !== null && (
@@ -1555,28 +1533,11 @@ const SessionRow = ({
                       session,
                       interactionId,
                       selectedChoiceValues,
-                      false,
                     );
                   }}
                 >
                   提交选择
                 </button>
-                {session.runtimeSource === "mock" && (
-                  <button
-                    disabled={selectedChoiceValues.length === 0 || submitting}
-                    type="button"
-                    onClick={() => {
-                      onSubmitChoice(
-                        session,
-                        interactionId,
-                        selectedChoiceValues,
-                        true,
-                      );
-                    }}
-                  >
-                    失败演练
-                  </button>
-                )}
               </div>
             </div>
           )}
@@ -1603,7 +1564,7 @@ const SessionRow = ({
                         return;
                       }
                       if (interactionId !== null) {
-                        onSendReply(session, interactionId, false, shortcut.content);
+                        onSendReply(session, interactionId, shortcut.content);
                       }
                     }}
                   >
@@ -1611,7 +1572,7 @@ const SessionRow = ({
                   </button>
                 ))}
               </div>
-          )}
+            )}
           {interaction.kind === "text_reply" && interactionId !== null && (
             <div className="inline-reply">
               <textarea
@@ -1631,7 +1592,7 @@ const SessionRow = ({
                     !submitting
                   ) {
                     event.preventDefault();
-                    onSendReply(session, interactionId, false, null);
+                    onSendReply(session, interactionId, null);
                   }
                 }}
               />
@@ -1639,7 +1600,7 @@ const SessionRow = ({
                 disabled={isReplyDraftInvalid(draft, 1000) || submitting}
                 type="button"
                 onClick={() => {
-                  onSendReply(session, interactionId, false, null);
+                  onSendReply(session, interactionId, null);
                 }}
               >
                 发送
@@ -1669,8 +1630,6 @@ const sourceTag = (session: PanelSessionListItem): string => {
       return "codex";
     case "codex_cli":
       return "codex-cli";
-    case "mock":
-      return "mock";
   }
 };
 
@@ -1717,24 +1676,18 @@ interface SessionDetailProps {
   /// 草稿更新回调。
   readonly onDraftChange: (draft: string) => void;
   /// 审批回调。
-  readonly onResolveApproval: (
-    decision: ApprovalDecision,
-    injectFailure: boolean,
-  ) => void;
+  readonly onResolveApproval: (decision: ApprovalDecision) => void;
   /// 回复回调。
-  readonly onSendReply: (injectFailure: boolean) => void;
+  readonly onSendReply: () => void;
   /// 快捷回复回调。
-  readonly onUseShortcutReply: (
-    content: string,
-    injectFailure: boolean,
-  ) => void;
+  readonly onUseShortcutReply: (content: string) => void;
   /// 切换选项回调。
   readonly onToggleChoice: (
     choiceValue: string,
     allowsMultiple: boolean,
   ) => void;
   /// 提交选项回调。
-  readonly onSubmitChoice: (injectFailure: boolean) => void;
+  readonly onSubmitChoice: () => void;
   /// 打开时间线回调。
   readonly onOpenTimeline: (sessionKey: SessionKey) => void;
   /// 创建后续 turn 回调。
@@ -1766,7 +1719,6 @@ export const SessionDetail = ({
     return <section className="session-detail-empty">暂无 session</section>;
   }
 
-  const isMockSession = selectedSession.runtimeSource === "mock";
   const pendingId = detail.pending_interaction_id?.value ?? null;
   const submitting =
     pendingId !== null && submittingInteractionId === pendingId;
@@ -1823,7 +1775,7 @@ export const SessionDetail = ({
                   type="button"
                   disabled={submitting}
                   onClick={() => {
-                    onResolveApproval("allow", false);
+                    onResolveApproval("allow");
                   }}
                 >
                   允许
@@ -1832,7 +1784,7 @@ export const SessionDetail = ({
                   type="button"
                   disabled={submitting}
                   onClick={() => {
-                    onResolveApproval("deny", false);
+                    onResolveApproval("deny");
                   }}
                 >
                   拒绝
@@ -1841,22 +1793,11 @@ export const SessionDetail = ({
                   type="button"
                   disabled={submitting}
                   onClick={() => {
-                    onResolveApproval("allow_and_remember", false);
+                    onResolveApproval("allow_and_remember");
                   }}
                 >
                   允许并记住
                 </button>
-                {isMockSession && (
-                  <button
-                    type="button"
-                    disabled={submitting}
-                    onClick={() => {
-                      onResolveApproval("allow", true);
-                    }}
-                  >
-                    失败演练
-                  </button>
-                )}
               </div>
             )}
             {canSendReply && (
@@ -1871,7 +1812,7 @@ export const SessionDetail = ({
                         type="button"
                         disabled={submitting}
                         onClick={() => {
-                          onUseShortcutReply(shortcut.content, false);
+                          onUseShortcutReply(shortcut.content);
                         }}
                       >
                         {shortcut.label}
@@ -1886,26 +1827,6 @@ export const SessionDetail = ({
                   >
                     打开回复
                   </button>
-                  {isMockSession &&
-                    settings.replies.shortcut_replies_enabled &&
-                    sortedEnabledShortcuts(settings.replies.custom_shortcuts)
-                      .length > 0 && (
-                      <button
-                        type="button"
-                        disabled={submitting}
-                        onClick={() => {
-                          const [firstShortcut] = sortedEnabledShortcuts(
-                            settings.replies.custom_shortcuts,
-                          );
-                          onUseShortcutReply(
-                            firstShortcut.content,
-                            true,
-                          );
-                        }}
-                      >
-                        快捷失败演练
-                      </button>
-                    )}
                 </div>
                 <span className={replyInvalid ? "reply-count-invalid" : ""}>
                   {replyCharCount}/1000
@@ -1945,22 +1866,11 @@ export const SessionDetail = ({
                     type="button"
                     disabled={selectedChoiceValues.length === 0 || submitting}
                     onClick={() => {
-                      onSubmitChoice(false);
+                      onSubmitChoice();
                     }}
                   >
                     提交选择
                   </button>
-                  {isMockSession && (
-                    <button
-                      type="button"
-                      disabled={selectedChoiceValues.length === 0 || submitting}
-                      onClick={() => {
-                        onSubmitChoice(true);
-                      }}
-                    >
-                      失败演练
-                    </button>
-                  )}
                 </div>
               </div>
             )}
@@ -2003,7 +1913,6 @@ export const SessionDetail = ({
       {replyComposerOpen && canSendReply && (
         <ReplyComposerOverlay
           draft={draft}
-          isMockSession={isMockSession}
           replyInvalid={replyInvalid}
           settings={settings}
           submitting={submitting}
@@ -2081,8 +1990,6 @@ const SessionDetailOverlay = ({
 interface ReplyComposerOverlayProps {
   /// 当前草稿。
   readonly draft: string;
-  /// 是否为 mock session。
-  readonly isMockSession: boolean;
   /// 当前草稿是否非法。
   readonly replyInvalid: boolean;
   /// 当前设置。
@@ -2094,13 +2001,12 @@ interface ReplyComposerOverlayProps {
   /// 草稿更新回调。
   readonly onDraftChange: (draft: string) => void;
   /// 回复发送回调。
-  readonly onSendReply: (injectFailure: boolean) => void;
+  readonly onSendReply: () => void;
 }
 
 /// 回复输入弹层。
 const ReplyComposerOverlay = ({
   draft,
-  isMockSession,
   replyInvalid,
   settings,
   submitting,
@@ -2140,7 +2046,7 @@ const ReplyComposerOverlay = ({
           }
           event.preventDefault();
           if (!replyInvalid && !submitting) {
-            onSendReply(false);
+            onSendReply();
           }
         }}
       />
@@ -2152,22 +2058,11 @@ const ReplyComposerOverlay = ({
           type="button"
           disabled={replyInvalid || submitting}
           onClick={() => {
-            onSendReply(false);
+            onSendReply();
           }}
         >
           发送
         </button>
-        {isMockSession && (
-          <button
-            type="button"
-            disabled={replyInvalid || submitting}
-            onClick={() => {
-              onSendReply(true);
-            }}
-          >
-            失败演练
-          </button>
-        )}
       </div>
     </section>
   </div>

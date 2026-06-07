@@ -120,17 +120,17 @@
 
 ## 决策 9
 
-决策：阶段 3 使用进程内 mock agent runtime 打通 session、审批、回复和 timeline 闭环。
+决策：阶段 3 使用进程内 mock agent runtime 打通过 session、审批、回复和 timeline 验证闭环；当前该闭环只作为测试基线。
 
 原因：核心状态、回写和 UI 交互需要先在不依赖真实 Codex 或 Claude Code 私有协议的条件下可验证。
 
-代码影响：`src-tauri/src/adapters/mock_agent/mod.rs` 保存 mock adapter、runtime、directive 记录和 timeline 数据源，Tauri command 通过进程内锁收口访问。
+代码影响：`src-tauri/src/adapters/mock_agent/mod.rs` 保存 mock adapter、runtime、directive 记录和 timeline 数据源；决策 20 生效后，Tauri 产品 command 不再通过进程内锁访问 mock runtime。
 
 测试影响：Rust 测试覆盖 mock event、service 校验、回写成功、回写失败和 timeline 查询，前端测试覆盖草稿隔离、提交中状态和 timeline 缓存释放。
 
 排障影响：若 mock 闭环失败，先检查 service 校验和 mock runtime；若真实 agent 接入失败，不应修改 mock 基线来掩盖真实 adapter 问题。
 
-状态：生效。
+状态：受决策 20 限定后继续生效。
 
 ## 决策 10
 
@@ -248,13 +248,13 @@
 
 ## 决策 17
 
-决策：阶段 8 hook 安装器写入显式 hook 配置，并为 Codex 通过 TOML 配置启用 hooks feature；不绕过 Codex hook trust review，设置页只提供用户显式触发的预览、安装和卸载入口。
+决策：阶段 8 hook 安装器写入显式 hook 配置，并为 Codex 通过 TOML 配置启用 hooks feature；不绕过 Codex hook trust review，设置页以状态列表提供用户显式触发的安装和卸载入口。
 
-原因：hook 安装会修改第三方配置，必须先有可预览、可备份、可卸载的基础设施能力；Codex trust review 是外部 agent 自身安全边界，不能由 Builder Panel 绕过；agent 开关变化不应隐式写入第三方配置。
+原因：hook 安装会修改第三方配置，必须有可查询、可备份、可卸载的基础设施能力；Codex trust review 是外部 agent 自身安全边界，不能由 Builder Panel 绕过；agent 开关变化不应隐式写入第三方配置。
 
-代码影响：`src-tauri/src/adapters/hook_install/mod.rs` 提供安装预览、备份、manifest、安装和卸载；`src/components/SettingsPanel.tsx` 提供显式入口。
+代码影响：`src-tauri/src/adapters/hook_install/mod.rs` 提供状态查询、安装预览、备份、manifest、安装和卸载；`src/components/SettingsPanel.tsx` 提供状态列表和显式入口。
 
-测试影响：Rust fixture 测试覆盖 Codex 和 Claude 配置写入、重复安装替换、备份恢复和缺失配置删除；前端测试覆盖 hook 安装目标选择。
+测试影响：Rust fixture 测试覆盖 Codex 和 Claude 配置写入、状态查询、重复安装跳过、单项安装和卸载、备份恢复和缺失配置删除；前端测试覆盖 hook 状态展示和按钮禁用。
 
 排障影响：若 hook 安装后未运行，先检查 Codex 或 Claude 自身 hook review、trust 和配置加载状态，而不是绕过安全检查。
 
@@ -285,5 +285,19 @@
 测试影响：前端测试覆盖 session 排序、统计、工具用量聚合和自定义快捷输入清洗；Rust 测试覆盖 view model 只在存在跳回目标时生成跳回动作。
 
 排障影响：若 UI 出现收缩入口，应视为旧交互残留；若点击 session 没有跳转，应先检查该 session 是否同时具备跳回能力和跳回目标。
+
+状态：生效。
+
+## 决策 20
+
+决策：产品运行时移除 mock agent 来源，只读取 Codex CLI 和 Codex APP session；mock agent adapter 只保留为测试基线。
+
+原因：真实环境验证需要产品路径只经过真实 Codex adapter。继续在产品运行时保留 mock session、mock command 或 Mock Agent 设置开关，会让测试结果混入本地模拟能力，无法代表真实接入质量。
+
+代码影响：`src/views/BuilderPanelApp.tsx` 只聚合 Codex CLI 和 Codex APP session；`src-tauri/src/lib.rs` 不注册 mock Tauri command；`src-tauri/src/tauri_api/commands.rs` 不持有 mock runtime；`src/api/mockPanelApi.ts` 被删除；`scripts/check-architecture.mjs` 阻止产品 mock API 和 mock command 注册回退。
+
+测试影响：Rust mock adapter、service 和前端 store 测试继续验证测试基线；前端 Builder Panel 测试改为验证 Codex CLI 和 Codex APP runtime source 隔离；真实 smoke 验证覆盖 Codex CLI hook 和 Codex APP app-server。
+
+排障影响：若产品界面出现 mock session 或 Mock Agent 开关，应先检查前端设置模型、Tauri handler 注册和架构检查脚本；若真实 Codex session 不出现，不应通过恢复 mock 数据掩盖真实 adapter 问题。
 
 状态：生效。

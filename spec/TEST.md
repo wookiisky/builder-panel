@@ -18,7 +18,7 @@
 
 阶段 2 不声明 Windows Named Pipe 已在 Windows 本机验证。
 
-阶段 3 测试 mock agent 事件、session 读取、审批回写、文本回复、timeline 查询和前端 mock 状态。
+阶段 3 测试 mock agent 事件、session 读取、审批回写、文本回复、timeline 查询和前端 UI 状态基线。
 
 阶段 3 不测试真实 Codex 或 Claude Code 协议。
 
@@ -30,7 +30,7 @@
 
 阶段 4 当前不执行 Windows 本机人工验证。
 
-阶段 5 测试 mock 审批允许并记住、mock 选项提交、快捷回复过滤、预设命令计划、跳回降级和前端选项状态。
+阶段 5 测试审批允许并记住、选项提交、快捷回复过滤、预设命令计划、跳回降级和前端选项状态。
 
 阶段 5 当前不执行 Windows 本机人工验证。
 
@@ -44,9 +44,9 @@
 
 阶段 7 当前不执行 Windows 本机人工验证。
 
-阶段 8 测试配置缺字段默认化、原子写失败不覆盖旧配置、hook 安装卸载 fixture、日志脱敏、spec 文档门禁和性能预算静态场景。
+阶段 8 测试配置缺字段默认化、原子写失败不覆盖旧配置、hook 状态查询、hook 安装卸载 fixture、日志脱敏、spec 文档门禁和性能预算静态场景。
 
-阶段 8 测试设置页 hook 安装目标选择、panel 默认持久化状态和收缩状态归一化。
+阶段 8 测试设置页 hook 状态列表、panel 默认持久化状态和收缩状态归一化。
 
 阶段 8 当前不执行 Windows 本机人工验证。
 
@@ -110,7 +110,7 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证 session 路由以 runtime source 为准，不以 agent kind 猜测来源，包含 Codex APP runtime source。
 
-前端 Builder Panel 测试验证同一个 `SessionKey` 的 mock 和 Codex CLI session 拥有不同 UI 选中身份。
+前端 Builder Panel 测试验证同一个 `SessionKey` 的 Codex CLI 和 Codex APP session 拥有不同 UI 选中身份。
 
 前端 Builder Panel 测试验证合并后的 session 等待优先、同状态更新时间倒序、统计数量和动作标签。
 
@@ -128,9 +128,11 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端设置测试验证自定义快捷输入会清洗非法项、重复 ID 和排序值。
 
-前端 Builder Panel 测试验证 hook 安装目标选择不修改原数组。
+前端 Builder Panel 测试验证 hook 安装默认状态。
 
-前端 Builder Panel 测试验证没有当前选择对应的安装预览时不能安装 hook。
+前端 Builder Panel 测试验证 hook 安装和卸载按钮避免重复操作。
+
+前端 Settings Panel 测试验证 hook 状态列表展示和单项安装卸载按钮回调。
 
 前端 Builder Panel 测试验证窗口移动和尺寸变化的局部保存更新会合并。
 
@@ -142,7 +144,7 @@ Rust notification service 测试验证当前 session 抑制、短时间重复通
 
 Rust config file adapter 测试验证缺字段默认化、未知字段丢弃、临时文件写入失败不覆盖旧配置和并发保存临时文件隔离。
 
-Rust hook install adapter 测试验证安装预览、Codex hook 写入、重复安装替换、混合 group 保留用户 handler、重复 agent 去重、失败回滚、旧备份和旧 manifest 保护、备份恢复、manifest 删除和缺失配置卸载删除。
+Rust hook install adapter 测试验证状态查询、安装预览、Codex hook 写入、重复安装跳过、混合 group 保留用户 handler、重复 agent 去重、失败回滚、旧备份和旧 manifest 保护、单项安装 manifest 保留、单项卸载回滚、备份恢复、manifest 删除和缺失配置卸载删除。
 
 Rust log sanitizer 测试验证敏感字段脱敏、长文本截断和中文业务事件名。
 
@@ -226,11 +228,15 @@ Config file adapter 测试断言同一路径并发保存不会共享临时文件
 
 Hook install adapter 测试断言安装前可获得修改文件、备份文件和 manifest 路径。
 
+Hook install adapter 测试断言状态查询可识别未安装、已安装和需要修复。
+
 Hook install adapter 测试断言卸载可恢复安装前已有配置。
 
 Hook install adapter 测试断言安装失败不会留下无 manifest 的半安装配置。
 
 Hook install adapter 测试断言卸载成功后 manifest 不再生效。
+
+Hook install adapter 测试断言单项安装和单项卸载会保留其它 agent 的 manifest 记录。
 
 Log sanitizer 测试断言 prompt、transcript、timeline 和 token 类字段不会输出原文。
 
@@ -250,7 +256,11 @@ Notification Service 测试断言通知点击只定位 session，不打开过程
 
 阶段 3 mock agent 测试不读写真正用户配置。
 
-阶段 4 Codex APP schema 人工验证会执行本机 `codex app-server generate-json-schema --experimental`。
+Codex APP schema 真实验证执行本机 `codex app-server generate-json-schema --out <tmpdir> --experimental`。
+
+Codex APP app-server 真实 smoke 验证执行本机 `codex app-server --listen stdio://` 并完成基础初始化。
+
+Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Codex hook 配置，并用代表性 hook payload 验证 helper 到 bridge 的投递路径。
 
 阶段 4 自动测试不启动真实 Codex APP app-server 长驻进程。
 
@@ -338,7 +348,7 @@ Notification Service 测试断言通知点击只定位 session，不打开过程
 
 `src-tauri/src/adapters/notification/mod.rs` 是记录型通知 adapter 入口。
 
-`src/stores/mockPanelStore.test.ts` 是前端 mock 状态测试入口。
+`src/stores/mockPanelStore.test.ts` 是前端草稿、提交和 timeline 状态测试入口。
 
 `src/stores/mockPanelStore.test.ts` 是前端 timeline 复制和虚拟范围测试入口。
 
@@ -352,7 +362,7 @@ Notification Service 测试断言通知点击只定位 session，不打开过程
 
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
-`src/api/hookInstallApi.ts` 是前端 hook 安装 command 调用入口。
+`src/api/hookInstallApi.ts` 是前端 hook 状态查询和安装 command 调用入口。
 
 `scripts/check-architecture.mjs` 是架构检查入口。
 

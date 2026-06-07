@@ -62,7 +62,7 @@ Codex hook 安装通过 TOML AST 编辑 `~/.codex/config.toml` 的 `features.hoo
 
 schema 探针失败时，Codex APP 能力视为不可用。
 
-Codex APP app-server 启动或同步失败时，前端跳过 Codex APP session，mock 和 Codex CLI session 仍可展示。
+Codex APP app-server 启动或同步失败时，前端跳过 Codex APP session，Codex CLI session 仍可展示。
 
 Codex APP app-server 启动或同步失败后，后端在短时间退避窗口内不重复 spawn。
 

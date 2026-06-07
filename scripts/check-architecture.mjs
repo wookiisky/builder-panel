@@ -90,6 +90,42 @@ for (const filePath of frontendFiles) {
   }
 }
 
+const forbiddenRuntimeMockApiPath = join(
+  repositoryRoot,
+  "src",
+  "api",
+  "mockPanelApi.ts",
+);
+if (existsSync(forbiddenRuntimeMockApiPath)) {
+  reportFailure(
+    forbiddenRuntimeMockApiPath,
+    "产品运行时不允许保留 mock Tauri API 入口",
+  );
+}
+
+const tauriLibPath = join(repositoryRoot, "src-tauri", "src", "lib.rs");
+if (existsSync(tauriLibPath)) {
+  const text = readText(tauriLibPath);
+  const forbiddenMockCommands = [
+    "get_mock_sessions",
+    "get_mock_session_detail",
+    "resolve_mock_approval",
+    "submit_mock_choice",
+    "send_mock_reply",
+    "query_mock_timeline",
+    "release_mock_timeline_cache",
+    "reset_mock_runtime",
+  ];
+  for (const commandName of forbiddenMockCommands) {
+    if (text.includes(commandName)) {
+      reportFailure(
+        tauriLibPath,
+        `产品 Tauri handler 不允许注册 mock command：${commandName}`,
+      );
+    }
+  }
+}
+
 if (failures.length > 0) {
   console.error("架构边界检查失败：");
   for (const failure of failures) {

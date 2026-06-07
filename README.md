@@ -26,10 +26,10 @@ Builder Panel 首版面向日常使用 Codex、Claude Code 等 Coding Agent 的�
 2. Rust Domain 强类型事件、会话、交互、用量和错误模型。
 3. 纯 reducer 管理 session 状态和排序规则。
 4. 本地 bridge codec、Mac Unix Domain Socket 传输和 Windows Named Pipe 代码入口。
-5. mock agent adapter、mock runtime、审批、回复和 timeline 查询闭环。
+5. mock agent adapter 和 mock runtime 测试基线。
 6. Codex CLI hook 事件转换、审批 directive 等待和进程内 timeline 写入。
-7. Codex APP app-server schema 探针、消息编码和 notification 转换。
-8. 设置页、本地 JSON 设置文件读写、hook 安装预览、安装和卸载入口。
+7. Codex APP app-server schema 探针、消息编码、notification 转换、审批、回复和 timeline 查询闭环。
+8. 设置页、本地 JSON 设置文件读写、hook 状态查询、安装和卸载入口。
 9. 日志脱敏、spec 文档门禁和性能预算静态检查脚本。
 
 当前不声明以下能力已经完成：

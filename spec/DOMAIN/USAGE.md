@@ -40,7 +40,7 @@ Usage 不推断来源，不跨 agent 换算单位，不用魔法数字表达不�
 
 `UsageScope::AccountWindow` 表示账号或工具窗口范围的整体用量。
 
-前端工具用量摘要只聚合非 mock session 中的账号窗口用量。
+前端工具用量摘要只聚合真实 session 中的账号窗口用量。
 
 同一工具同一 `source_key` 的账号窗口用量只取更新时间最新值。
 

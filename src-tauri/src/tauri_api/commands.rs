@@ -10,9 +10,9 @@ use crate::adapters::codex_app::{
 use crate::adapters::codex_cli_hook::{start_codex_cli_bridge_server, CodexCliHookRuntime};
 use crate::adapters::config_file::JsonSettingsStore;
 use crate::adapters::hook_install::{
-    HookInstallAgent, HookInstallManifest, HookInstallPaths, HookInstallPreview, HookInstaller,
+    HookInstallAgent, HookInstallManifest, HookInstallPaths, HookInstallPreview,
+    HookInstallStatus, HookInstaller,
 };
-use crate::adapters::mock_agent::MockAgentRuntime;
 use crate::adapters::terminal::TerminalJumpAdapter;
 use crate::domain::agent_interaction::InteractionId;
 use crate::domain::agent_session::{JumpTarget, SessionKey};
@@ -23,20 +23,13 @@ use crate::ports::agent_adapter_port::ApprovalDecision;
 use crate::ports::agent_adapter_port::ChoiceSubmission;
 use crate::ports::jump_target_port::JumpTargetPort;
 use crate::ports::process_timeline_port::ProcessTimelineReleasePort;
-use crate::services::interaction_service::{
-    InteractionService, ResolveApprovalRequest, SubmitChoiceRequest,
-};
 use crate::services::process_timeline_service::{
     ProcessTimelineService, TimelinePage, TimelineQuery,
 };
-use crate::services::reply_service::{ReplyService, SendReplyRequest};
-use crate::services::session_service::SessionService;
 use crate::services::settings_service::{
     BuilderPanelSettings, PanelWindowPosition, PanelWindowSize, SettingsService, SettingsViewModel,
 };
 
-/// 全局 mock runtime，仅用于阶段 3 本地闭环。
-static MOCK_RUNTIME: OnceLock<Mutex<MockAgentRuntime>> = OnceLock::new();
 /// 全局 Codex CLI runtime，用于阶段 4 真实 hook 闭环。
 static CODEX_CLI_RUNTIME: OnceLock<Arc<Mutex<CodexCliHookRuntime>>> = OnceLock::new();
 /// 全局 Codex APP runtime，用于 hook 和 app-server 闭环。
@@ -133,6 +126,14 @@ pub fn preview_hook_install(request: HookInstallRequest) -> Result<HookInstallPr
     Ok(installer.preview(&request.agents))
 }
 
+/// 查询 hook 安装状态。
+#[tauri::command]
+pub fn get_hook_install_status() -> Result<HookInstallStatus, String> {
+    let installer = default_hook_installer()?;
+
+    Ok(installer.status())
+}
+
 /// 安装 hook。
 #[tauri::command]
 pub fn install_hooks(request: HookInstallRequest) -> Result<HookInstallManifest, String> {
@@ -145,19 +146,12 @@ pub fn install_hooks(request: HookInstallRequest) -> Result<HookInstallManifest,
 
 /// 卸载 hook。
 #[tauri::command]
-pub fn uninstall_hooks() -> Result<(), String> {
+pub fn uninstall_hooks(request: HookInstallRequest) -> Result<(), String> {
     let installer = default_hook_installer()?;
 
-    installer.uninstall().map_err(|error| error.user_message)
-}
-
-/// 获取 mock session 列表。
-#[tauri::command]
-pub fn get_mock_sessions() -> Result<Vec<SessionListItemViewModel>, String> {
-    let runtime = lock_mock_runtime()?;
-    let service = SessionService::new(&runtime);
-
-    Ok(service.list_sessions())
+    installer
+        .uninstall_agents(&request.agents)
+        .map_err(|error| error.user_message)
 }
 
 /// 获取 Codex CLI session 列表。
@@ -291,42 +285,9 @@ pub fn resolve_codex_app_approval(request: ResolveCodexApprovalRequest) -> Resul
     Ok(())
 }
 
-/// 获取 mock session 详情。
-#[tauri::command]
-pub fn get_mock_session_detail(
-    session_key: SessionKey,
-) -> Result<Option<SessionDetailViewModel>, String> {
-    let runtime = lock_mock_runtime()?;
-    let service = SessionService::new(&runtime);
-
-    Ok(service.session_detail(&session_key))
-}
-
-/// 提交 mock 审批决策。
-#[tauri::command]
-pub fn resolve_mock_approval(request: ResolveApprovalRequest) -> Result<(), String> {
-    let mut runtime = lock_mock_runtime()?;
-    let mut service = InteractionService::new(&mut runtime);
-
-    service
-        .resolve_approval(request)
-        .map_err(|error| error.user_message)
-}
-
-/// 提交 mock 选项回复。
-#[tauri::command]
-pub fn submit_mock_choice(request: SubmitChoiceRequest) -> Result<(), String> {
-    let mut runtime = lock_mock_runtime()?;
-    let mut service = InteractionService::new(&mut runtime);
-
-    service
-        .submit_choice(request)
-        .map_err(|error| error.user_message)
-}
-
 /// 提交 Codex APP 选项回复。
 #[tauri::command]
-pub fn submit_codex_app_choice(request: SubmitChoiceRequest) -> Result<(), String> {
+pub fn submit_codex_app_choice(request: SubmitCodexAppChoiceRequest) -> Result<(), String> {
     ensure_codex_app_started()?;
     let write = {
         let runtime = codex_app_runtime();
@@ -359,20 +320,9 @@ pub fn submit_codex_app_choice(request: SubmitChoiceRequest) -> Result<(), Strin
         .map_err(|error| error.user_message)
 }
 
-/// 提交 mock 文本回复。
-#[tauri::command]
-pub fn send_mock_reply(request: SendReplyRequest) -> Result<(), String> {
-    let mut runtime = lock_mock_runtime()?;
-    let mut service = ReplyService::new(&mut runtime);
-
-    service
-        .send_reply(request)
-        .map_err(|error| error.user_message)
-}
-
 /// 提交 Codex APP 文本回复。
 #[tauri::command]
-pub fn send_codex_app_reply(request: SendReplyRequest) -> Result<(), String> {
+pub fn send_codex_app_reply(request: SendCodexAppReplyRequest) -> Result<(), String> {
     ensure_codex_app_started()?;
     let write = {
         let runtime = codex_app_runtime();
@@ -439,17 +389,6 @@ pub fn create_codex_app_followup_turn(request: CodexAppFollowupRequest) -> Resul
         .map_err(|error| error.user_message)
 }
 
-/// 查询 mock 过程事件时间线。
-#[tauri::command]
-pub fn query_mock_timeline(query: TimelineQuery) -> Result<TimelinePage, String> {
-    let runtime = lock_mock_runtime()?;
-    let service = ProcessTimelineService::new(&*runtime);
-
-    service
-        .query_timeline(query)
-        .map_err(|error| error.user_message)
-}
-
 /// 查询 Codex CLI 过程事件时间线。
 #[tauri::command]
 pub fn query_codex_cli_timeline(query: TimelineQuery) -> Result<TimelinePage, String> {
@@ -475,16 +414,6 @@ pub fn query_codex_app_timeline(query: TimelineQuery) -> Result<TimelinePage, St
         .map_err(|error| error.user_message)
 }
 
-/// 释放 mock 过程事件时间线大文本缓存。
-#[tauri::command]
-pub fn release_mock_timeline_cache(session_key: SessionKey) -> Result<usize, String> {
-    let mut runtime = lock_mock_runtime()?;
-
-    runtime
-        .release_large_texts(&session_key)
-        .map_err(|error| error.user_message)
-}
-
 /// 释放 Codex CLI 过程事件时间线大文本缓存。
 #[tauri::command]
 pub fn release_codex_cli_timeline_cache(session_key: SessionKey) -> Result<usize, String> {
@@ -507,26 +436,9 @@ pub fn release_codex_app_timeline_cache(session_key: SessionKey) -> Result<usize
         .map_err(|error| error.user_message)
 }
 
-/// 重置 mock runtime。
-#[tauri::command]
-pub fn reset_mock_runtime() -> Result<(), String> {
-    let mut runtime = lock_mock_runtime()?;
-    *runtime = MockAgentRuntime::stage3_default();
-
-    Ok(())
-}
-
 /// 返回 session 跳回目标。
 fn session_jump_target(request: &JumpToSessionRequest) -> Option<JumpTarget> {
     match request.runtime_source {
-        RuntimeSource::Mock => {
-            let runtime = lock_mock_runtime().ok()?;
-            runtime
-                .session_state()
-                .sessions
-                .get(&request.session_key)
-                .and_then(|session| session.jump_target.clone())
-        }
         RuntimeSource::CodexCli => {
             ensure_codex_cli_bridge_started().ok()?;
             let runtime = lock_codex_cli_runtime().ok()?;
@@ -547,14 +459,6 @@ fn session_jump_target(request: &JumpToSessionRequest) -> Option<JumpTarget> {
     }
 }
 
-/// 获取 mock runtime 锁。
-fn lock_mock_runtime() -> Result<MutexGuard<'static, MockAgentRuntime>, String> {
-    MOCK_RUNTIME
-        .get_or_init(|| Mutex::new(MockAgentRuntime::stage3_default()))
-        .lock()
-        .map_err(|_| "mock runtime 锁已损坏".to_string())
-}
-
 /// Codex 审批提交请求。
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 pub struct ResolveCodexApprovalRequest {
@@ -564,6 +468,28 @@ pub struct ResolveCodexApprovalRequest {
     pub interaction_id: crate::domain::agent_interaction::InteractionId,
     /// 审批决策。
     pub decision: ApprovalDecision,
+}
+
+/// Codex APP 文本回复请求。
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+pub struct SendCodexAppReplyRequest {
+    /// 所属会话。
+    pub session_key: SessionKey,
+    /// 所属交互。
+    pub interaction_id: crate::domain::agent_interaction::InteractionId,
+    /// 文本内容。
+    pub content: String,
+}
+
+/// Codex APP 选项提交请求。
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+pub struct SubmitCodexAppChoiceRequest {
+    /// 所属会话。
+    pub session_key: SessionKey,
+    /// 所属交互。
+    pub interaction_id: crate::domain::agent_interaction::InteractionId,
+    /// 用户选择的选项值。
+    pub selected_values: Vec<String>,
 }
 
 /// Codex APP follow-up turn 请求。
@@ -597,8 +523,6 @@ pub struct HookInstallRequest {
 #[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeSource {
-    /// mock runtime。
-    Mock,
     /// Codex CLI runtime。
     CodexCli,
     /// Codex APP runtime。

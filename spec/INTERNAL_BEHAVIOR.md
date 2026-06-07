@@ -56,9 +56,9 @@ session list item view model 显式暴露行内交互摘要。
 
 跳回动作只在 session 具备跳回能力且存在跳回目标时生成。
 
-阶段 3 mock agent runtime 是本地内存验证基线，不是持久化事实来源。
+mock agent runtime 是本地内存测试基线，不是持久化事实来源，也不是产品运行时 session 来源。
 
-阶段 3 mock agent runtime 通过 Domain reducer 写入 session 状态。
+mock agent runtime 通过 Domain reducer 写入测试用 session 状态。
 
 Codex CLI runtime 是阶段 4 真实 hook 状态来源，当前仍为进程内内存状态。
 
@@ -160,11 +160,11 @@ bridge transport 执行 socket 或 pipe IO。
 
 hook helper 输出 directive 前必须校验 response 与当前 request 和 agent source 匹配。
 
-Mock agent runtime 记录 directive 和折叠事件属于阶段 3 本地验证副作用。
+Mock agent runtime 记录 directive 和折叠事件属于本地测试副作用。
 
 Mock agent runtime 可记录审批、选项和文本回复 directive。
 
-Tauri command 使用进程内 mock runtime 锁收口阶段 3 mock 状态访问。
+Tauri 产品 command 不访问 mock runtime。
 
 Tauri command 使用进程内 Codex CLI runtime 锁收口阶段 4 Codex CLI 状态访问。
 
@@ -172,11 +172,11 @@ Tauri command 使用进程内 Codex APP runtime 锁收口 Codex APP 状态访问
 
 前端在 panel 打开期间定时刷新 Codex CLI 和 Codex APP session，避免真实 hook 或 app-server 事件在首次加载后不可见。
 
-前端合并 mock、Codex CLI 和 Codex APP session 后，详情读取、审批提交、回复提交、follow-up 和 timeline 查询必须按显式 runtime source 路由。
+前端合并 Codex CLI 和 Codex APP session 后，详情读取、审批提交、回复提交、follow-up 和 timeline 查询必须按显式 runtime source 路由。
 
-前端合并 mock、Codex CLI 和 Codex APP session 后，UI session 选中身份必须包含 runtime source。
+前端合并 Codex CLI 和 Codex APP session 后，UI session 选中身份必须包含 runtime source。
 
-前端合并 mock、Codex CLI 和 Codex APP session 后，必须重新按 UI 排序规则排序。
+前端合并 Codex CLI 和 Codex APP session 后，必须重新按 UI 排序规则排序。
 
 阶段 7 前端设置状态不进入 Domain。
 
@@ -198,7 +198,11 @@ Panel 设置中的收缩字段不得保存为 `true`。
 
 设置页不包含自动更新配置项。
 
-设置页 hook 安装入口只在用户点击预览、安装或卸载时调用 hook 安装 command。
+设置页 hook 安装入口只在用户打开设置页、点击安装或点击卸载时调用 hook 安装 command。
+
+设置页 hook 安装状态必须来自 hook 安装状态 command。
+
+前端不得用本轮 UI 记忆推断 hook 是否已经安装。
 
 设置保存响应必须通过请求版本校验后才能覆盖前端设置状态。
 
@@ -206,7 +210,7 @@ panel 窗口移动和尺寸变化通过局部保存 command 更新 Panel 设置�
 
 panel 窗口状态局部保存不得把收缩字段写成 `true`。
 
-当前 mock agent、Codex CLI 和 Codex APP 开关驱动 session 读取。
+当前 Codex CLI 和 Codex APP 开关驱动 session 读取。
 
 未接入 session 读取链路的 agent 开关必须在 UI 禁用。
 
@@ -264,9 +268,9 @@ Codex APP session 列表、详情和 timeline 查询可尝试启动 app-server�
 
 Codex APP app-server client 被复用前必须检查子进程仍存活；已退出时必须清理 client slot。
 
-前端读取 mock、Codex CLI 和 Codex APP session 时，单一来源失败不得阻断其它来源 session 刷新。
+前端读取 Codex CLI 和 Codex APP session 时，单一来源失败不得阻断其它来源 session 刷新。
 
-前端工具用量聚合只读取非 mock session 的账号窗口用量。
+前端工具用量聚合只读取真实 session 的账号窗口用量。
 
 前端工具用量聚合同一工具同一来源键只保留最新值。
 
@@ -286,9 +290,19 @@ hook 安装和卸载属于 hook install adapter 边界副作用。
 
 设置页 hook 安装 command 是 hook install adapter 的 Tauri 边界入口。
 
-hook 安装必须先能生成修改文件、备份文件和 manifest 的预览。
+hook 安装器必须能生成修改文件、备份文件和 manifest 的预览。
 
-设置页安装 hook 前必须允许用户查看预览结果。
+hook 安装器必须能查询 Codex CLI hook 和 Claude CLI hook 的安装状态。
+
+hook 安装状态必须同时检查 manifest 和实际配置。
+
+Codex CLI hook 已安装状态必须检查 `hooks.json` handler 和 `config.toml` 的 `[features].hooks`。
+
+严格已安装状态必须禁用重复安装。
+
+需要修复状态必须允许安装重写受管 handler。
+
+没有目标 manifest 记录时必须禁用或跳过重复卸载。
 
 hook 安装不得静默提权，不得绕过 Codex hook trust review。
 
@@ -302,9 +316,15 @@ hook 安装器写配置文件和 manifest 时使用临时文件替换目标文�
 
 hook 安装中途失败时，已写配置、旧备份和旧 manifest 必须回滚到安装前状态。
 
+单项安装必须保留 manifest 中其它 agent 的记录。
+
 hook 卸载必须以 manifest 为恢复依据。
 
-hook 卸载成功后必须删除 manifest，避免陈旧恢复记录再次生效。
+单项卸载必须保留 manifest 中其它 agent 的记录。
+
+单项卸载写回剩余 manifest 失败时，必须回滚目标配置和旧 manifest。
+
+最后一个 agent 卸载成功后必须删除 manifest，避免陈旧恢复记录再次生效。
 
 Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界副作用。
 
@@ -358,9 +378,9 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 若前端只在首屏读取一次 Codex CLI session，后续真实审批请求会不可见并最终超时 fail-open。
 
-若前端按 agent kind 而不是 runtime source 路由，mock 验证数据可能误走真实 Codex command。
+若前端按 agent kind 而不是 runtime source 路由，Codex CLI 与 Codex APP 可能互相误走 command。
 
-若前端选中态不包含 runtime source，同一个 `SessionKey` 的 mock 和真实 session 可能互相误选。
+若前端选中态不包含 runtime source，同一个 `SessionKey` 的 Codex CLI 和 Codex APP session 可能互相误选。
 
 若合并后不重新排序，不同 runtime 来源的 session 拼接顺序会破坏等待优先规则。
 
@@ -410,7 +430,7 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 `src-tauri/src/adapters/bridge/codec.rs` 是显式 bridge 契约入口。
 
-`src-tauri/src/adapters/mock_agent/mod.rs` 是阶段 3 mock runtime 入口。
+`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock 测试基线 runtime 入口。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI runtime 和审批等待入口。
 
