@@ -168,9 +168,11 @@
 
 约束：双通道事件必须通过 `thread_id -> cwd` 映射折叠到同一个 `SessionKey`，禁止用 Builder Panel 自身 cwd 代替 Codex thread cwd。
 
-代码影响：`src-tauri/src/adapters/bridge/hook_payload.rs` 将 `terminal_app` 为 `Codex.app` 的 Codex hook payload 分流为 Codex APP；`src-tauri/src/adapters/codex_app/mod.rs` 保存 Codex APP runtime 和 app-server stdio 客户端；`src/views/BuilderPanelApp.tsx` 按 runtime source 路由 Codex APP session。
+约束：Codex APP 可通过 app-server thread 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；该补齐不得覆盖实时 pending、失败、完成状态。
 
-测试影响：Rust 测试覆盖 Codex APP hook 分流、stdout directive、schema 探针和完整能力 capability；前端测试覆盖 Codex APP runtime source 路由。
+代码影响：`src-tauri/src/adapters/bridge/hook_payload.rs` 将 `terminal_app` 为 `Codex.app` 的 Codex hook payload 分流为 Codex APP；`src-tauri/src/adapters/codex_app/mod.rs` 保存 Codex APP runtime 和 app-server stdio 客户端；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 Codex rollout 历史；`src/views/BuilderPanelApp.tsx` 按 runtime source 路由 Codex APP session。
+
+测试影响：Rust 测试覆盖 Codex APP hook 分流、stdout directive、schema 探针、可信 cwd、rollout 输出清洗和完整能力 capability；前端测试覆盖 Codex APP runtime source 路由。
 
 排障影响：若 Codex APP session 不出现，先检查 Codex hook 是否启用、`terminal_app` 是否为 `Codex.app`、app-server 是否可启动，再检查前端设置开关。
 
@@ -304,14 +306,14 @@
 
 ## 决策 21
 
-决策：所有 coding agent session 只来自当前 Builder Panel 进程启动后的实时 hook、notification 或 server request；APP 启动时不读取历史 session，不持久化 session，但启动后仍在运行并继续发出实时事件的任务可以进入当前 session 列表。
+决策：Codex CLI 和未接入 agent session 只来自当前 Builder Panel 进程启动后的实时事件；Codex APP 可通过 app-server thread 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；Builder Panel 不持久化 session。
 
-原因：用户打开面板时需要一个干净的当前观察窗口，不能把 Codex、Claude 或未来 agent 的历史记录误当成本次 APP 状态；同时仍在运行的任务属于当前可处理现场，不能因为早于 APP 启动就丢失后续审批、回复或 timeline。
+原因：用户打开面板时需要一个干净的当前观察窗口，不能把普通历史记录误当成本次 APP 状态；但 Codex APP app-server 和 rollout 已提供 thread 级项目与最新输出事实，读取这些事实可以修正待识别项目和输出摘要缺失，同时不恢复历史 timeline。
 
-代码影响：`src-tauri/src/tauri_api/commands.rs` 启动 Codex APP app-server 时不再同步已加载 thread；`src-tauri/src/adapters/codex_app/mod.rs` 不再编码 `thread/loaded/list` 或 `thread/read`，并在实时事件首次到达时初始化 Codex APP session 能力和跳回目标；无 cwd app-server 事件后续会按 thread ID 迁移到真实 cwd session；`src-tauri/src/adapters/timeline/mod.rs` 支持 session key 迁移。
+代码影响：`src-tauri/src/tauri_api/commands.rs` 读取 Codex APP session 时可同步 app-server thread 元数据和 Codex rollout 历史；`src-tauri/src/adapters/codex_app/mod.rs` 编码 `thread/loaded/list` 和 `thread/list`，并在实时事件首次到达时初始化 Codex APP session 交互能力；无可信 cwd 的 app-server 事件会先进入待识别项目，后续按 thread ID 迁移到真实 cwd session；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 rollout 历史；`src-tauri/src/adapters/timeline/mod.rs` 支持 session key 迁移。
 
-测试影响：Rust Codex APP 测试覆盖首个实时审批或回复事件初始化可操作 session、无 cwd 到真实 cwd 的 session 迁移、loaded/read schema 移除；前端测试覆盖初始空列表后 Codex APP session 出现时自动选中。
+测试影响：Rust Codex APP 测试覆盖首个实时审批或回复事件初始化可操作 session、无可信 cwd 不生成 jump、thread 元数据迁移、rollout 输出清洗和多 turn 输出不串联；前端测试覆盖初始空列表后 Codex APP session 出现时自动选中，以及无 jump 行点击无反应。
 
-排障影响：若 APP 打开时未显示旧任务，先确认该任务在 APP 打开后是否继续发出 hook 或 app-server 实时事件；不应通过读取 transcript、JSONL、rollout 或已加载 thread 列表补历史 session。
+排障影响：若 Codex APP session 显示待识别项目，先检查 app-server thread 元数据和 rollout 是否能提供可信 cwd；若其它 agent 旧任务未显示，先确认该任务在 APP 打开后是否继续发出实时事件。
 
 状态：生效。

@@ -1,5 +1,7 @@
 //! Codex APP adapter。
 
+mod codex_rollout;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -47,6 +49,10 @@ use crate::ports::process_timeline_port::{
     ProcessTimelineItem, ProcessTimelineReaderPort, ProcessTimelineReleasePort,
 };
 
+pub use self::codex_rollout::CodexRolloutDiscovery;
+
+use self::codex_rollout::CodexRolloutSnapshot;
+
 const REQUIRED_SCHEMA_FILES: [&str; 15] = [
     "v2/ThreadStartParams.json",
     "v2/ThreadStartResponse.json",
@@ -66,8 +72,12 @@ const REQUIRED_SCHEMA_FILES: [&str; 15] = [
 ];
 
 const APP_SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const APP_SERVER_THREAD_LIST_TIMEOUT: Duration = Duration::from_secs(2);
 const APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const MAX_APP_SERVER_LINE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CURRENT_TURN_OUTPUT_CHARS: usize = 4096;
+const UNRESOLVED_CODEX_APP_PROJECT_ID: &str = "__codex_app_unresolved__";
+const UNRESOLVED_CODEX_APP_PROJECT_LABEL: &str = "待识别项目";
 
 /// Codex APP app-server schema 探针结果。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -328,6 +338,113 @@ impl CodexAppAdapter {
             }
         })
     }
+
+    /// 编码 thread/loaded/list request。
+    pub fn thread_loaded_list_request(id: u64) -> Value {
+        json!({
+            "id": id,
+            "method": "thread/loaded/list",
+            "params": {}
+        })
+    }
+
+    /// 编码 thread/list request。
+    pub fn thread_list_request(id: u64, limit: usize) -> Value {
+        json!({
+            "id": id,
+            "method": "thread/list",
+            "params": {
+                "limit": limit
+            }
+        })
+    }
+
+    /// 清洗 app-server thread/list response。
+    pub fn threads_from_response(
+        response: &Value,
+    ) -> Result<Vec<CodexAppThreadMetadata>, CodexAppAdapterError> {
+        let threads = response
+            .get("threads")
+            .and_then(Value::as_array)
+            .ok_or(CodexAppAdapterError::MissingField("threads"))?;
+        let mut output = Vec::new();
+        for thread in threads {
+            if let Ok(metadata) = CodexAppThreadMetadata::from_value(thread) {
+                output.push(metadata);
+            }
+        }
+
+        Ok(output)
+    }
+}
+
+/// Codex APP app-server thread 清洗后元数据。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodexAppThreadMetadata {
+    /// Thread ID。
+    pub id: String,
+    /// 可选真实 cwd；缺失时只能作为 rollout path 候选。
+    pub cwd: Option<String>,
+    /// 可选标题。
+    pub name: Option<String>,
+    /// app-server 预览文本。
+    pub preview: Option<String>,
+    /// 可选 rollout 路径。
+    pub path: Option<PathBuf>,
+    /// 状态类型。
+    pub status_type: String,
+    /// 是否是临时 thread。
+    pub ephemeral: bool,
+}
+
+impl CodexAppThreadMetadata {
+    /// 从第三方 JSON 清洗 thread 元数据。
+    fn from_value(value: &Value) -> Result<Self, CodexAppAdapterError> {
+        let object = value
+            .as_object()
+            .ok_or(CodexAppAdapterError::InvalidField("thread"))?;
+        let id = required_string(object.get("id"), "thread.id")?;
+        let cwd = optional_non_empty_string(object.get("cwd"), "thread.cwd")?;
+        let name = optional_string(object.get("name"), "thread.name")?;
+        let preview = optional_string(object.get("preview"), "thread.preview")?;
+        let path = optional_non_empty_string(object.get("path"), "thread.path")?.map(PathBuf::from);
+        if cwd.is_none() && path.is_none() {
+            return Err(CodexAppAdapterError::MissingField("thread.cwd"));
+        }
+        let status_type = thread_metadata_status_type(object.get("status"))?;
+        let ephemeral = object
+            .get("ephemeral")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        Ok(Self {
+            id,
+            cwd,
+            name,
+            preview,
+            path,
+            status_type,
+            ephemeral,
+        })
+    }
+}
+
+/// 清洗 app-server thread status.type。
+fn thread_metadata_status_type(status: Option<&Value>) -> Result<String, CodexAppAdapterError> {
+    let Some(status) = status else {
+        return Ok("idle".to_string());
+    };
+    let object = status
+        .as_object()
+        .ok_or(CodexAppAdapterError::InvalidField("thread.status"))?;
+    let Some(status_type) = object.get("type") else {
+        return Ok("idle".to_string());
+    };
+    let status_type = status_type
+        .as_str()
+        .ok_or(CodexAppAdapterError::InvalidField("thread.status.type"))?;
+
+    Ok(status_type.to_string())
 }
 
 /// Codex APP adapter 错误。
@@ -359,6 +476,10 @@ pub struct CodexAppRuntime {
     pending_rpc_submissions: BTreeSet<InteractionId>,
     /// Codex APP thread 到真实 cwd 的映射。
     thread_cwds: BTreeMap<String, String>,
+    /// Codex APP thread 元数据缓存。
+    thread_metadata: BTreeMap<String, CodexAppThreadMetadata>,
+    /// 当前 turn 已累积的 Agent 输出。
+    current_turn_agent_outputs: BTreeMap<String, String>,
     /// 已发起但尚未完成写入确认的 follow-up turn。
     pending_followup_turns: BTreeSet<SessionKey>,
     /// 托管事件时间线缓存。
@@ -375,6 +496,8 @@ impl CodexAppRuntime {
             pending_rpc_answers: BTreeMap::new(),
             pending_rpc_submissions: BTreeSet::new(),
             thread_cwds: BTreeMap::new(),
+            thread_metadata: BTreeMap::new(),
+            current_turn_agent_outputs: BTreeMap::new(),
             pending_followup_turns: BTreeSet::new(),
             timeline_cache: InMemoryProcessTimelineCache::new(),
         }
@@ -396,6 +519,16 @@ impl CodexAppRuntime {
     /// 返回当前 session 状态。
     pub fn session_state(&self) -> &SessionState {
         &self.session_state
+    }
+
+    /// 返回仍缺真实 cwd 的 Codex APP thread ID。
+    pub fn unresolved_thread_ids(&self) -> Vec<String> {
+        self.session_state
+            .sessions
+            .keys()
+            .filter(|key| is_unresolved_session_key(key))
+            .map(|key| key.conversation_id.value.clone())
+            .collect()
     }
 
     /// 应用 Codex APP hook request。
@@ -450,7 +583,7 @@ impl CodexAppRuntime {
     pub fn apply_app_server_message(
         &mut self,
         message: &Value,
-        cwd: &str,
+        _cwd: &str,
         updated_at: UnixMillis,
     ) -> Result<(), AppError> {
         let object = message
@@ -459,7 +592,12 @@ impl CodexAppRuntime {
         if let Some((thread_id, cwd)) = self.record_message_thread_cwd(message) {
             self.migrate_codex_app_thread_to_cwd(&thread_id, &cwd)?;
         }
-        let resolved_cwd = self.message_cwd(message, cwd);
+        if let Some(metadata) = message_thread_metadata(message) {
+            self.apply_thread_metadata(metadata, updated_at)?;
+        }
+        let resolved_cwd = self
+            .message_cwd(message)
+            .unwrap_or_else(|| UNRESOLVED_CODEX_APP_PROJECT_ID.to_string());
         let method = object.get("method").and_then(Value::as_str);
         if method.is_some_and(is_server_request_method) || object.contains_key("id") {
             match CodexAppAdapter::event_from_server_request(message, &resolved_cwd, updated_at) {
@@ -503,10 +641,15 @@ impl CodexAppRuntime {
         }
 
         if object.contains_key("method") {
+            if self.apply_agent_message_delta(message, &resolved_cwd, updated_at)? {
+                return Ok(());
+            }
+            self.clear_current_turn_output_on_turn_start(message);
             if let Some(event) =
                 CodexAppAdapter::event_from_notification(message, &resolved_cwd, updated_at)
                     .map_err(|_| protocol_error("Codex APP app-server notification 不受支持"))?
             {
+                let event = self.event_with_current_agent_output(event);
                 self.clear_detached_rpc_pending(&event);
                 self.apply_event(event)?;
             }
@@ -695,6 +838,8 @@ impl CodexAppRuntime {
     /// 标记 follow-up turn 已成功写入 app-server。
     pub fn complete_followup_turn(&mut self, session_key: &SessionKey) -> Result<(), AppError> {
         self.pending_followup_turns.remove(session_key);
+        self.current_turn_agent_outputs
+            .remove(&session_key.conversation_id.value);
         self.apply_event(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
             session_key: session_key.clone(),
             summary: "Codex APP follow-up 已提交".to_string(),
@@ -728,6 +873,9 @@ impl CodexAppRuntime {
         self.timeline_cache.record_agent_event(&event)?;
         self.session_state = self.session_state.apply_event(event);
         if let Some((session_key, thread_id, updated_at)) = codex_app_started {
+            if is_unresolved_session_key(&session_key) {
+                return Ok(());
+            }
             let jump_event = jump_target_event(session_key, &thread_id, updated_at);
             self.timeline_cache.record_agent_event(&jump_event)?;
             self.session_state = self.session_state.apply_event(jump_event);
@@ -779,6 +927,199 @@ impl CodexAppRuntime {
             | AgentInteraction::TextReply(_)
             | AgentInteraction::Choice(_) => Err(invalid_interaction("交互已变化")),
         }
+    }
+
+    /// 累积并应用当前 turn 的 Agent 输出 delta。
+    fn apply_agent_message_delta(
+        &mut self,
+        message: &Value,
+        cwd: &str,
+        updated_at: UnixMillis,
+    ) -> Result<bool, AppError> {
+        let method = message.get("method").and_then(Value::as_str);
+        if method != Some("item/agentMessage/delta") {
+            return Ok(false);
+        }
+        let Some(params) = message.get("params") else {
+            return Ok(false);
+        };
+        let thread_id = required_string(params.get("threadId"), "threadId")
+            .map_err(|_| protocol_error("Codex APP agent message delta 格式无效"))?;
+        let delta = required_string(params.get("delta"), "delta")
+            .map_err(|_| protocol_error("Codex APP agent message delta 格式无效"))?;
+        let output = self
+            .current_turn_agent_outputs
+            .entry(thread_id.clone())
+            .or_default();
+        output.push_str(&delta);
+        truncate_to_recent_chars(output, MAX_CURRENT_TURN_OUTPUT_CHARS);
+        let summary = format!("Codex APP 回复：{}", truncate(output, 240));
+        self.apply_event(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+            session_key: session_key(cwd, &thread_id),
+            summary,
+            updated_at,
+        }))?;
+
+        Ok(true)
+    }
+
+    /// turn/started 表示当前 thread 进入新 turn，清理上一轮输出。
+    fn clear_current_turn_output_on_turn_start(&mut self, message: &Value) {
+        if message.get("method").and_then(Value::as_str) != Some("turn/started") {
+            return;
+        }
+        if let Some(thread_id) = message_thread_id(message) {
+            self.current_turn_agent_outputs.remove(&thread_id);
+        }
+    }
+
+    /// 完成或空闲事件优先保留当前 turn 最新 Agent 输出。
+    fn event_with_current_agent_output(&self, event: AgentEvent) -> AgentEvent {
+        match event {
+            AgentEvent::TurnCompleted(mut event) => {
+                if let Some(output) = self
+                    .current_turn_agent_outputs
+                    .get(&event.session_key.conversation_id.value)
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    event.summary = Some(format!("Codex APP 回复：{}", truncate(output, 240)));
+                }
+                AgentEvent::TurnCompleted(event)
+            }
+            AgentEvent::ActivityUpdated(mut event)
+                if event.summary == "Codex APP thread 运行中" =>
+            {
+                if let Some(output) = self
+                    .current_turn_agent_outputs
+                    .get(&event.session_key.conversation_id.value)
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    event.summary = format!("Codex APP 回复：{}", truncate(output, 240));
+                }
+                AgentEvent::ActivityUpdated(event)
+            }
+            other => other,
+        }
+    }
+
+    /// 合并 app-server thread 元数据，不覆盖已有实时状态。
+    pub fn apply_thread_metadata(
+        &mut self,
+        metadata: CodexAppThreadMetadata,
+        updated_at: UnixMillis,
+    ) -> Result<(), AppError> {
+        if metadata.ephemeral {
+            return Ok(());
+        }
+
+        let thread_id = metadata.id.clone();
+        let Some(cwd) = metadata.cwd.clone() else {
+            return Ok(());
+        };
+        let target_key = session_key(&cwd, &thread_id);
+        let summary = metadata
+            .preview
+            .clone()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "Codex APP thread 已发现".to_string());
+        self.thread_cwds.insert(thread_id.clone(), cwd.clone());
+        self.thread_metadata
+            .insert(thread_id.clone(), metadata.clone());
+        self.migrate_codex_app_thread_to_cwd(&thread_id, &cwd)?;
+
+        if let Some(session) = self.session_state.sessions.get_mut(&target_key) {
+            session.project_label = project_label(&cwd);
+            session.conversation_label = thread_id;
+            if session.title.is_none() {
+                session.title = metadata.name.clone();
+            }
+            if session.summary.is_none() {
+                session.summary = Some(summary.clone());
+            }
+            if session.capabilities == SessionCapabilities::none()
+                || is_unresolved_session_key(&session.session_key)
+            {
+                session.capabilities = codex_app_capabilities();
+            }
+            if session.jump_target.is_none() {
+                session.jump_target = Some(codex_app_jump_target(
+                    &session.session_key.conversation_id.value,
+                ));
+            }
+            return Ok(());
+        }
+
+        self.apply_event_direct(AgentEvent::SessionStarted(SessionStartedEvent {
+            session_key: target_key.clone(),
+            project_label: project_label(&cwd),
+            conversation_label: metadata.id.clone(),
+            title: metadata.name.clone(),
+            summary: Some(summary.clone()),
+            capabilities: codex_app_capabilities(),
+            usage: UsageSnapshot::unavailable(),
+            updated_at,
+        }))?;
+
+        self.apply_thread_metadata_status(&target_key, &metadata.status_type, summary, updated_at)
+    }
+
+    /// 按 app-server thread 元数据受控折叠 session 状态。
+    fn apply_thread_metadata_status(
+        &mut self,
+        target_key: &SessionKey,
+        status_type: &str,
+        summary: String,
+        updated_at: UnixMillis,
+    ) -> Result<(), AppError> {
+        match status_type {
+            "idle" => self.apply_event_direct(AgentEvent::TurnCompleted(TurnCompletedEvent {
+                session_key: target_key.clone(),
+                summary: Some(summary),
+                updated_at,
+            })),
+            "systemError" => self.apply_event_direct(AgentEvent::Failed(FailedEvent {
+                session_key: target_key.clone(),
+                error: app_server_error("Codex APP thread 系统错误", String::new()),
+                updated_at,
+            })),
+            "notLoaded" => self.apply_event_direct(AgentEvent::Detached(DetachedEvent {
+                session_key: target_key.clone(),
+                reason: Some("Codex APP thread 未加载".to_string()),
+                updated_at,
+            })),
+            _ => Ok(()),
+        }
+    }
+
+    /// 使用 rollout 快照补齐真实 cwd 和最新 Agent 输出。
+    pub fn apply_rollout_snapshot(
+        &mut self,
+        snapshot: CodexRolloutSnapshot,
+    ) -> Result<(), AppError> {
+        self.thread_cwds
+            .insert(snapshot.session_id.clone(), snapshot.cwd.clone());
+        self.migrate_codex_app_thread_to_cwd(&snapshot.session_id, &snapshot.cwd)?;
+        let target_key = session_key(&snapshot.cwd, &snapshot.session_id);
+        let Some(session) = self.session_state.sessions.get_mut(&target_key) else {
+            return Ok(());
+        };
+
+        session.project_label = project_label(&snapshot.cwd);
+        if session.capabilities == SessionCapabilities::none() {
+            session.capabilities = codex_app_capabilities();
+        }
+        if session.jump_target.is_none() {
+            session.jump_target = Some(codex_app_jump_target(
+                &session.session_key.conversation_id.value,
+            ));
+        }
+        if should_apply_rollout_summary(session) {
+            if let Some(summary) = snapshot.summary {
+                session.summary = Some(summary);
+            }
+        }
+
+        Ok(())
     }
 
     fn reserve_rpc_submission(&mut self, interaction_id: &InteractionId) -> Result<(), AppError> {
@@ -873,17 +1214,17 @@ impl CodexAppRuntime {
         Some((thread_id, cwd))
     }
 
-    fn message_cwd(&self, message: &Value, default_cwd: &str) -> String {
+    fn message_cwd(&self, message: &Value) -> Option<String> {
         if let Some(cwd) = message_thread_cwd(message) {
-            return cwd;
+            return Some(cwd);
         }
         if let Some(thread_id) = message_thread_id(message) {
             if let Some(cwd) = self.thread_cwds.get(&thread_id) {
-                return cwd.clone();
+                return Some(cwd.clone());
             }
         }
 
-        default_cwd.to_string()
+        None
     }
 
     fn clear_detached_rpc_pending(&mut self, event: &AgentEvent) {
@@ -959,12 +1300,16 @@ impl CodexAppRuntime {
             .pending_interaction
             .take()
             .map(|interaction| interaction.aligned_to_session_key(target_key));
-        if stale_session.capabilities == SessionCapabilities::none() {
-            stale_session.capabilities = codex_app_capabilities();
-        }
-        if stale_session.jump_target.is_none() {
-            stale_session.jump_target =
-                Some(codex_app_jump_target(&target_key.conversation_id.value));
+        if !is_unresolved_session_key(target_key) {
+            if stale_session.capabilities == SessionCapabilities::none()
+                || !stale_session.capabilities.can_jump
+            {
+                stale_session.capabilities = codex_app_capabilities();
+            }
+            if stale_session.jump_target.is_none() {
+                stale_session.jump_target =
+                    Some(codex_app_jump_target(&target_key.conversation_id.value));
+            }
         }
 
         if let Some(target_session) = self.session_state.sessions.get_mut(target_key) {
@@ -1230,18 +1575,22 @@ fn message_thread_id(message: &Value) -> Option<String> {
 
 fn message_thread_cwd(message: &Value) -> Option<String> {
     let params = message.get("params")?;
-    if let Some(cwd) = params.get("cwd").and_then(Value::as_str) {
-        return Some(cwd.to_string());
+    if let Some(cwd) = clean_non_empty_value(params.get("cwd")) {
+        return Some(cwd);
     }
     if let Some(cwd) = params
         .get("thread")
-        .and_then(|thread| thread.get("cwd"))
-        .and_then(Value::as_str)
+        .and_then(|thread| clean_non_empty_value(thread.get("cwd")))
     {
-        return Some(cwd.to_string());
+        return Some(cwd);
     }
 
     None
+}
+
+fn message_thread_metadata(message: &Value) -> Option<CodexAppThreadMetadata> {
+    let thread = message.get("params")?.get("thread")?;
+    CodexAppThreadMetadata::from_value(thread).ok()
 }
 
 /// hook 审批等待器。
@@ -1546,6 +1895,26 @@ impl CodexAppServerClient {
         Ok(())
     }
 
+    /// 读取已加载 Codex APP threads。
+    pub fn list_loaded_threads(&self) -> Result<Vec<CodexAppThreadMetadata>, AppError> {
+        let response = self.send_request_value_with_timeout(
+            CodexAppAdapter::thread_loaded_list_request(self.next_request_id()?),
+            APP_SERVER_THREAD_LIST_TIMEOUT,
+        )?;
+        CodexAppAdapter::threads_from_response(&response)
+            .map_err(|_| app_server_error("Codex APP thread 列表格式无效", String::new()))
+    }
+
+    /// 读取 Codex APP thread 历史。
+    pub fn list_threads(&self, limit: usize) -> Result<Vec<CodexAppThreadMetadata>, AppError> {
+        let response = self.send_request_value_with_timeout(
+            CodexAppAdapter::thread_list_request(self.next_request_id()?, limit),
+            APP_SERVER_THREAD_LIST_TIMEOUT,
+        )?;
+        CodexAppAdapter::threads_from_response(&response)
+            .map_err(|_| app_server_error("Codex APP thread 历史格式无效", String::new()))
+    }
+
     /// 写入不等待响应的 JSON-RPC response。
     pub fn write_rpc_response(&self, write: CodexAppRpcWrite) -> Result<(), AppError> {
         self.write_message(&write.message)
@@ -1601,6 +1970,14 @@ impl CodexAppServerClient {
     }
 
     fn send_request_value(&self, request: Value) -> Result<Value, AppError> {
+        self.send_request_value_with_timeout(request, APP_SERVER_REQUEST_TIMEOUT)
+    }
+
+    fn send_request_value_with_timeout(
+        &self,
+        request: Value,
+        timeout: Duration,
+    ) -> Result<Value, AppError> {
         let request_id = request
             .get("id")
             .and_then(Value::as_u64)
@@ -1620,7 +1997,7 @@ impl CodexAppServerClient {
             }
             return Err(error);
         }
-        self.wait_response(request_id)
+        self.wait_response(request_id, timeout)
     }
 
     fn write_message(&self, message: &Value) -> Result<(), AppError> {
@@ -1639,13 +2016,13 @@ impl CodexAppServerClient {
             .map_err(|error| app_server_error("Codex APP app-server flush 失败", error.to_string()))
     }
 
-    fn wait_response(&self, request_id: u64) -> Result<Value, AppError> {
+    fn wait_response(&self, request_id: u64, timeout: Duration) -> Result<Value, AppError> {
         let (lock, condvar) = &*self.pending;
         let pending = lock
             .lock()
             .map_err(|_| app_server_error("Codex APP pending request 锁已损坏", String::new()))?;
         let (mut pending, timeout) = condvar
-            .wait_timeout_while(pending, APP_SERVER_REQUEST_TIMEOUT, |pending| {
+            .wait_timeout_while(pending, timeout, |pending| {
                 matches!(pending.get(&request_id), Some(PendingRpcResult::Waiting))
             })
             .map_err(|_| app_server_error("Codex APP pending request 等待失败", String::new()))?;
@@ -1848,6 +2225,7 @@ fn started_from_thread(
     let thread_id = required_string(thread.get("id"), "thread.id")?;
     let title = optional_string(thread.get("name"), "thread.name")?;
     let session_key = session_key(cwd, &thread_id);
+    let capabilities = codex_app_capabilities_for_key(&session_key);
 
     Ok(AgentEvent::SessionStarted(SessionStartedEvent {
         session_key,
@@ -1855,7 +2233,7 @@ fn started_from_thread(
         conversation_label: thread_id,
         title,
         summary: Some("Codex APP thread 已启动".to_string()),
-        capabilities: codex_app_capabilities(),
+        capabilities,
         usage: UsageSnapshot::unavailable(),
         updated_at,
     }))
@@ -1998,7 +2376,7 @@ fn realtime_started_event(session_key: SessionKey, updated_at: UnixMillis) -> Se
         conversation_label: session_key.conversation_id.value.clone(),
         title: None,
         summary: Some("Codex APP 实时事件已捕捉".to_string()),
-        capabilities: codex_app_capabilities(),
+        capabilities: codex_app_capabilities_for_key(&session_key),
         usage: UsageSnapshot::unavailable(),
         session_key,
         updated_at,
@@ -2349,6 +2727,28 @@ fn optional_string(
     }
 }
 
+fn optional_non_empty_string(
+    value: Option<&Value>,
+    field: &'static str,
+) -> Result<Option<String>, CodexAppAdapterError> {
+    let Some(_) = value else {
+        return Ok(None);
+    };
+    clean_non_empty_value(value).map_or_else(
+        || optional_string(value, field).map(|_| None),
+        |text| Ok(Some(text)),
+    )
+}
+
+fn clean_non_empty_value(value: Option<&Value>) -> Option<String> {
+    let text = value?.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    Some(text.to_string())
+}
+
 fn session_key(cwd: &str, thread_id: &str) -> SessionKey {
     SessionKey::new(
         AgentKind::CodexApp,
@@ -2367,12 +2767,41 @@ fn codex_app_capabilities() -> SessionCapabilities {
     }
 }
 
+fn codex_app_capabilities_for_key(session_key: &SessionKey) -> SessionCapabilities {
+    if is_unresolved_session_key(session_key) {
+        return SessionCapabilities {
+            can_jump: false,
+            can_send_reply: true,
+            can_resolve_approval: true,
+            can_create_followup_turn: true,
+            can_view_process_timeline: true,
+        };
+    }
+
+    codex_app_capabilities()
+}
+
 fn project_label(cwd: &str) -> String {
+    if cwd == UNRESOLVED_CODEX_APP_PROJECT_ID {
+        return UNRESOLVED_CODEX_APP_PROJECT_LABEL.to_string();
+    }
+
     cwd.rsplit('/')
         .next()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(cwd)
         .to_string()
+}
+
+fn is_unresolved_session_key(session_key: &SessionKey) -> bool {
+    session_key.project_id.value == UNRESOLVED_CODEX_APP_PROJECT_ID
+}
+
+fn should_apply_rollout_summary(session: &crate::domain::agent_session::AgentSession) -> bool {
+    matches!(
+        session.status,
+        SessionStatus::Completed | SessionStatus::Failed
+    ) || session.summary.is_none()
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
@@ -2386,6 +2815,21 @@ fn truncate(value: &str, max_chars: usize) -> String {
     }
 
     output
+}
+
+fn truncate_to_recent_chars(value: &mut String, max_chars: usize) {
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return;
+    }
+
+    let keep_from = char_count - max_chars;
+    let byte_index = value
+        .char_indices()
+        .nth(keep_from)
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    value.drain(..byte_index);
 }
 
 fn hook_interaction_id(request_id: &str) -> InteractionId {
@@ -2456,6 +2900,7 @@ fn required_schema_files() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::Duration;
 
@@ -2463,7 +2908,9 @@ mod tests {
 
     use super::{
         app_server_protocol_error_response, handle_rpc_response, schema_probe_from_dir,
-        session_key, CodexAppAdapter, CodexAppRuntime, PendingRpcResult,
+        session_key, CodexAppAdapter, CodexAppRuntime, CodexAppThreadMetadata,
+        CodexRolloutSnapshot, PendingRpcResult, MAX_CURRENT_TURN_OUTPUT_CHARS,
+        UNRESOLVED_CODEX_APP_PROJECT_ID, UNRESOLVED_CODEX_APP_PROJECT_LABEL,
     };
     use crate::adapters::bridge::codec::{
         BridgeHookEventName, BridgeRequestEnvelope, ValidatedHookPayload,
@@ -2535,6 +2982,7 @@ mod tests {
             "params": {
                 "thread": {
                     "id": "thread-1",
+                    "cwd": "/tmp/builder-panel",
                     "name": "阶段 4"
                 }
             }
@@ -2619,6 +3067,52 @@ mod tests {
     }
 
     #[test]
+    fn thread_response_skips_invalid_items() {
+        let response = json!({
+            "threads": [
+                {
+                    "id": "thread-1",
+                    "cwd": "/tmp/builder-panel",
+                    "name": "Thread 1"
+                },
+                {
+                    "id": "path-only-thread",
+                    "cwd": "   ",
+                    "path": " /tmp/rollout-path-only.jsonl "
+                },
+                {
+                    "id": "blank-cwd-thread",
+                    "cwd": "   "
+                },
+                {
+                    "id": "blank-path-thread",
+                    "path": "   "
+                },
+                {
+                    "id": "bad-thread"
+                },
+                {
+                    "id": "bad-status-thread",
+                    "cwd": "/tmp/bad-status",
+                    "status": {"type": 123}
+                }
+            ]
+        });
+
+        let threads =
+            CodexAppAdapter::threads_from_response(&response).expect("response should clean");
+
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].id, "thread-1");
+        assert_eq!(threads[1].id, "path-only-thread");
+        assert!(threads[1].cwd.is_none());
+        assert_eq!(
+            threads[1].path.as_deref(),
+            Some(std::path::Path::new("/tmp/rollout-path-only.jsonl"))
+        );
+    }
+
+    #[test]
     fn runtime_maps_codex_app_hook_permission_to_pending_approval() {
         let mut runtime = CodexAppRuntime::empty();
         let request = BridgeRequestEnvelope::process_agent_hook(
@@ -2684,6 +3178,41 @@ mod tests {
     }
 
     #[test]
+    fn realtime_blank_cwd_initializes_unresolved_session_without_jump() {
+        let mut runtime = CodexAppRuntime::empty();
+        let request = json!({
+            "id": 7,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-1",
+                "cwd": "   ",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [
+                    {
+                        "id": "answer",
+                        "question": "继续吗？"
+                    }
+                ]
+            }
+        });
+
+        runtime
+            .apply_app_server_message(&request, "/tmp/builder-panel", UnixMillis::new(1))
+            .expect("request should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key(UNRESOLVED_CODEX_APP_PROJECT_ID, "thread-1"))
+            .expect("unresolved session should exist");
+
+        assert_eq!(session.project_label, UNRESOLVED_CODEX_APP_PROJECT_LABEL);
+        assert!(!session.capabilities.can_jump);
+        assert!(session.jump_target.is_none());
+    }
+
+    #[test]
     fn first_realtime_approval_request_initializes_operable_session() {
         let mut runtime = CodexAppRuntime::empty();
         let request = json!({
@@ -2708,8 +3237,9 @@ mod tests {
         let (session_key, interaction_id) = pending_interaction_keys(&runtime);
 
         assert!(list_item.actions.contains(&UiAction::ResolveApproval));
-        assert!(list_item.actions.contains(&UiAction::Jump));
+        assert!(!list_item.actions.contains(&UiAction::Jump));
         assert!(list_item.actions.contains(&UiAction::ViewProcessTimeline));
+        assert_eq!(list_item.project_label, UNRESOLVED_CODEX_APP_PROJECT_LABEL);
         let write = runtime
             .resolve_approval(&session_key, &interaction_id, ApprovalDecision::Allow)
             .expect("approval should encode")
@@ -2803,7 +3333,7 @@ mod tests {
         let error = runtime
             .apply_app_server_message(&request, "/tmp/builder-panel", UnixMillis::new(1))
             .expect_err("multiple questions should fail explicitly");
-        let session_key = session_key("/tmp/builder-panel", "thread-1");
+        let session_key = session_key(UNRESOLVED_CODEX_APP_PROJECT_ID, "thread-1");
         let session = runtime
             .session_state()
             .sessions
@@ -2993,10 +3523,25 @@ mod tests {
     #[test]
     fn hook_real_cwd_migrates_app_server_fallback_session() {
         let mut runtime = CodexAppRuntime::empty();
+        let request = json!({
+            "id": 7,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [
+                    {
+                        "id": "answer",
+                        "question": "继续吗？"
+                    }
+                ]
+            }
+        });
         runtime
-            .apply_app_server_message(&user_input_request(7), "/fallback/cwd", UnixMillis::new(1))
+            .apply_app_server_message(&request, "/fallback/cwd", UnixMillis::new(1))
             .expect("request should apply");
-        let fallback_key = session_key("/fallback/cwd", "thread-1");
+        let fallback_key = session_key(UNRESOLVED_CODEX_APP_PROJECT_ID, "thread-1");
         assert!(runtime.session_state().sessions.contains_key(&fallback_key));
         assert!(!runtime
             .read_timeline(&fallback_key)
@@ -3056,6 +3601,467 @@ mod tests {
     }
 
     #[test]
+    fn thread_metadata_migrates_unresolved_session_without_overwriting_pending() {
+        let mut runtime = CodexAppRuntime::empty();
+        let request = json!({
+            "id": 7,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [
+                    {
+                        "id": "answer",
+                        "question": "继续吗？"
+                    }
+                ]
+            }
+        });
+        runtime
+            .apply_app_server_message(&request, "/wrong/cwd", UnixMillis::new(1))
+            .expect("request should apply");
+        let unresolved_key = session_key(UNRESOLVED_CODEX_APP_PROJECT_ID, "thread-1");
+        assert!(runtime
+            .session_state()
+            .sessions
+            .contains_key(&unresolved_key));
+
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: Some("Builder Panel".to_string()),
+                    preview: Some("历史预览".to_string()),
+                    path: None,
+                    status_type: "idle".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(2),
+            )
+            .expect("metadata should apply");
+        let real_key = session_key("/tmp/builder-panel", "thread-1");
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&real_key)
+            .expect("real session should exist");
+
+        assert!(!runtime
+            .session_state()
+            .sessions
+            .contains_key(&unresolved_key));
+        assert_eq!(session.status, SessionStatus::WaitingForAnswer);
+        assert!(session.pending_interaction.is_some());
+        assert!(session.capabilities.can_jump);
+        assert_eq!(
+            session
+                .jump_target
+                .as_ref()
+                .map(|target| target.location.as_str()),
+            Some("codex://threads/thread-1")
+        );
+    }
+
+    #[test]
+    fn loaded_thread_metadata_can_create_current_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: Some("Thread 1".to_string()),
+                    preview: Some("最新输出".to_string()),
+                    path: None,
+                    status_type: "idle".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("loaded thread should apply");
+
+        let key = session_key("/tmp/builder-panel", "thread-1");
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("loaded thread should create current session");
+
+        assert_eq!(session.status, SessionStatus::Completed);
+        assert_eq!(session.project_label, "builder-panel");
+        assert_eq!(session.summary.as_deref(), Some("最新输出"));
+        assert_eq!(
+            session
+                .jump_target
+                .as_ref()
+                .map(|target| target.location.as_str()),
+            Some("codex://threads/thread-1")
+        );
+    }
+
+    #[test]
+    fn existing_running_session_ignores_idle_thread_metadata_status() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: Some("Thread 1".to_string()),
+                    preview: Some("运行中".to_string()),
+                    path: None,
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("active thread should apply");
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: Some("Thread 1".to_string()),
+                    preview: Some("最终输出".to_string()),
+                    path: None,
+                    status_type: "idle".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(2),
+            )
+            .expect("idle thread should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+
+        assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.summary.as_deref(), Some("运行中"));
+    }
+
+    #[test]
+    fn orphan_rollout_snapshot_does_not_create_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_rollout_snapshot(CodexRolloutSnapshot {
+                session_id: "history-thread".to_string(),
+                cwd: "/tmp/history".to_string(),
+                summary: Some("历史输出".to_string()),
+                last_agent_message: Some("历史输出".to_string()),
+                path: PathBuf::from("/tmp/rollout-history.jsonl"),
+                updated_at: UnixMillis::new(1),
+            })
+            .expect("rollout should be ignored without candidate");
+
+        assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn rollout_snapshot_migrates_unresolved_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        let request = json!({
+            "id": 7,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [
+                    {
+                        "id": "answer",
+                        "question": "继续吗？"
+                    }
+                ]
+            }
+        });
+        runtime
+            .apply_app_server_message(&request, "/wrong/cwd", UnixMillis::new(1))
+            .expect("request should apply");
+
+        runtime
+            .apply_rollout_snapshot(CodexRolloutSnapshot {
+                session_id: "thread-1".to_string(),
+                cwd: "/tmp/builder-panel".to_string(),
+                summary: Some("历史输出".to_string()),
+                last_agent_message: Some("历史输出".to_string()),
+                path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
+                updated_at: UnixMillis::new(2),
+            })
+            .expect("rollout should migrate unresolved session");
+
+        let unresolved_key = session_key(UNRESOLVED_CODEX_APP_PROJECT_ID, "thread-1");
+        let real_key = session_key("/tmp/builder-panel", "thread-1");
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&real_key)
+            .expect("real session should exist");
+
+        assert!(!runtime
+            .session_state()
+            .sessions
+            .contains_key(&unresolved_key));
+        assert_eq!(session.status, SessionStatus::WaitingForAnswer);
+        assert!(session.capabilities.can_jump);
+    }
+
+    #[test]
+    fn agent_message_delta_is_kept_after_turn_completion() {
+        let mut runtime = CodexAppRuntime::empty();
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "turn": {"id": "turn-1", "status": "inProgress"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(1),
+            )
+            .expect("turn should start");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "第一段"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(2),
+            )
+            .expect("delta should apply");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "，第二段"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(3),
+            )
+            .expect("delta should apply");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "turn": {"id": "turn-1", "status": "completed"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(4),
+            )
+            .expect("turn should complete");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+
+        assert_eq!(session.status, SessionStatus::Completed);
+        assert_eq!(
+            session.summary.as_deref(),
+            Some("Codex APP 回复：第一段，第二段")
+        );
+    }
+
+    #[test]
+    fn agent_message_delta_cache_is_bounded() {
+        let mut runtime = CodexAppRuntime::empty();
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "turn": {"id": "turn-1", "status": "inProgress"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(1),
+            )
+            .expect("turn should start");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "甲".repeat(MAX_CURRENT_TURN_OUTPUT_CHARS + 100)
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(2),
+            )
+            .expect("delta should apply");
+
+        let output = runtime
+            .current_turn_agent_outputs
+            .get("thread-1")
+            .expect("output should exist");
+
+        assert_eq!(output.chars().count(), MAX_CURRENT_TURN_OUTPUT_CHARS);
+    }
+
+    #[test]
+    fn turn_started_clears_previous_agent_output() {
+        let mut runtime = CodexAppRuntime::empty();
+        for (turn_id, delta, time) in [("turn-1", "上一轮输出", 1), ("turn-2", "当前输出", 3)]
+        {
+            runtime
+                .apply_app_server_message(
+                    &json!({
+                        "method": "turn/started",
+                        "params": {
+                            "threadId": "thread-1",
+                            "cwd": "/tmp/builder-panel",
+                            "turn": {"id": turn_id, "status": "inProgress"}
+                        }
+                    }),
+                    "/wrong/cwd",
+                    UnixMillis::new(time),
+                )
+                .expect("turn should start");
+            runtime
+                .apply_app_server_message(
+                    &json!({
+                        "method": "item/agentMessage/delta",
+                        "params": {
+                            "threadId": "thread-1",
+                            "cwd": "/tmp/builder-panel",
+                            "delta": delta
+                        }
+                    }),
+                    "/wrong/cwd",
+                    UnixMillis::new(time + 1),
+                )
+                .expect("delta should apply");
+        }
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "turn": {"id": "turn-2", "status": "completed"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(5),
+            )
+            .expect("turn should complete");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+
+        assert_eq!(session.summary.as_deref(), Some("Codex APP 回复：当前输出"));
+    }
+
+    #[test]
+    fn followup_success_clears_previous_agent_output() {
+        let mut runtime = CodexAppRuntime::empty();
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "turn": {"id": "turn-1", "status": "inProgress"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(1),
+            )
+            .expect("turn should start");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "上一轮输出"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(2),
+            )
+            .expect("delta should apply");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "turn": {"id": "turn-1", "status": "completed"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(3),
+            )
+            .expect("turn should complete");
+        let key = session_key("/tmp/builder-panel", "thread-1");
+
+        runtime
+            .complete_followup_turn(&key)
+            .expect("followup should complete");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "thread/status/changed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "status": {"type": "idle"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(5),
+            )
+            .expect("idle should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("session should exist");
+
+        assert_eq!(session.status, SessionStatus::Completed);
+        assert_ne!(
+            session.summary.as_deref(),
+            Some("Codex APP 回复：上一轮输出")
+        );
+    }
+
+    #[test]
     fn idle_status_marks_session_ready_for_followup() {
         let mut runtime = CodexAppRuntime::empty();
         let started = json!({
@@ -3063,6 +4069,7 @@ mod tests {
             "params": {
                 "thread": {
                     "id": "thread-1",
+                    "cwd": "/tmp/builder-panel",
                     "name": "Thread 1"
                 }
             }
@@ -3103,6 +4110,7 @@ mod tests {
             "params": {
                 "thread": {
                     "id": "thread-1",
+                    "cwd": "/tmp/builder-panel",
                     "name": "Thread 1"
                 }
             }
@@ -3223,7 +4231,7 @@ mod tests {
             .expect_err("unknown request should fail");
         let response = app_server_protocol_error_response(&request, &error.user_message)
             .expect("protocol error should encode");
-        let session_key = session_key("/tmp/builder-panel", "thread-1");
+        let session_key = session_key(UNRESOLVED_CODEX_APP_PROJECT_ID, "thread-1");
         let session = runtime
             .session_state()
             .sessions
@@ -3525,6 +4533,7 @@ mod tests {
             "method": "item/tool/requestUserInput",
             "params": {
                 "threadId": "thread-1",
+                "cwd": "/tmp/builder-panel",
                 "turnId": "turn-1",
                 "itemId": "item-1",
                 "questions": [

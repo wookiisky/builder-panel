@@ -58,13 +58,13 @@ session 列表合并 Codex CLI 和 Codex APP session 后，等待用户操作的
 
 同一状态的 session 按更新时间倒序展示。
 
-每次打开 Builder Panel APP 时，session 列表从空状态开始。
+每次打开 Builder Panel APP 时，session 列表先从进程内空状态开始；Codex APP 可随后通过当前已加载 thread 元数据补出当前 APP thread。
 
-Builder Panel 不主动读取任何 coding agent 的历史 session 记录。
+Builder Panel 可为 Codex APP 读取 app-server 已加载 thread 元数据和 Codex rollout 历史，用于补齐项目名、跳回目标和最新 Agent 输出。
 
 APP 打开后仍在运行并继续发出实时事件的任务会进入 session 列表。
 
-APP 打开前已经结束且不再发出实时事件的历史任务不会进入 session 列表。
+APP 打开前已经结束且不再发出实时事件的 Codex CLI 或未接入 agent 历史任务不会进入 session 列表。
 
 不支持的动作不展示为可点击按钮。
 
@@ -72,7 +72,9 @@ APP 打开前已经结束且不再发出实时事件的历史任务不会进入 
 
 用户点击具备跳回能力和跳回目标的 session 时，panel 会尝试跳转到对应工具界面。
 
-用户点击不具备跳回能力或没有跳回目标的 session 时，只更新当前选中态。
+用户点击不具备跳回能力或没有跳回目标的 session 时，panel 不跳转、不选中且不展示错误。
+
+用户点击具备跳回目标但全局跳回开关关闭的 session 时，panel 只选中该 session，不跳转且不展示错误。
 
 用户可以在 Codex CLI 或 Codex APP 审批 session 中点击允许、拒绝或允许并记住。
 
@@ -132,7 +134,11 @@ Codex APP 等待选项输入时，用户可在 panel 中提交选项。
 
 Codex APP app-server 不可用时，Codex CLI session 仍可刷新展示。
 
-Codex APP 完成、失败或 app-server 标记为空闲且无待处理交互的 session 可通过 Follow-up 按钮创建后续 turn。
+Codex APP 完成、失败或 app-server 标记为空闲且无待处理交互的 session 可通过行内输入区、快捷输入或 Follow-up 入口创建后续 turn。
+
+Codex APP app-server 实时事件缺少可信项目路径且历史补齐尚未完成时，session 项目名显示为待识别项目。
+
+Codex APP 待识别项目 session 不提供跳回行为。
 
 Codex APP session 可打开 timeline 弹层查看 hook 和 app-server 过程事件。
 

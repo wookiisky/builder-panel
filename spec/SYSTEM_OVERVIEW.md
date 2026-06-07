@@ -70,9 +70,11 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 当前产品运行时只读取 Codex CLI 和 Codex APP session。
 
-所有 coding agent session 读取都只以当前 Builder Panel 进程启动后的实时 hook、notification 或 server request 为来源。
+Codex CLI session 读取只以当前 Builder Panel 进程启动后的实时 hook 为来源。
 
-Builder Panel APP 启动时不从 coding agent 的历史文件、transcript、JSONL、rollout、已加载 thread 列表或其它持久化记录恢复 session。
+Codex APP session 读取可通过 app-server 已加载 thread 列表创建或补齐当前 APP thread，并可通过 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出。
+
+除 Codex APP 的项目名、跳回目标和最新输出补齐外，Builder Panel APP 启动时不从 coding agent 的历史文件、transcript、JSONL、rollout、已加载 thread 列表或其它持久化记录恢复 session。
 
 Builder Panel APP 启动后仍在运行并继续发出实时事件的任务可以进入当前 session 列表，即使该任务早于 APP 启动。
 
@@ -119,6 +121,8 @@ Builder Panel 不持久化 session、pending interaction 或 timeline。
 `src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存 adapter 入口。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server、runtime、schema 探针和 notification 转换入口。
+
+`src-tauri/src/adapters/codex_app/codex_rollout.rs` 是 Codex rollout JSONL 发现和摘要清洗入口。
 
 `src-tauri/src/services/session_service.rs` 是 session 读取服务入口。
 
@@ -185,6 +189,8 @@ Builder Panel 不持久化 session、pending interaction 或 timeline。
 `src-tauri/src/adapters/timeline/mod.rs` 验证 timeline 去重、淘汰和释放。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 验证 Codex APP schema 探针、hook 分流、request 编码、notification 转换和完整能力 capability。
+
+`src-tauri/src/adapters/codex_app/codex_rollout.rs` 验证 Codex rollout JSONL 项目名和 Agent 输出清洗。
 
 `src-tauri/src/services/interaction_service.rs` 验证审批闭环。
 

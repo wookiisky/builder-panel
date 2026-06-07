@@ -392,10 +392,8 @@ impl HookInstaller {
             return Ok(());
         }
 
-        let manifest = read_manifest_required(
-            &self.paths.manifest_path,
-            AppErrorCode::HookUninstallFailed,
-        )?;
+        let manifest =
+            read_manifest_required(&self.paths.manifest_path, AppErrorCode::HookUninstallFailed)?;
         let (target_entries, remaining_entries): (Vec<_>, Vec<_>) = manifest
             .entries
             .into_iter()
@@ -528,18 +526,18 @@ impl HookInstaller {
         }
     }
 
-    fn agent_config_check(
-        &self,
-        agent: HookInstallAgent,
-    ) -> Result<HookConfigCheck, String> {
+    fn agent_config_check(&self, agent: HookInstallAgent) -> Result<HookConfigCheck, String> {
         match agent {
             HookInstallAgent::Codex => self.codex_config_check(),
-            HookInstallAgent::Claude => self.json_config_check(agent, self.paths.config_path(agent)),
+            HookInstallAgent::Claude => {
+                self.json_config_check(agent, self.paths.config_path(agent))
+            }
         }
     }
 
     fn codex_config_check(&self) -> Result<HookConfigCheck, String> {
-        let mut check = self.json_config_check(HookInstallAgent::Codex, &self.paths.codex_hooks_path)?;
+        let mut check =
+            self.json_config_check(HookInstallAgent::Codex, &self.paths.codex_hooks_path)?;
         check
             .reasons
             .extend(codex_feature_check(&self.paths.codex_config_path)?);
@@ -568,8 +566,13 @@ impl HookInstaller {
     }
 
     fn current_manifest_or_empty(&self) -> Result<HookInstallManifest, AppError> {
-        read_manifest_optional(&self.paths.manifest_path, AppErrorCode::HookInstallFailed)
-            .map(|manifest| manifest.unwrap_or(HookInstallManifest { entries: Vec::new() }))
+        read_manifest_optional(&self.paths.manifest_path, AppErrorCode::HookInstallFailed).map(
+            |manifest| {
+                manifest.unwrap_or(HookInstallManifest {
+                    entries: Vec::new(),
+                })
+            },
+        )
     }
 
     fn merge_manifest_after_install(
@@ -577,12 +580,10 @@ impl HookInstaller {
         agents: &[HookInstallAgent],
         plans: &[HookInstallPlan],
     ) -> Result<HookInstallManifest, AppError> {
-        let mut entries = read_manifest_optional(
-            &self.paths.manifest_path,
-            AppErrorCode::HookInstallFailed,
-        )?
-        .map(|manifest| manifest.entries)
-        .unwrap_or_default();
+        let mut entries =
+            read_manifest_optional(&self.paths.manifest_path, AppErrorCode::HookInstallFailed)?
+                .map(|manifest| manifest.entries)
+                .unwrap_or_default();
         entries.retain(|entry| !agents.contains(&entry.agent));
         entries.extend(plans.iter().map(|plan| plan.entry.clone()));
 
@@ -802,7 +803,11 @@ fn json_hook_config_check(
 
     for event in agent.events() {
         let Some(groups) = hooks_object.get(event.name).and_then(Value::as_array) else {
-            reasons.push(format!("{} 缺少 {} hook", config_path.display(), event.name));
+            reasons.push(format!(
+                "{} 缺少 {} hook",
+                config_path.display(),
+                event.name
+            ));
             continue;
         };
         let expected_group = hook_group(event, &command);
@@ -949,13 +954,8 @@ fn read_manifest_required(
             error.to_string(),
         )
     })?;
-    serde_json::from_str(&text).map_err(|error| {
-        hook_error(
-            code,
-            "hook 安装 manifest 格式无效",
-            error.to_string(),
-        )
-    })
+    serde_json::from_str(&text)
+        .map_err(|error| hook_error(code, "hook 安装 manifest 格式无效", error.to_string()))
 }
 
 fn write_json_file(path: &Path, value: &Value, code: AppErrorCode) -> Result<(), AppError> {
@@ -1198,11 +1198,7 @@ fn write_remaining_manifest(
             error.to_string(),
         )
     })?;
-    write_json_file(
-        manifest_path,
-        &value,
-        AppErrorCode::HookUninstallFailed,
-    )
+    write_json_file(manifest_path, &value, AppErrorCode::HookUninstallFailed)
 }
 
 fn manifest_error_status(agent: HookInstallAgent, reason: &str) -> HookInstallAgentStatus {
@@ -1488,12 +1484,11 @@ mod tests {
         installer
             .install(&[HookInstallAgent::Codex, HookInstallAgent::Claude])
             .expect("hooks should install");
-        let codex_hooks = fs::read_to_string(&hook_paths.codex_hooks_path)
-            .expect("codex hooks should read");
-        let codex_config = fs::read_to_string(&hook_paths.codex_config_path)
-            .expect("codex config should read");
-        let manifest = fs::read_to_string(&hook_paths.manifest_path)
-            .expect("manifest should read");
+        let codex_hooks =
+            fs::read_to_string(&hook_paths.codex_hooks_path).expect("codex hooks should read");
+        let codex_config =
+            fs::read_to_string(&hook_paths.codex_config_path).expect("codex config should read");
+        let manifest = fs::read_to_string(&hook_paths.manifest_path).expect("manifest should read");
         let manifest_parent = hook_paths
             .manifest_path
             .parent()
@@ -1515,18 +1510,15 @@ mod tests {
             .expect("manifest parent permissions should restore");
         assert!(result.is_err());
         assert_eq!(
-            fs::read_to_string(&hook_paths.codex_hooks_path)
-                .expect("codex hooks should reread"),
+            fs::read_to_string(&hook_paths.codex_hooks_path).expect("codex hooks should reread"),
             codex_hooks
         );
         assert_eq!(
-            fs::read_to_string(&hook_paths.codex_config_path)
-                .expect("codex config should reread"),
+            fs::read_to_string(&hook_paths.codex_config_path).expect("codex config should reread"),
             codex_config
         );
         assert_eq!(
-            fs::read_to_string(&hook_paths.manifest_path)
-                .expect("manifest should reread"),
+            fs::read_to_string(&hook_paths.manifest_path).expect("manifest should reread"),
             manifest
         );
         cleanup(root);
@@ -1817,11 +1809,10 @@ mod tests {
         installer
             .install(&[HookInstallAgent::Codex])
             .expect("first install should succeed");
-        let drifted_hooks = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo user drift"}]}]}}"#;
-        fs::write(&hook_paths.codex_hooks_path, drifted_hooks)
-            .expect("drifted hooks should write");
-        let manifest = fs::read_to_string(&hook_paths.manifest_path)
-            .expect("manifest should read");
+        let drifted_hooks =
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo user drift"}]}]}}"#;
+        fs::write(&hook_paths.codex_hooks_path, drifted_hooks).expect("drifted hooks should write");
+        let manifest = fs::read_to_string(&hook_paths.manifest_path).expect("manifest should read");
         let manifest_parent = hook_paths
             .manifest_path
             .parent()
@@ -1843,13 +1834,11 @@ mod tests {
             .expect("manifest parent permissions should restore");
         assert!(result.is_err());
         assert_eq!(
-            fs::read_to_string(&hook_paths.codex_hooks_path)
-                .expect("codex hooks should reread"),
+            fs::read_to_string(&hook_paths.codex_hooks_path).expect("codex hooks should reread"),
             drifted_hooks
         );
         assert_eq!(
-            fs::read_to_string(&hook_paths.manifest_path)
-                .expect("manifest should reread"),
+            fs::read_to_string(&hook_paths.manifest_path).expect("manifest should reread"),
             manifest
         );
         cleanup(root);

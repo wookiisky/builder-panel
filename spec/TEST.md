@@ -24,7 +24,7 @@
 
 阶段 3 不声明 Windows 本机人工验证。
 
-阶段 4 当前测试 Codex CLI hook adapter、Codex CLI runtime、Codex APP hook 分流、Codex APP schema 探针、Codex APP request 编码、notification 转换和完整能力 capability。
+阶段 4 当前测试 Codex CLI hook adapter、Codex CLI runtime、Codex APP hook 分流、Codex APP schema 探针、Codex APP request 编码、notification 转换、可信 cwd、rollout 历史补齐和完整能力 capability。
 
 阶段 4 当前不声明 Claude Code 真实闭环已完成。
 
@@ -80,9 +80,41 @@ Rust Codex APP adapter 测试验证 hook cwd 与 app-server thread 事件会折�
 
 Rust Codex APP adapter 测试验证首个 app-server 实时审批或回复 request 可初始化可操作 session。
 
+Rust Codex APP adapter 测试验证 app-server 实时消息空白 cwd 会进入待识别 session，且不生成跳回目标。
+
+Rust Codex APP adapter 测试验证无可信 cwd 的 app-server 实时事件不会使用 Builder Panel cwd，且不会生成跳回动作。
+
+Rust Codex APP adapter 测试验证 app-server thread 元数据可迁移待识别 session，且不覆盖 pending、summary 或状态。
+
+Rust Codex APP adapter 测试验证 app-server 已加载 thread 元数据可创建当前 session。
+
+Rust Codex APP adapter 测试验证已有运行态 session 会忽略后台 `idle` thread 元数据状态，避免覆盖实时摘要或运行状态。
+
+Rust Codex APP adapter 测试验证当前 turn Agent message delta 会累积展示、缓存有界，完成后仍保留最新 Agent 输出。
+
+Rust Codex APP adapter 测试验证同一 thread 新 turn 不串联上一 turn 输出。
+
+Rust Codex APP adapter 测试验证 follow-up 成功提交会清空上一 turn Agent 输出，后续 idle/completed 不再复用旧摘要。
+
+Rust Codex APP rollout 测试验证 `session_meta`、`agent_message`、`task_complete.last_agent_message` 和 assistant `output_text` 清洗。
+
+Rust Codex APP rollout 测试验证范围外 path 被忽略，超长 JSONL 行被跳过且后续有效行仍可读取。
+
+Rust Codex APP adapter 测试验证孤立 rollout 快照不会单独创建当前 session。
+
+Rust Tauri command 测试验证 rollout recent scan 候选集合只包含已加载、历史返回和当前待识别 thread。
+
+Rust Tauri command 测试验证 thread 历史元数据只应用到当前待识别 thread，thread path 快照必须匹配 thread ID 和候选集合。
+
 Rust Codex APP adapter 测试验证无 cwd app-server 实时事件后续可随 hook 真实 cwd 迁移，且不产生重复 session。
 
 Rust Codex APP adapter 测试验证 requestUserInput 与 MCP elicitation 回复编码。
+
+Rust Codex APP adapter 测试验证 thread 列表单条无效 thread 不会丢弃同批有效 thread。
+
+Rust Codex APP adapter 测试验证缺 cwd 或空白 cwd 但带 path 的 thread 可保留为 rollout 候选，空白 path 不会成为候选，且 `status.type` 类型错误的 thread 会被跳过。
+
+Rust Codex APP adapter 测试验证 rollout 快照可迁移待识别 session 到真实 cwd。
 
 Rust Codex APP adapter 测试验证 permissions approval、legacy approval enum、JSON-RPC id 类型保留和 follow-up 成功前不写 activity。
 
@@ -117,6 +149,12 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 前端 Builder Panel 测试验证同一个 `SessionKey` 的 Codex CLI 和 Codex APP session 拥有不同 UI 选中身份。
 
 前端 Builder Panel 测试验证合并后的 session 等待优先、同状态更新时间倒序、统计数量和动作标签。
+
+前端 Builder Panel 测试验证 session 行点击只有在存在 jump action 且跳回设置开启时才触发跳回。
+
+前端 Builder Panel 测试验证具备 jump action 的 session 在全局跳回关闭时仍可被点击选中。
+
+前端 Builder Panel 测试验证完成和失败状态在可 follow-up 时可展开。
 
 前端 Builder Panel 测试验证工具用量按工具和来源键取最新值且不按 session 求和。
 

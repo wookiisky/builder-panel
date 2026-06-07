@@ -62,7 +62,9 @@ session 选中和回复草稿由前端 UI 状态管理。
 
 点击 session 时，如果该 session 明确具备跳回目标和跳回能力，前端会请求跳转到对应工具界面。
 
-没有跳回能力或没有跳回目标的 session 点击后只更新选中态，不展示错误。
+没有跳回能力或没有跳回目标的 session 点击后无反应，不更新选中态且不展示错误。
+
+有跳回能力和跳回目标但全局跳回开关关闭的 session 点击后只更新选中态，不请求跳回且不展示错误。
 
 设置弹窗包含 General、Display、Agents、Replies、Presets、Terminal 和 Advanced 分组。
 

@@ -5,6 +5,8 @@ import {
   aggregateToolUsage,
   applyPanelWindowControlError,
   canExpandSessionRow,
+  canJumpOnSessionClick,
+  canSelectOnSessionClick,
   canShowTimelineEntry,
   countSessionsByStatus,
   fetchSessionsForSource,
@@ -23,6 +25,7 @@ import {
   type PanelSessionListItem,
 } from "./BuilderPanelApp";
 import type { SessionKey } from "../api/mockPanelContract";
+import { defaultSettings } from "../api/settingsApi";
 import { createDefaultMockPanelUiState } from "../stores/mockPanelStore";
 
 const codexSessionKey: SessionKey = {
@@ -144,6 +147,27 @@ describe("BuilderPanelApp session refresh", () => {
   it("only shows timeline entry when capability exists", () => {
     expect(canShowTimelineEntry(["jump", "view_process_timeline"])).toBe(true);
     expect(canShowTimelineEntry(["jump", "send_reply"])).toBe(false);
+  });
+
+  it("only jumps on row click when jump action exists", () => {
+    const settings = defaultSettings();
+
+    expect(canJumpOnSessionClick(["jump"], settings)).toBe(true);
+    expect(canJumpOnSessionClick(["send_reply"], settings)).toBe(false);
+    expect(
+      canJumpOnSessionClick(["jump"], {
+        ...settings,
+        terminal: {
+          ...settings.terminal,
+          jump_enabled: false,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("can select a jump-capable row even when terminal jump is disabled", () => {
+    expect(canSelectOnSessionClick(["jump"])).toBe(true);
+    expect(canSelectOnSessionClick(["send_reply"])).toBe(false);
   });
 
   it("returns empty source sessions when one runtime fetch fails", async () => {
@@ -284,7 +308,9 @@ describe("BuilderPanelApp session refresh", () => {
 
   it("expands failed sessions that can create follow-up turns", () => {
     expect(canExpandSessionRow("failed", true)).toBe(true);
+    expect(canExpandSessionRow("completed", true)).toBe(true);
     expect(shouldUseFollowupShortcut("failed", true)).toBe(true);
+    expect(shouldUseFollowupShortcut("completed", true)).toBe(true);
     expect(canExpandSessionRow("failed", false)).toBe(false);
     expect(shouldUseFollowupShortcut("running", true)).toBe(false);
   });

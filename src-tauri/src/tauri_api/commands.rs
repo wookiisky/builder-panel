@@ -1,11 +1,13 @@
 //! Tauri command 入口。
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::adapters::codex_app::{
     CodexAppAdapter, CodexAppRuntime, CodexAppSchemaProbe, CodexAppServerClient,
+    CodexRolloutDiscovery,
 };
 use crate::adapters::codex_cli_hook::{start_codex_cli_bridge_server, CodexCliHookRuntime};
 use crate::adapters::config_file::JsonSettingsStore;
@@ -18,6 +20,7 @@ use crate::domain::agent_interaction::InteractionId;
 use crate::domain::agent_session::{JumpTarget, SessionKey};
 use crate::domain::app_error::FallbackAction;
 use crate::domain::panel_probe::PanelProbe;
+use crate::domain::usage::UnixMillis;
 use crate::domain::view_model::{SessionDetailViewModel, SessionListItemViewModel};
 use crate::ports::agent_adapter_port::ApprovalDecision;
 use crate::ports::agent_adapter_port::ChoiceSubmission;
@@ -40,8 +43,16 @@ static CODEX_APP_SERVER: OnceLock<Mutex<CodexAppServerSlot>> = OnceLock::new();
 static CODEX_APP_STARTUP_FAILURE: OnceLock<Mutex<Option<CodexAppStartupFailure>>> = OnceLock::new();
 /// Codex CLI bridge server 启动标记。
 static CODEX_CLI_BRIDGE_STARTED: OnceLock<Mutex<bool>> = OnceLock::new();
+/// Codex rollout 最近一次全量扫描时间。
+static CODEX_APP_ROLLOUT_LAST_SYNC: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+/// Codex APP thread 元数据最近一次同步时间。
+static CODEX_APP_THREAD_METADATA_LAST_SYNC: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+/// Codex APP 后台上下文同步是否正在运行。
+static CODEX_APP_CONTEXT_SYNC_IN_FLIGHT: OnceLock<Mutex<bool>> = OnceLock::new();
 
 const CODEX_APP_STARTUP_RETRY_DELAY: Duration = Duration::from_secs(30);
+const CODEX_APP_ROLLOUT_SYNC_INTERVAL: Duration = Duration::from_secs(10);
+const CODEX_APP_THREAD_METADATA_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Codex APP app-server 启动失败退避记录。
 struct CodexAppStartupFailure {
@@ -167,7 +178,7 @@ pub fn get_codex_cli_sessions() -> Result<Vec<SessionListItemViewModel>, String>
 #[tauri::command]
 pub fn get_codex_app_sessions() -> Result<Vec<SessionListItemViewModel>, String> {
     ensure_codex_cli_bridge_started()?;
-    let _ = ensure_codex_app_started();
+    schedule_codex_app_context_sync();
     let runtime = lock_codex_app_runtime()?;
 
     Ok(runtime.session_list())
@@ -196,7 +207,7 @@ pub fn get_codex_app_session_detail(
     session_key: SessionKey,
 ) -> Result<Option<SessionDetailViewModel>, String> {
     ensure_codex_cli_bridge_started()?;
-    let _ = ensure_codex_app_started();
+    schedule_codex_app_context_sync();
     let runtime = lock_codex_app_runtime()?;
 
     Ok(runtime.session_detail(&session_key))
@@ -687,6 +698,195 @@ fn ensure_codex_app_started() -> Result<(), String> {
     Ok(())
 }
 
+/// 调度 Codex APP thread 元数据和 rollout 历史后台同步。
+fn schedule_codex_app_context_sync() {
+    let sync_slot = CODEX_APP_CONTEXT_SYNC_IN_FLIGHT.get_or_init(|| Mutex::new(false));
+    let Ok(mut in_flight) = sync_slot.lock() else {
+        return;
+    };
+    if *in_flight || !should_sync_codex_app_thread_metadata() {
+        return;
+    }
+    *in_flight = true;
+
+    std::thread::spawn(|| {
+        let _guard = CodexAppContextSyncGuard;
+        sync_codex_app_context_worker();
+    });
+}
+
+/// Codex APP 后台同步结束时释放运行标记。
+struct CodexAppContextSyncGuard;
+
+impl Drop for CodexAppContextSyncGuard {
+    fn drop(&mut self) {
+        let sync_slot = CODEX_APP_CONTEXT_SYNC_IN_FLIGHT.get_or_init(|| Mutex::new(false));
+        if let Ok(mut in_flight) = sync_slot.lock() {
+            *in_flight = false;
+        }
+    }
+}
+
+/// 同步 Codex APP thread 元数据和 rollout 历史。
+fn sync_codex_app_context_worker() {
+    let Ok(()) = ensure_codex_app_started() else {
+        return;
+    };
+    let Ok(server) = codex_app_server_client() else {
+        return;
+    };
+
+    let loaded_threads = server.list_loaded_threads().unwrap_or_default();
+    let unresolved_thread_ids = {
+        let runtime = codex_app_runtime();
+        let ids = match runtime.lock() {
+            Ok(mut runtime) => {
+                for thread in loaded_threads.iter().cloned() {
+                    let _ = runtime.apply_thread_metadata(thread, command_unix_now());
+                }
+                runtime.unresolved_thread_ids()
+            }
+            Err(_) => Vec::new(),
+        };
+        ids
+    };
+    let needs_history = !unresolved_thread_ids.is_empty();
+
+    let history_threads = if needs_history {
+        let unresolved_ids: BTreeSet<String> = unresolved_thread_ids.iter().cloned().collect();
+        filter_history_threads_for_unresolved(
+            server.list_threads(40).unwrap_or_default(),
+            &unresolved_ids,
+        )
+    } else {
+        Vec::new()
+    };
+    if !history_threads.is_empty() {
+        let runtime = codex_app_runtime();
+        if let Ok(mut runtime) = runtime.lock() {
+            for thread in history_threads.iter().cloned() {
+                let _ = runtime.apply_thread_metadata(thread, command_unix_now());
+            }
+        };
+    }
+
+    let mut rollout_threads = loaded_threads;
+    rollout_threads.extend(history_threads);
+    let candidate_thread_ids =
+        rollout_candidate_thread_ids(&rollout_threads, &unresolved_thread_ids);
+    sync_codex_rollout_history(&rollout_threads, &candidate_thread_ids, needs_history);
+}
+
+/// 同步 Codex rollout 历史，避免高频全量扫描。
+fn sync_codex_rollout_history(
+    threads: &[crate::adapters::codex_app::CodexAppThreadMetadata],
+    candidate_thread_ids: &BTreeSet<String>,
+    needs_recent_scan: bool,
+) {
+    let discovery = CodexRolloutDiscovery::default_root();
+    let mut snapshots = Vec::new();
+    for thread in threads {
+        let Some(path) = thread.path.as_deref() else {
+            continue;
+        };
+        if !candidate_thread_ids.contains(&thread.id) {
+            continue;
+        }
+        if let Some(snapshot) = discovery.read_path(path) {
+            if rollout_snapshot_matches_thread(
+                &thread.id,
+                &snapshot.session_id,
+                candidate_thread_ids,
+            ) {
+                snapshots.push(snapshot);
+            }
+        }
+    }
+
+    if needs_recent_scan && should_scan_recent_rollouts() {
+        snapshots.extend(
+            discovery
+                .discover_recent(SystemTime::now())
+                .into_iter()
+                .filter(|snapshot| candidate_thread_ids.contains(&snapshot.session_id)),
+        );
+    }
+
+    if snapshots.is_empty() {
+        return;
+    }
+
+    let runtime = codex_app_runtime();
+    if let Ok(mut runtime) = runtime.lock() {
+        for snapshot in snapshots {
+            let _ = runtime.apply_rollout_snapshot(snapshot);
+        }
+    };
+}
+
+/// 仅保留能补齐当前待识别 session 的历史 thread。
+fn filter_history_threads_for_unresolved(
+    threads: Vec<crate::adapters::codex_app::CodexAppThreadMetadata>,
+    unresolved_thread_ids: &BTreeSet<String>,
+) -> Vec<crate::adapters::codex_app::CodexAppThreadMetadata> {
+    threads
+        .into_iter()
+        .filter(|thread| unresolved_thread_ids.contains(&thread.id))
+        .collect()
+}
+
+/// 校验 rollout 快照是否属于当前 thread 候选。
+fn rollout_snapshot_matches_thread(
+    thread_id: &str,
+    snapshot_session_id: &str,
+    candidate_thread_ids: &BTreeSet<String>,
+) -> bool {
+    thread_id == snapshot_session_id && candidate_thread_ids.contains(snapshot_session_id)
+}
+
+/// 汇总允许被 rollout 补齐的已知 thread id。
+fn rollout_candidate_thread_ids(
+    threads: &[crate::adapters::codex_app::CodexAppThreadMetadata],
+    unresolved_thread_ids: &[String],
+) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    ids.extend(threads.iter().map(|thread| thread.id.clone()));
+    ids.extend(unresolved_thread_ids.iter().cloned());
+    ids
+}
+
+/// 判断是否允许同步 app-server thread 元数据。
+fn should_sync_codex_app_thread_metadata() -> bool {
+    let slot = CODEX_APP_THREAD_METADATA_LAST_SYNC.get_or_init(|| Mutex::new(None));
+    let Ok(mut last_sync) = slot.lock() else {
+        return false;
+    };
+    let now = Instant::now();
+    if last_sync
+        .is_some_and(|last| now.duration_since(last) < CODEX_APP_THREAD_METADATA_SYNC_INTERVAL)
+    {
+        return false;
+    }
+
+    *last_sync = Some(now);
+    true
+}
+
+/// 判断是否允许扫描近期 rollout。
+fn should_scan_recent_rollouts() -> bool {
+    let slot = CODEX_APP_ROLLOUT_LAST_SYNC.get_or_init(|| Mutex::new(None));
+    let Ok(mut last_sync) = slot.lock() else {
+        return false;
+    };
+    let now = Instant::now();
+    if last_sync.is_some_and(|last| now.duration_since(last) < CODEX_APP_ROLLOUT_SYNC_INTERVAL) {
+        return false;
+    }
+
+    *last_sync = Some(now);
+    true
+}
+
 /// 准备启动 Codex APP app-server。
 fn prepare_codex_app_startup() -> Result<CodexAppStartupAction, String> {
     let slot = codex_app_server_slot();
@@ -825,5 +1025,99 @@ fn codex_app_decision_summary(decision: ApprovalDecision) -> &'static str {
         ApprovalDecision::Allow => "Codex APP 审批已允许",
         ApprovalDecision::AllowAndRemember => "Codex APP 审批已允许并记住",
         ApprovalDecision::Deny => "Codex APP 审批已拒绝",
+    }
+}
+
+/// 当前 Unix 毫秒。
+fn command_unix_now() -> UnixMillis {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    UnixMillis::new(millis)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::codex_app::CodexAppThreadMetadata;
+
+    #[test]
+    fn rollout_candidates_only_include_known_thread_ids() {
+        let threads = vec![thread_metadata("loaded-thread", "/tmp/loaded")];
+        let unresolved = vec!["unresolved-thread".to_string()];
+
+        let candidates = rollout_candidate_thread_ids(&threads, &unresolved);
+
+        assert!(candidates.contains("loaded-thread"));
+        assert!(candidates.contains("unresolved-thread"));
+        assert!(!candidates.contains("unrelated-history-thread"));
+    }
+
+    #[test]
+    fn history_threads_only_fill_unresolved_candidates() {
+        let threads = vec![
+            thread_metadata("unresolved-thread", "/tmp/resolved"),
+            thread_metadata("unrelated-history-thread", "/tmp/unrelated"),
+        ];
+        let unresolved = BTreeSet::from(["unresolved-thread".to_string()]);
+
+        let filtered = filter_history_threads_for_unresolved(threads, &unresolved);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "unresolved-thread");
+    }
+
+    #[test]
+    fn history_threads_keep_path_only_unresolved_candidates() {
+        let threads = vec![CodexAppThreadMetadata {
+            id: "unresolved-thread".to_string(),
+            cwd: None,
+            name: None,
+            preview: None,
+            path: Some(PathBuf::from("/tmp/rollout-unresolved-thread.jsonl")),
+            status_type: "idle".to_string(),
+            ephemeral: false,
+        }];
+        let unresolved = BTreeSet::from(["unresolved-thread".to_string()]);
+
+        let filtered = filter_history_threads_for_unresolved(threads, &unresolved);
+
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].cwd.is_none());
+        assert!(filtered[0].path.is_some());
+    }
+
+    #[test]
+    fn rollout_path_snapshot_must_match_thread_candidate() {
+        let candidates = BTreeSet::from(["thread-1".to_string()]);
+
+        assert!(rollout_snapshot_matches_thread(
+            "thread-1",
+            "thread-1",
+            &candidates
+        ));
+        assert!(!rollout_snapshot_matches_thread(
+            "thread-1",
+            "unrelated-thread",
+            &candidates
+        ));
+        assert!(!rollout_snapshot_matches_thread(
+            "unlisted-thread",
+            "unlisted-thread",
+            &candidates
+        ));
+    }
+
+    fn thread_metadata(id: &str, cwd: &str) -> CodexAppThreadMetadata {
+        CodexAppThreadMetadata {
+            id: id.to_string(),
+            cwd: Some(cwd.to_string()),
+            name: None,
+            preview: None,
+            path: None,
+            status_type: "idle".to_string(),
+            ephemeral: false,
+        }
     }
 }

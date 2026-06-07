@@ -44,9 +44,11 @@ Tauri 环境监听窗口移动和尺寸变化。
 
 前端读取 Codex CLI 和 Codex APP session 列表。
 
-后端 session 列表只来自当前 APP 进程内已经捕捉到的实时事件状态。
+Codex CLI session 列表只来自当前 APP 进程内已经捕捉到的实时 hook 状态。
 
-APP 启动时不会从 coding agent 历史记录恢复 session，因此首次读取可以返回空列表。
+Codex APP session 列表可来自当前 APP 进程内实时状态、app-server 已加载 thread 元数据和 Codex rollout 历史补齐。
+
+APP 启动时首次读取仍可返回空列表，因为 Codex APP app-server 或历史补齐可能不可用。
 
 APP 启动后仍在运行的任务如果继续发出 hook、notification 或 server request，会在后续刷新中进入 session 列表。
 
@@ -63,6 +65,8 @@ APP 启动后仍在运行的任务如果继续发出 hook、notification 或 ser
 前端主体以单列列表展示所有 session。
 
 完成、失败或等待用户回复的 session 在行内展示最后一段输出和回复区。
+
+完成或失败且可 follow-up 的 Codex APP session 在行内展示自由输入区。
 
 有选项的回复区展示选项按钮。
 
@@ -278,13 +282,25 @@ schema 探针确认当前 client request、client response、notification 和回
 
 schema 探针覆盖所有当前 adapter 已消费的 app-server notification schema。
 
-adapter 编码 `initialize`、`initialized`、`thread/start` 和 `turn/start` JSON-RPC 消息。
+adapter 编码 `initialize`、`initialized`、`thread/start`、`turn/start`、`thread/loaded/list` 和 `thread/list` JSON-RPC 消息。
 
 Codex APP 开关开启后，后端尝试启动 `codex app-server --listen stdio://`。
 
 app-server 启动后，后端发送 `initialize` 并写入 `initialized` notification。
 
-app-server 启动后不读取已加载 thread 列表，不读取历史 thread 详情。
+session 列表和详情 command 先返回当前 runtime 状态；Codex APP app-server thread 元数据和 rollout 补齐通过后台同步线程执行。
+
+app-server 启动后，后台同步可按节流窗口调用 `thread/loaded/list` 创建或补齐当前已加载 thread 元数据。
+
+后台 thread metadata 的状态只用于创建新的已加载 session；已有实时 session 只补齐缺失信息，不用 metadata 覆盖运行状态或最新摘要。
+
+存在待识别 thread 时，后台同步可按节流窗口调用有限数量的 `thread/list` 补齐 thread 历史元数据。
+
+Codex APP session 列表和详情读取可通过 Codex rollout JSONL 补齐真实 cwd 和最新 Agent 输出。
+
+Codex APP recent rollout 扫描结果只补齐已知候选 thread，不从任意历史 rollout 创建当前 session。
+
+Codex APP thread 元数据携带的 rollout path 只有在快照 session ID 与 thread ID 一致且属于候选集合时才会应用。
 
 app-server 启动和初始化在全局 client slot 锁外执行；slot 在启动期间仅标记为启动中。
 
@@ -294,11 +310,19 @@ app-server response 唤醒对应 pending request。
 
 app-server notification 和 server request 在 adapter 边界清洗后写入 Codex APP runtime。
 
-Codex APP app-server 实时事件首次到达时，runtime 会为该 thread 初始化当前进程内 session 能力和跳回目标。
+Codex APP app-server 实时事件首次到达时，runtime 会为该 thread 初始化当前进程内 session 交互能力和 timeline 能力。
 
-Codex APP app-server 事件缺少 cwd 时可先使用临时 cwd 建立 session；后续 hook 或 thread 消息携带真实 cwd 时，runtime 按 thread ID 合并 session、pending interaction 和 timeline。
+Codex APP app-server 事件缺少可信 cwd 时会先建立待识别项目 session，且不生成跳回目标。
 
-app-server notification 和 server request 写入 runtime 前，会先用 thread 详情或 hook 记录的 cwd 统一 session key。
+后续 hook、thread 元数据或 rollout 历史携带真实 cwd 时，runtime 按 thread ID 合并 session、pending interaction 和 timeline，并补齐跳回目标。
+
+app-server notification 和 server request 写入 runtime 前，会先用可信 cwd 统一 session key；不得用 Builder Panel 进程 cwd 代替 Codex thread cwd。
+
+`item/agentMessage/delta` 会按 thread 累积有界的当前 turn 输出。
+
+`turn/started` 和 follow-up 成功提交会清空对应 thread 的当前 turn 输出。
+
+`turn/completed` 和 `idle` 状态优先使用当前 turn 最新 Agent 输出作为 session 摘要。
 
 adapter 接收 app-server notification 后，在 adapter 边界读取 JSON 字段并转换为归一事件。
 

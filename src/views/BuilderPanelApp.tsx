@@ -613,11 +613,12 @@ export const BuilderPanelApp = () => {
   const jumpToPanelSession = async (
     session: PanelSessionListItem,
   ): Promise<void> => {
+    if (!canSelectOnSessionClick(session.actions)) {
+      return;
+    }
+
     setMockUiState((current) => selectPanelSession(current, session));
-    if (
-      !settingsView.settings.terminal.jump_enabled ||
-      !session.inline_interaction.can_jump
-    ) {
+    if (!canJumpOnSessionClick(session.actions, settingsView.settings)) {
       return;
     }
 
@@ -1072,6 +1073,16 @@ export const canShowTimelineEntry = (actions: readonly UiAction[]): boolean => {
   return actions.includes("view_process_timeline");
 };
 
+/// 判断点击 session 行是否应跳回。
+export const canJumpOnSessionClick = (
+  actions: readonly UiAction[],
+  settings: BuilderPanelSettings,
+): boolean => settings.terminal.jump_enabled && actions.includes("jump");
+
+/// 判断点击 session 行是否可选中。
+export const canSelectOnSessionClick = (actions: readonly UiAction[]): boolean =>
+  actions.includes("jump");
+
 /// 判断回复输入键盘事件是否应提交。
 export const shouldSubmitReplyOnKeyDown = (
   enterToSend: boolean,
@@ -1426,6 +1437,10 @@ const SessionRow = ({
     session.status_kind,
     interaction.can_create_followup_turn,
   );
+  const canCreateFollowup = shouldUseFollowupShortcut(
+    session.status_kind,
+    interaction.can_create_followup_turn,
+  );
   const shortcuts = sortedEnabledShortcuts(settings.replies.custom_shortcuts);
 
   return (
@@ -1601,6 +1616,40 @@ const SessionRow = ({
                 type="button"
                 onClick={() => {
                   onSendReply(session, interactionId, null);
+                }}
+              >
+                发送
+              </button>
+            </div>
+          )}
+          {canCreateFollowup && (
+            <div className="inline-reply">
+              <textarea
+                disabled={followupSubmitting}
+                value={draft}
+                placeholder="继续输入"
+                onChange={(event) => {
+                  onDraftChange(session, event.target.value);
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    shouldSubmitReplyOnKeyDown(
+                      settings.replies.enter_to_send,
+                      event.key,
+                      event.shiftKey,
+                    ) &&
+                    !followupSubmitting
+                  ) {
+                    event.preventDefault();
+                    onCreateFollowupTurn(session, draft);
+                  }
+                }}
+              />
+              <button
+                disabled={isReplyDraftInvalid(draft, 1000) || followupSubmitting}
+                type="button"
+                onClick={() => {
+                  onCreateFollowupTurn(session, draft);
                 }}
               >
                 发送

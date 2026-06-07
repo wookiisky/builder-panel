@@ -40,6 +40,10 @@ Codex APP notification 可能缺少必填字段或字段类型错误。
 
 Codex APP app-server server request 可能缺少必填字段或字段类型错误。
 
+Codex APP app-server thread 列表 response 可能缺少必填字段或字段类型错误。
+
+Codex APP rollout 文件可能不存在、过旧、过大、格式无效或缺少 session 元数据。
+
 阶段 0 本地验证可能因缺少 Rust 工具链失败。
 
 Domain 失败事件可能携带统一 `AppError`。
@@ -158,6 +162,26 @@ Codex APP 未识别或畸形 app-server server request 会回写 JSON-RPC error�
 
 Codex APP app-server `notLoaded` 会清理 pending interaction 和对应 RPC 回写上下文。
 
+Codex APP app-server thread 列表读取使用短超时；读取失败不写 session 失败状态。
+
+Codex APP app-server thread 列表单条 thread 清洗失败时跳过该条，保留同批其它有效 thread。
+
+Codex APP app-server thread 列表中缺 cwd 但带 path 的 thread 不直接写 session 状态；若后续 rollout 读取失败，则保持待识别项目。
+
+Codex APP app-server thread 列表中 `status.type` 类型错误时跳过该条，避免把脏数据折叠成完成态。
+
+Codex APP rollout 历史读取失败不写 session 失败状态。
+
+Codex APP rollout 命中不存在且不可迁移的 session 时丢弃该快照，不创建新的当前 session。
+
+Codex APP recent rollout 命中非候选 thread 时丢弃该历史快照，不创建新的当前 session。
+
+Codex APP thread path 读取到错配 session ID 时丢弃该快照，不创建新的当前 session。
+
+Codex APP thread path 不在 Codex sessions root 内、文件名不匹配、不是普通文件或文件过大时丢弃该快照。
+
+Codex APP 缺少可信 cwd 时写入待识别项目占位，不生成跳回目标。
+
 Codex APP follow-up 写入失败时，不写入“已提交”activity。
 
 Codex APP follow-up 若 session 仍在运行或存在 pending interaction，后端拒绝创建后续 turn。
@@ -214,7 +238,9 @@ Codex APP 回复回写失败时，前端保留当前 session 草稿。
 
 跳回失败时，降级动作为复制到剪贴板。
 
-没有跳回目标或不支持跳回时，前端只保留选中态或展示可复制降级提示。
+没有跳回目标或不支持跳回时，点击 session 不请求跳回、不更新选中态且不展示错误。
+
+全局跳回开关关闭时，有跳回目标的 session 点击只更新选中态，不请求跳回且不展示错误。
 
 预设命令无法可靠创建时，降级为复制命令。
 
@@ -228,7 +254,17 @@ Codex APP schema 或 app-server 不可用时，不展示 Codex APP 结构化控�
 
 Codex APP session 来源读取失败时，前端跳过 Codex APP 来源，不阻断 Codex CLI session 展示。
 
-Codex APP app-server 启动失败时，不通过已加载 thread 列表或历史文件补齐 session。
+Codex APP app-server 启动失败时，不通过已加载 thread 列表补齐 session，但仍可读取当前进程内已捕捉的 hook runtime 状态。
+
+Codex APP app-server thread 列表后台读取被节流或短超时打断时，仅跳过本轮元数据补齐，不阻断当前 session 列表返回。
+
+Codex APP rollout 读取不可用时，不补齐历史项目名或历史输出，已捕捉实时 session 继续展示。
+
+Codex APP rollout 读取遇到超长 JSONL 行时跳过该行，继续读取后续有效行。
+
+Codex APP recent rollout 目录遍历达到硬上限时停止本轮发现，已发现的候选仍可继续补齐。
+
+Codex APP 待识别项目不提供跳回；用户点击该 session 行无反应。
 
 Rust 工具链不可用时，只能完成前端测试、架构脚本和静态文件检查。
 

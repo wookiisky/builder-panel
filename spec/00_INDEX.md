@@ -178,6 +178,8 @@
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server stdio 客户端、runtime、schema 探针、消息编码和 notification 转换入口。
 
+`src-tauri/src/adapters/codex_app/codex_rollout.rs` 是 Codex rollout JSONL 发现、session_meta cwd 清洗和最新 Agent 输出摘要清洗入口。
+
 `src-tauri/src/adapters/config_file/mod.rs` 是阶段 8 JSON 设置文件默认路径、原子读写和损坏降级入口。
 
 `src-tauri/src/adapters/hook_install/mod.rs` 是阶段 8 hook 安装、备份、manifest 和卸载入口。
