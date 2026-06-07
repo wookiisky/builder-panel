@@ -58,6 +58,14 @@ session 列表合并 Codex CLI 和 Codex APP session 后，等待用户操作的
 
 同一状态的 session 按更新时间倒序展示。
 
+每次打开 Builder Panel APP 时，session 列表从空状态开始。
+
+Builder Panel 不主动读取任何 coding agent 的历史 session 记录。
+
+APP 打开后仍在运行并继续发出实时事件的任务会进入 session 列表。
+
+APP 打开前已经结束且不再发出实时事件的历史任务不会进入 session 列表。
+
 不支持的动作不展示为可点击按钮。
 
 长摘要、长路径和长命令不会撑破面板布局。
@@ -110,7 +118,7 @@ Codex CLI 的允许并记住入口当前按允许 directive 返回，不声明�
 
 Codex CLI hook 产生的托管事件可在支持 timeline 的 session 中查询。
 
-Codex APP 开关默认开启。开关开启后，panel 会尝试启动 Codex APP app-server 并读取 Codex APP session。
+Codex APP 开关默认开启。开关开启后，panel 会尝试启动 Codex APP app-server 并接收启动后的 Codex APP 实时事件。
 
 Codex APP hook payload 中 `terminal_app` 为 `Codex.app` 时，会显示为 Codex APP session。
 
@@ -153,6 +161,8 @@ Hook Install 每个 hook 项只展示安装和卸载按钮。
 Codex CLI 和 Codex APP 开关会影响对应来源的 session 读取和展示。
 
 Claude Code CLI 和 Claude Code APP 设置开关当前显示为禁用，不触发 session 读取。
+
+未来接入 Claude Code 或其它 coding agent session 时，初始空列表、不主动读取历史记录和启动后实时事件可进入列表的规则保持一致。
 
 用量展示开关关闭后，顶部状态区和 session 行不展示用量信息。
 

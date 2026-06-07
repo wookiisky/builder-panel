@@ -48,6 +48,10 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 没有 pending interaction 时，`SessionStarted` 将旧的完成、失败或失联状态恢复为运行中。
 
+非 `SessionStarted` 的实时事件可以创建占位 session，用于纳入 APP 启动后仍继续运行并发出事件的任务。
+
+占位 session 的 agent 能力和跳回目标由对应 adapter 在事件进入 reducer 前或同批事件中补齐。
+
 `ActivityUpdated` 更新摘要；已有 pending interaction 时不覆盖等待状态。
 
 `ApprovalRequested` 设置审批等待状态，并替换旧 pending。

@@ -12,7 +12,7 @@ Codex APP app-server schema 通过本机 `codex app-server generate-json-schema 
 
 当前探针验证 thread/turn request 与 response、thread/turn notification、agent message delta、token usage、status changed、审批 response、用户输入 response 和 MCP elicitation response 相关 schema 存在；具体文件清单以 `src-tauri/src/adapters/codex_app/mod.rs` 的 `REQUIRED_SCHEMA_FILES` 为准。
 
-Codex APP adapter 可编码 `initialize`、`initialized`、`thread/loaded/list`、`thread/read`、`thread/start` 和 `turn/start` JSON-RPC 消息。
+Codex APP adapter 可编码 `initialize`、`initialized`、`thread/start` 和 `turn/start` JSON-RPC 消息。
 
 Codex APP adapter 可把 `thread/started`、`turn/started`、`item/agentMessage/delta`、`thread/status/changed`、`thread/tokenUsage/updated` 和 `turn/completed` notification 转换为归一事件。
 
@@ -48,7 +48,13 @@ Codex APP follow-up 只有在 `turn/start` 写入成功后才写入 activity 事
 
 Codex APP follow-up 的 app-server request id 由 app-server client 内部递增分配。
 
-Codex APP runtime 维护 `thread_id -> cwd` 映射；hook payload 的 `cwd` 和 app-server thread 详情的 `cwd` 都可补齐该映射，保证 hook 与 app-server 事件折叠为同一个 `SessionKey`。
+Codex APP runtime 维护 `thread_id -> cwd` 映射；hook payload 的 `cwd` 和 app-server 实时消息中的 `cwd` 都可补齐该映射，保证 hook 与 app-server 事件折叠为同一个 `SessionKey`。
+
+Codex APP app-server 实时事件可以为当前进程创建 session，即使对应 thread 早于 Builder Panel APP 启动。
+
+Codex APP app-server 实时事件首次创建 session 时，runtime 会补齐 Codex APP 能力和跳回目标。
+
+Codex APP app-server 无 cwd 实时事件先创建的 session，会在后续真实 cwd 到达时按 thread ID 合并到同一个 session。
 
 Codex APP session 跳回目标使用 `codex://threads/<thread_id>`。
 
@@ -62,9 +68,9 @@ Codex hook 安装通过 TOML AST 编辑 `~/.codex/config.toml` 的 `features.hoo
 
 schema 探针失败时，Codex APP 能力视为不可用。
 
-Codex APP app-server 启动或同步失败时，前端跳过 Codex APP session，Codex CLI session 仍可展示。
+Codex APP app-server 启动或初始化失败时，前端跳过 Codex APP session，Codex CLI session 仍可展示。
 
-Codex APP app-server 启动或同步失败后，后端在短时间退避窗口内不重复 spawn。
+Codex APP app-server 启动或初始化失败后，后端在短时间退避窗口内不重复 spawn。
 
 Codex APP hook session 列表、详情、hook 审批和 hook timeline 不依赖 app-server 成功启动。
 
@@ -74,7 +80,7 @@ Codex APP session 列表、详情和 timeline 查询会尽量启动 app-server�
 
 Codex APP app-server 写入时只短暂读取全局 client slot；等待 response 时不持有全局 slot 锁。
 
-Codex APP app-server 启动和 loaded thread 同步时只短暂切换全局 slot 状态；实际启动、初始化和同步等待在 slot 锁外执行。
+Codex APP app-server 启动和初始化时只短暂切换全局 slot 状态；实际启动和初始化等待在 slot 锁外执行。
 
 未验证的 app-server 方法和字段不进入能力矩阵。
 
@@ -83,6 +89,10 @@ Codex APP 当前不从 app-server 原始 JSON 直接污染 Domain。
 ## 不支持能力
 
 当前不持久化 Codex APP timeline。
+
+当前不持久化 Codex APP session。
+
+当前不通过 app-server 已加载 thread 列表或 thread 详情恢复 Codex APP session。
 
 当前不从 Codex transcript 或 rollout 文件恢复 Codex APP timeline。
 

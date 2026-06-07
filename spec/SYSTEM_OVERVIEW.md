@@ -70,6 +70,14 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 当前产品运行时只读取 Codex CLI 和 Codex APP session。
 
+所有 coding agent session 读取都只以当前 Builder Panel 进程启动后的实时 hook、notification 或 server request 为来源。
+
+Builder Panel APP 启动时不从 coding agent 的历史文件、transcript、JSONL、rollout、已加载 thread 列表或其它持久化记录恢复 session。
+
+Builder Panel APP 启动后仍在运行并继续发出实时事件的任务可以进入当前 session 列表，即使该任务早于 APP 启动。
+
+Builder Panel 不持久化 session、pending interaction 或 timeline。
+
 当前 Tauri 产品 command 不注册 mock session、mock 审批、mock 回复、mock 选项或 mock timeline 入口。
 
 当前系统不声明 Claude Code 真实闭环已完成。

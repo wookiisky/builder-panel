@@ -172,6 +172,14 @@ Tauri command 使用进程内 Codex APP runtime 锁收口 Codex APP 状态访问
 
 前端在 panel 打开期间定时刷新 Codex CLI 和 Codex APP session，避免真实 hook 或 app-server 事件在首次加载后不可见。
 
+所有 coding agent session runtime 在 APP 进程启动时为空。
+
+所有 coding agent session 只能由 APP 进程启动后的实时 hook、notification 或 server request 写入。
+
+所有 coding agent adapter 不得通过历史文件、transcript、JSONL、rollout、已加载 thread 列表或其它持久化记录恢复 session。
+
+APP 启动后仍在运行的任务如果继续发出实时事件，可以创建当前进程内 session。
+
 前端合并 Codex CLI 和 Codex APP session 后，详情读取、审批提交、回复提交、follow-up 和 timeline 查询必须按显式 runtime source 路由。
 
 前端合并 Codex CLI 和 Codex APP session 后，UI session 选中身份必须包含 runtime source。
@@ -242,7 +250,7 @@ Codex APP app-server request 等待必须有超时。
 
 Codex APP app-server request 或 response 写入不得在等待期间持有全局 app-server client slot 锁。
 
-Codex APP app-server 启动和已加载 thread 同步不得在等待期间持有全局 app-server client slot 锁；slot 只表达空、启动中或已连接。
+Codex APP app-server 启动不得在等待期间持有全局 app-server client slot 锁；slot 只表达空、启动中或已连接。
 
 Codex APP app-server response 必须保留 request 的原始 JSON-RPC `id` 类型。
 
@@ -258,13 +266,19 @@ Codex APP follow-up 必须同时满足无 pending interaction 且 session 状态
 
 Codex APP follow-up request id 必须由 app-server client 内部递增分配。
 
-Codex APP app-server 子进程在启动初始化、同步或 client drop 失败路径中必须尝试 kill 和 wait 回收。
+Codex APP app-server 子进程在启动初始化或 client drop 失败路径中必须尝试 kill 和 wait 回收。
 
 Codex APP app-server 启动失败必须设置退避，避免前端轮询造成持续 spawn。
 
 Codex APP hook runtime 读取和 hook approval 决策不得依赖 app-server 已连接。
 
-Codex APP session 列表、详情和 timeline 查询可尝试启动 app-server，但必须在 app-server 失败时继续读取现有 hook runtime 状态。
+Codex APP session 列表、详情和 timeline 查询可尝试启动 app-server，但不得通过 app-server 同步已加载 thread 或读取历史 thread。
+
+Codex APP session 列表、详情和 timeline 查询必须在 app-server 失败时继续读取当前进程内已捕捉的 hook runtime 状态。
+
+Codex APP app-server 实时事件为某 thread 首次事件时，runtime 必须初始化当前 session 的能力、跳回目标和 timeline 能力。
+
+Codex APP app-server 无 cwd 事件先创建的 session，必须在后续真实 cwd 到达时按 thread ID 合并到同一 session。
 
 Codex APP app-server client 被复用前必须检查子进程仍存活；已退出时必须清理 client slot。
 

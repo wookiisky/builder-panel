@@ -65,6 +65,28 @@ impl InMemoryProcessTimelineCache {
         self.shards.values().map(Vec::len).sum()
     }
 
+    /// 将一个 session 的缓存迁移到另一个 session key。
+    pub fn migrate_session_key(
+        &mut self,
+        stale_key: &SessionKey,
+        target_key: &SessionKey,
+    ) -> Result<(), AppError> {
+        if stale_key == target_key {
+            return Ok(());
+        }
+
+        let Some(stale_items) = self.shards.remove(stale_key) else {
+            return Ok(());
+        };
+        for cached in stale_items {
+            let mut item = cached.item;
+            item.session_key = target_key.clone();
+            self.record_timeline_item(item)?;
+        }
+
+        Ok(())
+    }
+
     /// 返回当前缓存正文字符数。
     #[cfg(test)]
     pub fn total_body_chars(&self) -> usize {

@@ -47,14 +47,11 @@ use crate::ports::process_timeline_port::{
     ProcessTimelineItem, ProcessTimelineReaderPort, ProcessTimelineReleasePort,
 };
 
-const REQUIRED_SCHEMA_FILES: [&str; 18] = [
+const REQUIRED_SCHEMA_FILES: [&str; 15] = [
     "v2/ThreadStartParams.json",
     "v2/ThreadStartResponse.json",
     "v2/TurnStartParams.json",
     "v2/TurnStartResponse.json",
-    "v2/ThreadLoadedListResponse.json",
-    "v2/ThreadReadParams.json",
-    "v2/ThreadReadResponse.json",
     "v2/ThreadStartedNotification.json",
     "v2/TurnStartedNotification.json",
     "v2/AgentMessageDeltaNotification.json",
@@ -331,26 +328,6 @@ impl CodexAppAdapter {
             }
         })
     }
-
-    /// 编码 thread/loaded/list request。
-    pub fn thread_loaded_list_request(id: u64) -> Value {
-        json!({
-            "id": id,
-            "method": "thread/loaded/list",
-            "params": {}
-        })
-    }
-
-    /// 编码 thread/read request。
-    pub fn thread_read_request(id: u64, thread_id: &str) -> Value {
-        json!({
-            "id": id,
-            "method": "thread/read",
-            "params": {
-                "threadId": thread_id
-            }
-        })
-    }
 }
 
 /// Codex APP adapter 错误。
@@ -434,6 +411,7 @@ impl CodexAppRuntime {
         let payload = &request.payload.validated_payload;
         self.thread_cwds
             .insert(payload.session_id.clone(), payload.cwd.clone());
+        self.migrate_codex_app_thread_to_cwd(&payload.session_id, &payload.cwd)?;
         let events =
             CodexAppAdapter::events_from_hook_payload(&request.request_id, payload, updated_at)
                 .map_err(|_| protocol_error("Codex APP hook payload 不受支持"))?;
@@ -478,7 +456,9 @@ impl CodexAppRuntime {
         let object = message
             .as_object()
             .ok_or_else(|| protocol_error("Codex APP app-server 消息不是对象"))?;
-        self.record_message_thread_cwd(message);
+        if let Some((thread_id, cwd)) = self.record_message_thread_cwd(message) {
+            self.migrate_codex_app_thread_to_cwd(&thread_id, &cwd)?;
+        }
         let resolved_cwd = self.message_cwd(message, cwd);
         let method = object.get("method").and_then(Value::as_str);
         if method.is_some_and(is_server_request_method) || object.contains_key("id") {
@@ -728,6 +708,11 @@ impl CodexAppRuntime {
     }
 
     fn apply_event(&mut self, event: AgentEvent) -> Result<(), AppError> {
+        self.ensure_codex_app_realtime_session(&event)?;
+        self.apply_event_direct(event)
+    }
+
+    fn apply_event_direct(&mut self, event: AgentEvent) -> Result<(), AppError> {
         let codex_app_started = match &event {
             AgentEvent::SessionStarted(started)
                 if started.session_key.agent_kind == AgentKind::CodexApp =>
@@ -748,6 +733,24 @@ impl CodexAppRuntime {
             self.session_state = self.session_state.apply_event(jump_event);
         }
         Ok(())
+    }
+
+    fn ensure_codex_app_realtime_session(&mut self, event: &AgentEvent) -> Result<(), AppError> {
+        let session_key = event.session_key();
+        if session_key.agent_kind != AgentKind::CodexApp {
+            return Ok(());
+        }
+        if matches!(event, AgentEvent::SessionStarted(_)) {
+            return Ok(());
+        }
+        if self.session_state.sessions.contains_key(session_key) {
+            return Ok(());
+        }
+
+        self.apply_event_direct(AgentEvent::SessionStarted(realtime_started_event(
+            session_key.clone(),
+            event_updated_at(event),
+        )))
     }
 
     fn pending_interaction(
@@ -862,15 +865,12 @@ impl CodexAppRuntime {
         }))
     }
 
-    fn record_message_thread_cwd(&mut self, message: &Value) {
-        let Some(thread_id) = message_thread_id(message) else {
-            return;
-        };
-        let Some(cwd) = message_thread_cwd(message) else {
-            return;
-        };
+    fn record_message_thread_cwd(&mut self, message: &Value) -> Option<(String, String)> {
+        let thread_id = message_thread_id(message)?;
+        let cwd = message_thread_cwd(message)?;
 
-        self.thread_cwds.insert(thread_id, cwd);
+        self.thread_cwds.insert(thread_id.clone(), cwd.clone());
+        Some((thread_id, cwd))
     }
 
     fn message_cwd(&self, message: &Value, default_cwd: &str) -> String {
@@ -916,6 +916,106 @@ impl CodexAppRuntime {
             .retain(|_, pending| pending.session_key != *session_key);
         self.pending_rpc_answers
             .retain(|_, pending| pending.session_key != *session_key);
+    }
+
+    fn migrate_codex_app_thread_to_cwd(
+        &mut self,
+        thread_id: &str,
+        cwd: &str,
+    ) -> Result<(), AppError> {
+        let target_key = session_key(cwd, thread_id);
+        let stale_keys = self
+            .session_state
+            .sessions
+            .keys()
+            .filter(|key| {
+                key.agent_kind == AgentKind::CodexApp
+                    && key.conversation_id.value == thread_id
+                    && **key != target_key
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for stale_key in stale_keys {
+            self.migrate_session_key(&stale_key, &target_key)?;
+        }
+
+        Ok(())
+    }
+
+    fn migrate_session_key(
+        &mut self,
+        stale_key: &SessionKey,
+        target_key: &SessionKey,
+    ) -> Result<(), AppError> {
+        let Some(mut stale_session) = self.session_state.sessions.remove(stale_key) else {
+            return Ok(());
+        };
+
+        stale_session.session_key = target_key.clone();
+        stale_session.project_label = project_label(&target_key.project_id.value);
+        stale_session.conversation_label = target_key.conversation_id.value.clone();
+        stale_session.pending_interaction = stale_session
+            .pending_interaction
+            .take()
+            .map(|interaction| interaction.aligned_to_session_key(target_key));
+        if stale_session.capabilities == SessionCapabilities::none() {
+            stale_session.capabilities = codex_app_capabilities();
+        }
+        if stale_session.jump_target.is_none() {
+            stale_session.jump_target =
+                Some(codex_app_jump_target(&target_key.conversation_id.value));
+        }
+
+        if let Some(target_session) = self.session_state.sessions.get_mut(target_key) {
+            if target_session.pending_interaction.is_none() {
+                target_session.pending_interaction = stale_session.pending_interaction.take();
+            }
+            if target_session.summary.is_none() {
+                target_session.summary = stale_session.summary;
+            }
+            if target_session.title.is_none() {
+                target_session.title = stale_session.title;
+            }
+            if target_session.last_error.is_none() {
+                target_session.last_error = stale_session.last_error;
+            }
+            if target_session.jump_target.is_none() {
+                target_session.jump_target = stale_session.jump_target;
+            }
+            if target_session.updated_at < stale_session.updated_at {
+                target_session.status = stale_session.status;
+                target_session.usage = stale_session.usage;
+                target_session.updated_at = stale_session.updated_at;
+            }
+        } else {
+            self.session_state
+                .sessions
+                .insert(target_key.clone(), stale_session);
+        }
+
+        for pending in self.pending_hook_approvals.values_mut() {
+            if pending.session_key == *stale_key {
+                pending.session_key = target_key.clone();
+            }
+        }
+        for pending in self.pending_rpc_approvals.values_mut() {
+            if pending.session_key == *stale_key {
+                pending.session_key = target_key.clone();
+            }
+        }
+        for pending in self.pending_rpc_answers.values_mut() {
+            if pending.session_key == *stale_key {
+                pending.session_key = target_key.clone();
+            }
+        }
+        if self.pending_followup_turns.remove(stale_key) {
+            self.pending_followup_turns.insert(target_key.clone());
+        }
+        self.timeline_cache
+            .migrate_session_key(stale_key, target_key)?;
+
+        Ok(())
     }
 
     fn record_server_request_failure(
@@ -1142,15 +1242,6 @@ fn message_thread_cwd(message: &Value) -> Option<String> {
     }
 
     None
-}
-
-fn thread_cwd_from_value(value: &Value) -> Option<String> {
-    value
-        .get("thread")
-        .and_then(|thread| thread.get("cwd"))
-        .and_then(Value::as_str)
-        .or_else(|| value.get("cwd").and_then(Value::as_str))
-        .map(ToString::to_string)
 }
 
 /// hook 审批等待器。
@@ -1380,10 +1471,6 @@ pub struct CodexAppServerClient {
     pending: Arc<(Mutex<BTreeMap<u64, PendingRpcResult>>, Condvar)>,
     /// 下一个 request id。
     next_id: Arc<Mutex<u64>>,
-    /// Codex APP runtime。
-    runtime: Arc<Mutex<CodexAppRuntime>>,
-    /// app-server 默认 cwd。
-    cwd: String,
 }
 
 impl CodexAppServerClient {
@@ -1437,8 +1524,6 @@ impl CodexAppServerClient {
             stdin,
             pending,
             next_id: Arc::new(Mutex::new(1)),
-            runtime,
-            cwd,
         };
         if let Err(error) = client.initialize() {
             client.stop_and_wait();
@@ -1451,59 +1536,6 @@ impl CodexAppServerClient {
     fn initialize(&self) -> Result<(), AppError> {
         self.send_request_value(CodexAppAdapter::initialize_request(self.next_request_id()?))?;
         self.write_message(&CodexAppAdapter::initialized_notification())
-    }
-
-    /// 请求同步已加载 thread。
-    pub fn sync_loaded_threads(&self) -> Result<(), AppError> {
-        let result = self.send_request_value(CodexAppAdapter::thread_loaded_list_request(
-            self.next_request_id()?,
-        ))?;
-        let thread_ids = result
-            .get("data")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                app_server_error(
-                    "Codex APP thread/loaded/list response 格式无效",
-                    String::new(),
-                )
-            })?;
-        for thread_id in thread_ids.iter().filter_map(Value::as_str) {
-            let read_result = self.send_request_value(CodexAppAdapter::thread_read_request(
-                self.next_request_id()?,
-                thread_id,
-            ))?;
-            let thread_value = read_result
-                .get("thread")
-                .cloned()
-                .unwrap_or_else(|| read_result.clone());
-            let message = json!({
-                "method": "thread/started",
-                "params": {
-                    "thread": thread_value
-                }
-            });
-            let resolved_cwd =
-                thread_cwd_from_value(&read_result).unwrap_or_else(|| self.cwd.clone());
-            if let Ok(mut runtime) = self.runtime.lock() {
-                runtime.apply_app_server_message(&message, &resolved_cwd, unix_now())?;
-                if thread_value
-                    .get("status")
-                    .and_then(|value| value.get("type"))
-                    .and_then(Value::as_str)
-                    .is_some()
-                {
-                    let status_message = json!({
-                        "method": "thread/status/changed",
-                        "params": {
-                            "threadId": thread_id,
-                            "status": thread_value["status"].clone()
-                        }
-                    });
-                    runtime.apply_app_server_message(&status_message, &resolved_cwd, unix_now())?;
-                }
-            }
-        }
-        Ok(())
     }
 
     /// 发送 follow-up turn。
@@ -1960,6 +1992,35 @@ fn started_from_hook(
     }
 }
 
+fn realtime_started_event(session_key: SessionKey, updated_at: UnixMillis) -> SessionStartedEvent {
+    SessionStartedEvent {
+        project_label: project_label(&session_key.project_id.value),
+        conversation_label: session_key.conversation_id.value.clone(),
+        title: None,
+        summary: Some("Codex APP 实时事件已捕捉".to_string()),
+        capabilities: codex_app_capabilities(),
+        usage: UsageSnapshot::unavailable(),
+        session_key,
+        updated_at,
+    }
+}
+
+fn event_updated_at(event: &AgentEvent) -> UnixMillis {
+    match event {
+        AgentEvent::SessionStarted(event) => event.updated_at,
+        AgentEvent::ActivityUpdated(event) => event.updated_at,
+        AgentEvent::ApprovalRequested(event) => event.updated_at,
+        AgentEvent::AnswerRequested(event) => event.updated_at,
+        AgentEvent::InteractionCompleted(event) => event.updated_at,
+        AgentEvent::TurnCompleted(event) => event.updated_at,
+        AgentEvent::Failed(event) => event.updated_at,
+        AgentEvent::Detached(event) => event.updated_at,
+        AgentEvent::CapabilitiesUpdated(event) => event.updated_at,
+        AgentEvent::UsageUpdated(event) => event.updated_at,
+        AgentEvent::JumpTargetUpdated(event) => event.updated_at,
+    }
+}
+
 fn approval_from_server_request(
     request_id: &str,
     method: &str,
@@ -2411,7 +2472,9 @@ mod tests {
     use crate::domain::agent_interaction::AgentInteraction;
     use crate::domain::agent_session::{AgentKind, SessionStatus};
     use crate::domain::usage::UnixMillis;
-    use crate::ports::agent_adapter_port::ChoiceSubmission;
+    use crate::domain::view_model::UiAction;
+    use crate::ports::agent_adapter_port::{ApprovalDecision, ChoiceSubmission};
+    use crate::ports::process_timeline_port::ProcessTimelineReaderPort;
 
     #[test]
     fn schema_probe_checks_required_files() {
@@ -2618,6 +2681,62 @@ mod tests {
             session.pending_interaction,
             Some(AgentInteraction::TextReply(_))
         ));
+    }
+
+    #[test]
+    fn first_realtime_approval_request_initializes_operable_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        let request = json!({
+            "id": 9,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "command": "cargo test"
+            }
+        });
+
+        runtime
+            .apply_app_server_message(&request, "/tmp/builder-panel", UnixMillis::new(1))
+            .expect("request should apply");
+        let list_item = runtime
+            .session_list()
+            .first()
+            .expect("session should be visible")
+            .clone();
+        let (session_key, interaction_id) = pending_interaction_keys(&runtime);
+
+        assert!(list_item.actions.contains(&UiAction::ResolveApproval));
+        assert!(list_item.actions.contains(&UiAction::Jump));
+        assert!(list_item.actions.contains(&UiAction::ViewProcessTimeline));
+        let write = runtime
+            .resolve_approval(&session_key, &interaction_id, ApprovalDecision::Allow)
+            .expect("approval should encode")
+            .expect("rpc response should exist");
+        assert_eq!(write.message["id"], 9);
+    }
+
+    #[test]
+    fn first_realtime_answer_request_initializes_reply_action() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_app_server_message(
+                &user_input_request(7),
+                "/tmp/builder-panel",
+                UnixMillis::new(1),
+            )
+            .expect("request should apply");
+
+        let list_item = runtime
+            .session_list()
+            .first()
+            .expect("session should be visible")
+            .clone();
+        assert!(list_item.actions.contains(&UiAction::SendReply));
+        assert!(list_item.actions.contains(&UiAction::Jump));
+        assert!(list_item.actions.contains(&UiAction::ViewProcessTimeline));
     }
 
     #[test]
@@ -2869,6 +2988,71 @@ mod tests {
         );
         assert!(runtime.session_state().sessions.contains_key(&expected_key));
         assert_eq!(runtime.session_state().sessions.len(), 1);
+    }
+
+    #[test]
+    fn hook_real_cwd_migrates_app_server_fallback_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        runtime
+            .apply_app_server_message(&user_input_request(7), "/fallback/cwd", UnixMillis::new(1))
+            .expect("request should apply");
+        let fallback_key = session_key("/fallback/cwd", "thread-1");
+        assert!(runtime.session_state().sessions.contains_key(&fallback_key));
+        assert!(!runtime
+            .read_timeline(&fallback_key)
+            .expect("timeline should read")
+            .is_empty());
+
+        let hook = BridgeRequestEnvelope::process_agent_hook(
+            "request-1".to_string(),
+            hook_payload(BridgeHookEventName::SessionStart),
+        );
+        runtime
+            .apply_hook_request(&hook, UnixMillis::new(2))
+            .expect("hook should apply");
+        let real_key = session_key("/tmp/builder-panel", "thread-1");
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&real_key)
+            .expect("real cwd session should exist");
+
+        assert_eq!(runtime.session_state().sessions.len(), 1);
+        assert!(!runtime.session_state().sessions.contains_key(&fallback_key));
+        assert!(matches!(
+            session.pending_interaction,
+            Some(AgentInteraction::TextReply(_))
+        ));
+        assert_eq!(
+            session
+                .pending_interaction
+                .as_ref()
+                .expect("pending should exist")
+                .session_key(),
+            &real_key
+        );
+        assert!(runtime
+            .read_timeline(&fallback_key)
+            .expect("fallback timeline should read")
+            .is_empty());
+        assert!(!runtime
+            .read_timeline(&real_key)
+            .expect("real timeline should read")
+            .is_empty());
+
+        let interaction_id = session
+            .pending_interaction
+            .as_ref()
+            .expect("pending should exist")
+            .status();
+        assert_eq!(
+            interaction_id,
+            crate::domain::agent_interaction::InteractionStatus::Pending
+        );
+        let (_, migrated_interaction_id) = pending_interaction_keys(&runtime);
+        runtime
+            .send_reply(&real_key, &migrated_interaction_id, "继续")
+            .expect("migrated pending rpc answer should remain operable");
     }
 
     #[test]

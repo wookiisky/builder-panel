@@ -140,11 +140,11 @@ Codex APP hook approval 等待超时时返回 bridge error，hook helper 继续�
 
 Codex APP app-server request 超时时返回可重试应用错误。
 
-Codex APP app-server 启动、初始化或同步失败时必须尝试回收子进程。
+Codex APP app-server 启动或初始化失败时必须尝试回收子进程。
 
-Codex APP app-server 启动、初始化或同步失败后，后端在退避窗口内返回最近一次错误，不重复启动子进程。
+Codex APP app-server 启动或初始化失败后，后端在退避窗口内返回最近一次错误，不重复启动子进程。
 
-Codex APP app-server 正在启动或同步时，其它需要 app-server client 的写入 command 返回“正在启动”，不等待全局 slot 锁。
+Codex APP app-server 正在启动时，其它需要 app-server client 的写入 command 返回“正在启动”，不等待全局 slot 锁。
 
 Codex APP app-server 启动失败时，已进入 runtime 的 hook session 和 hook approval 仍可读取和处理。
 
@@ -228,6 +228,8 @@ Codex APP schema 或 app-server 不可用时，不展示 Codex APP 结构化控�
 
 Codex APP session 来源读取失败时，前端跳过 Codex APP 来源，不阻断 Codex CLI session 展示。
 
+Codex APP app-server 启动失败时，不通过已加载 thread 列表或历史文件补齐 session。
+
 Rust 工具链不可用时，只能完成前端测试、架构脚本和静态文件检查。
 
 设置读取失败时，前端使用默认设置继续展示 panel。
@@ -270,7 +272,7 @@ Codex CLI session 出现后按真实 hook 状态展示。
 
 Codex APP app-server schema 探针失败不会显示为已支持能力。
 
-Codex APP app-server 启动或连接失败时，Codex APP session 读取仍返回已进入 hook runtime 的状态。
+Codex APP app-server 启动或连接失败时，Codex APP session 读取仍返回当前进程内已捕捉到的 hook runtime 状态。
 
 设置保存失败时，前端保留用户当前选择并展示错误提示。
 

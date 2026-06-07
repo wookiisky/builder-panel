@@ -16,6 +16,12 @@ Builder Panel APP 读取 Codex CLI session 时会启动 Mac Unix Domain Socket b
 
 Builder Panel APP 打开期间会定时刷新 Codex CLI session，承接后续真实 hook 事件。
 
+Codex CLI session 只来自当前 APP 进程启动后送达 bridge 的实时 hook 事件。
+
+Codex CLI 不从 transcript、JSONL 或其它历史记录恢复 session。
+
+APP 启动后仍在运行的 Codex CLI 任务如果继续触发 hook 事件，可以进入当前 session 列表。
+
 Codex CLI bridge server 只有 bind 成功后才记录为已启动。
 
 Codex CLI bridge server 首次 bind 失败时，后续读取 Codex CLI session 会重试启动。
@@ -62,7 +68,7 @@ hook 安装器不绕过 Codex hook trust review。
 
 ## 不支持能力
 
-当前不从 Codex transcript 或 JSONL 反读历史过程事件。
+当前不从 Codex transcript 或 JSONL 反读历史过程事件或 session 状态。
 
 当前不处理 Codex `Notification` 或 `SessionEnd` 事件。
 

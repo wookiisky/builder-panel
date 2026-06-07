@@ -22,6 +22,12 @@ hook helper 只在 payload 基础校验通过后发送 bridge command。
 
 非阻塞事件返回 ack 时不输出 stdout。
 
+Codex hook 只处理 Builder Panel APP 启动后送达 bridge 的实时 hook payload。
+
+Codex hook 不从 transcript、JSONL 或其它历史记录恢复 session。
+
+APP 启动后仍在运行的 Codex 任务如果继续触发 hook payload，可以进入当前 session 状态。
+
 ## 官方资料边界
 
 Codex hooks 当前使用 `hooks` 作为规范 feature key。
@@ -48,7 +54,7 @@ stdout directive 格式必须由本项目测试固定。
 
 Codex APP app-server 当前事实见 `spec/INTEGRATIONS/CODEX_APP.md`。
 
-当前不从 Codex transcript 或 JSONL 反读过程事件。
+当前不从 Codex transcript 或 JSONL 反读过程事件或 session 状态。
 
 当前不承诺文件编辑审批一定通过 `PreToolUse` 覆盖。
 

@@ -56,6 +56,24 @@ describe("BuilderPanelApp session refresh", () => {
     );
   });
 
+  it("selects a codex app session that appears after the initial empty refresh", () => {
+    const emptyState = createDefaultMockPanelUiState();
+    const stateAfterEmptyRefresh = selectFirstSessionWhenMissing(
+      emptyState,
+      [],
+    );
+
+    const stateAfterCodexAppRefresh = selectFirstSessionWhenMissing(
+      stateAfterEmptyRefresh,
+      [sessionItem(codexAppSessionKey, "codex_app")],
+    );
+
+    expect(stateAfterEmptyRefresh.selectedSessionId).toBeNull();
+    expect(stateAfterCodexAppRefresh.selectedSessionId).toBe(
+      panelSessionToId(sessionItem(codexAppSessionKey, "codex_app")),
+    );
+  });
+
   it("keeps the user selected session during later refreshes", () => {
     const selectedState = selectPanelSession(
       createDefaultMockPanelUiState(),
@@ -285,10 +303,7 @@ describe("BuilderPanelApp session refresh", () => {
   it("creates default hook install statuses for the settings list", () => {
     const statuses = defaultHookAgentStatuses();
 
-    expect(statuses.map((status) => status.agent)).toEqual([
-      "codex",
-      "claude",
-    ]);
+    expect(statuses.map((status) => status.agent)).toEqual(["codex", "claude"]);
     expect(statuses.every((status) => status.can_install)).toBe(true);
     expect(statuses.every((status) => status.can_uninstall)).toBe(false);
   });

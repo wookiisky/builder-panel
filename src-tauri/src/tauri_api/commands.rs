@@ -10,8 +10,8 @@ use crate::adapters::codex_app::{
 use crate::adapters::codex_cli_hook::{start_codex_cli_bridge_server, CodexCliHookRuntime};
 use crate::adapters::config_file::JsonSettingsStore;
 use crate::adapters::hook_install::{
-    HookInstallAgent, HookInstallManifest, HookInstallPaths, HookInstallPreview,
-    HookInstallStatus, HookInstaller,
+    HookInstallAgent, HookInstallManifest, HookInstallPaths, HookInstallPreview, HookInstallStatus,
+    HookInstaller,
 };
 use crate::adapters::terminal::TerminalJumpAdapter;
 use crate::domain::agent_interaction::InteractionId;
@@ -681,12 +681,6 @@ fn ensure_codex_app_started() -> Result<(), String> {
             return Err(error.user_message);
         }
     };
-    if let Err(error) = client.sync_loaded_threads() {
-        let message = error.user_message;
-        reset_codex_app_server_slot()?;
-        record_codex_app_startup_failure(&message)?;
-        return Err(message);
-    }
     publish_codex_app_server_client(Arc::new(client))?;
     clear_codex_app_startup_failure()?;
 

@@ -78,6 +78,10 @@ Rust Codex APP adapter 测试验证 app-server schema 探针、request 编码、
 
 Rust Codex APP adapter 测试验证 hook cwd 与 app-server thread 事件会折叠到同一 session。
 
+Rust Codex APP adapter 测试验证首个 app-server 实时审批或回复 request 可初始化可操作 session。
+
+Rust Codex APP adapter 测试验证无 cwd app-server 实时事件后续可随 hook 真实 cwd 迁移，且不产生重复 session。
+
 Rust Codex APP adapter 测试验证 requestUserInput 与 MCP elicitation 回复编码。
 
 Rust Codex APP adapter 测试验证 permissions approval、legacy approval enum、JSON-RPC id 类型保留和 follow-up 成功前不写 activity。
@@ -106,7 +110,7 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 mock store 测试验证复制筛选结果和虚拟列表可见范围计算。
 
-前端 Builder Panel 测试验证轮询刷新后新出现的 Codex CLI session 会被选中。
+前端 Builder Panel 测试验证轮询刷新后新出现的 Codex CLI 或 Codex APP session 会被选中。
 
 前端 Builder Panel 测试验证 session 路由以 runtime source 为准，不以 agent kind 猜测来源，包含 Codex APP runtime source。
 
@@ -259,6 +263,8 @@ Notification Service 测试断言通知点击只定位 session，不打开过程
 Codex APP schema 真实验证执行本机 `codex app-server generate-json-schema --out <tmpdir> --experimental`。
 
 Codex APP app-server 真实 smoke 验证执行本机 `codex app-server --listen stdio://` 并完成基础初始化。
+
+Codex APP app-server 真实 smoke 不验证已加载 thread 同步。
 
 Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Codex hook 配置，并用代表性 hook payload 验证 helper 到 bridge 的投递路径。
 
