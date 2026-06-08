@@ -16,3 +16,4 @@ coverage/
 .turbo/
 .DS_Store
 *.log
+.pnpm-store

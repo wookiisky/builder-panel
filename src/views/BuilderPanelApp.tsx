@@ -53,7 +53,9 @@ import type {
 } from "../api/mockPanelContract";
 import {
   defaultSettings,
+  fetchLogInfo,
   fetchPanelSettings,
+  openLogFolder,
   savePanelSettings,
 } from "../api/settingsApi";
 import {
@@ -148,6 +150,7 @@ export const BuilderPanelApp = () => {
       refreshing: false,
     }),
   );
+  const [logPath, setLogPath] = useState<string | null>(null);
   const settingsSaveVersion = useRef(0);
   const panelGeometryApplied = useRef(false);
   const panelGeometrySaveTimer = useRef<number | null>(null);
@@ -201,6 +204,22 @@ export const BuilderPanelApp = () => {
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    fetchLogInfo()
+      .then((info) => {
+        if (!disposed && info !== null) {
+          setLogPath(info.path);
+        }
+      })
+      .catch(() => {
+        // 日志信息获取失败不影响主流程。
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [settingsView.settings.logging.enabled]);
 
   useEffect(() => {
     if (!settingsHydrated || panelGeometryApplied.current) {
@@ -847,6 +866,7 @@ export const BuilderPanelApp = () => {
               </header>
               <SettingsPanel
                 hookInstall={hookInstallState}
+                logPath={logPath}
                 saving={settingsSaving}
                 settings={settingsView.settings}
                 statusMessage={settingsView.status_message}
@@ -858,6 +878,11 @@ export const BuilderPanelApp = () => {
                 }}
                 onUninstallHook={(agent) => {
                   void runHookUninstall(agent);
+                }}
+                onOpenLogFolder={() => {
+                  void openLogFolder().catch(() => {
+                    // 失败提示由后端写入日志。
+                  });
                 }}
               />
             </section>
@@ -1816,7 +1841,7 @@ const SessionRow = ({
 export const sourceTag = (session: PanelSessionListItem): string => {
   switch (session.runtimeSource) {
     case "codex_app":
-      return "Codex APP";
+      return "Codex";
     case "codex_cli":
       return "Codex CLI";
   }

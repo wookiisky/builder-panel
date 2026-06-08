@@ -34,11 +34,13 @@ describe("SettingsPanel hook install list", () => {
               can_uninstall: false,
             },
           ])}
+          logPath={null}
           saving={false}
           settings={defaultSettings()}
           statusMessage={null}
           onChange={() => undefined}
           onInstallHook={onInstall}
+          onOpenLogFolder={() => undefined}
           onUninstallHook={onUninstall}
         />,
       );

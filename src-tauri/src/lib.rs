@@ -11,6 +11,7 @@ pub mod tauri_api;
 /// 启动 Builder Panel 桌面应用。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    initialize_event_logger();
     tauri::Builder::default()
         .setup(|app| {
             tauri_api::commands::configure_session_update_sink(Arc::new(
@@ -41,8 +42,25 @@ pub fn run() {
             tauri_api::commands::query_codex_cli_timeline,
             tauri_api::commands::query_codex_app_timeline,
             tauri_api::commands::release_codex_cli_timeline_cache,
-            tauri_api::commands::release_codex_app_timeline_cache
+            tauri_api::commands::release_codex_app_timeline_cache,
+            tauri_api::commands::get_log_info,
+            tauri_api::commands::open_log_folder
         ])
         .run(tauri::generate_context!())
         .expect("启动 Builder Panel Tauri 应用失败");
+}
+
+/// 按持久化设置初始化全局事件日志器。
+fn initialize_event_logger() {
+    use adapters::config_file::JsonSettingsStore;
+    use adapters::logging::{default_log_path, event_logger};
+    use ports::config_store_port::SettingsStorePort;
+
+    let enabled = JsonSettingsStore::default_path()
+        .load_settings()
+        .ok()
+        .flatten()
+        .map(|settings| settings.logging.enabled)
+        .unwrap_or(false);
+    event_logger().configure(enabled, Some(default_log_path()));
 }

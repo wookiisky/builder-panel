@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn codex_permission_request_waits_with_interactive_timeout() {
-        let run = run_hook_cli_with_sender(
+        let run = super::run_hook_cli_with_sender_and_env(
             &["--source".into(), "codex".into()],
             &codex_permission_input(),
             |request: &BridgeRequestEnvelope, timeout: Duration| {
@@ -270,6 +270,7 @@ mod tests {
                     BridgeDirectivePayload::allow(AgentKind::CodexCli),
                 )))
             },
+            |_| None,
         );
 
         let stdout = String::from_utf8(run.stdout).expect("stdout should be utf8");

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -161,6 +161,53 @@ impl CodexCliHookRuntime {
     /// 返回 session 列表 view model。
     pub fn session_list(&self) -> Vec<SessionListItemViewModel> {
         session_list_view_models(&self.session_state)
+    }
+
+    /// 清理被 Codex APP 认领的孤儿 session(由 hook 早到造成的误归类)。
+    ///
+    /// 当 codex_app_runtime 收录某个 thread 后,如果同 (cwd, thread_id) 的 session
+    /// 在 codex_cli_runtime 中也存在,说明它是被 hook 误判进来的。删除它并发布
+    /// session_update 通知,让前端立刻刷新。
+    pub fn evict_codex_app_orphan_session(
+        &mut self,
+        cwd: &str,
+        thread_id: &str,
+        updated_at: UnixMillis,
+    ) -> bool {
+        let key = SessionKey::new(
+            AgentKind::CodexCli,
+            ProjectId::new(cwd.to_string()),
+            ConversationId::new(thread_id.to_string()),
+        );
+        if self.session_state.sessions.remove(&key).is_none() {
+            return false;
+        }
+        // 同时清理可能的悬挂状态。
+        self.rollout_paths.remove(&key);
+        let stale_ids: Vec<InteractionId> = self
+            .pending_approvals
+            .iter()
+            .filter_map(|(interaction_id, pending)| {
+                if pending.session_key == key {
+                    Some(interaction_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for stale_id in stale_ids {
+            if let Some(pending) = self.pending_approvals.remove(&stale_id) {
+                pending.waiter.expire();
+            }
+        }
+        self.update_sink
+            .publish_session_update(SessionUpdateNotification {
+                runtime_source: SessionRuntimeSource::CodexCli,
+                session_key: key,
+                changed_area: SessionUpdateArea::Session,
+                updated_at,
+            });
+        true
     }
 
     /// 用 Codex session index 标题补齐当前已知 CLI session。
@@ -840,9 +887,34 @@ fn protocol_error(message: &str) -> AppError {
     )
 }
 
+/// 注入式回调:由上层在 hook reclassify 命中"未知 thread"时同步触发,用来
+/// 给 codex_app_runtime 主动拉取一次 thread 元数据。
+type CodexAppThreadRefreshHook = Arc<dyn Fn() + Send + Sync>;
+
+/// 全局 thread 刷新回调,初始化由 commands.rs 注入。
+static CODEX_APP_THREAD_REFRESH_HOOK: OnceLock<CodexAppThreadRefreshHook> = OnceLock::new();
+
+/// 设置 hook reclassify 阶段使用的同步刷新回调。
+///
+/// 仅首次调用生效,重复调用静默忽略,避免线程竞态。
+pub fn set_codex_app_thread_refresh_hook(hook: CodexAppThreadRefreshHook) {
+    let _ = CODEX_APP_THREAD_REFRESH_HOOK.set(hook);
+}
+
+/// 触发已注入的 thread 刷新回调(不存在时空操作)。
+#[cfg(unix)]
+fn try_refresh_codex_app_threads() {
+    if let Some(hook) = CODEX_APP_THREAD_REFRESH_HOOK.get() {
+        hook();
+    }
+}
+
 /// 当 hook payload 缺少 terminal_app 时,根据 codex_app_runtime 已知 thread/cwd 兜底把
 /// agent_kind 改判为 CodexApp。仅在仍是 CodexCli 时尝试,避免覆盖已识别为
 /// CodexApp 的 payload,也不动 Claude payload。
+///
+/// 当第一次 claim 失败时,会触发一次同步刷新回调(由 commands.rs 注入,通常去
+/// 拉一次 codex app-server 的 thread list,带短超时),刷新后再 claim 一次。
 #[cfg(unix)]
 fn reclassify_codex_hook_agent_kind(
     request: &mut BridgeRequestEnvelope,
@@ -854,11 +926,17 @@ fn reclassify_codex_hook_agent_kind(
     }
     let session_id = payload.session_id.clone();
     let cwd = payload.cwd.clone();
-    let claims = match codex_app_runtime.lock() {
+    let claim = |runtime: &Arc<Mutex<CodexAppRuntime>>| match runtime.lock() {
         Ok(runtime) => runtime.claims_codex_app_thread(&session_id, &cwd),
         Err(_) => false,
     };
-    if claims {
+    if claim(codex_app_runtime) {
+        request.payload.validated_payload.agent_kind = AgentKind::CodexApp;
+        return;
+    }
+    // 第一次 claim 失败:触发同步刷新,再 claim 一次。
+    try_refresh_codex_app_threads();
+    if claim(codex_app_runtime) {
         request.payload.validated_payload.agent_kind = AgentKind::CodexApp;
     }
 }
@@ -1337,6 +1415,36 @@ mod tests {
             AgentKind::CodexCli,
             "无任何匹配应保持 CodexCli"
         );
+    }
+
+    #[test]
+    fn evict_codex_app_orphan_session_removes_matching_session() {
+        let mut runtime = CodexCliHookRuntime::empty();
+        let permission_payload = payload(BridgeHookEventName::PermissionRequest);
+        let cwd = permission_payload.cwd.clone();
+        let session_id = permission_payload.session_id.clone();
+        let request =
+            BridgeRequestEnvelope::process_agent_hook("request-1".to_string(), permission_payload);
+        let _ = runtime
+            .apply_hook_request(&request, UnixMillis::new(1))
+            .expect("hook should register");
+        assert!(!runtime.session_state().sessions.is_empty());
+
+        let evicted =
+            runtime.evict_codex_app_orphan_session(&cwd, &session_id, UnixMillis::new(2));
+        assert!(evicted);
+        assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn evict_codex_app_orphan_session_returns_false_when_missing() {
+        let mut runtime = CodexCliHookRuntime::empty();
+        let evicted = runtime.evict_codex_app_orphan_session(
+            "/tmp/unknown",
+            "unknown-thread",
+            UnixMillis::new(1),
+        );
+        assert!(!evicted);
     }
 
     fn payload(event_name: BridgeHookEventName) -> ValidatedHookPayload {

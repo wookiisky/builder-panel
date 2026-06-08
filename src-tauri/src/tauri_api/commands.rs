@@ -5,10 +5,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde_json::json;
+
 use crate::adapters::codex_app::{
     apply_session_index_thread_titles, default_codex_session_index_path,
     load_codex_session_index_titles, CodexAppAdapter, CodexAppRuntime, CodexAppSchemaProbe,
-    CodexAppServerClient, CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget,
+    CodexAppServerClient, CodexAppThreadMetadata, CodexRolloutDiscovery, CodexRolloutTailer,
+    CodexRolloutWatchTarget,
 };
 use crate::adapters::codex_cli_hook::{start_codex_cli_bridge_server, CodexCliHookRuntime};
 use crate::adapters::config_file::JsonSettingsStore;
@@ -16,6 +19,7 @@ use crate::adapters::hook_install::{
     HookInstallAgent, HookInstallManifest, HookInstallPaths, HookInstallPreview, HookInstallStatus,
     HookInstaller,
 };
+use crate::adapters::logging::{default_log_path, event_logger, log_error, log_info};
 use crate::adapters::terminal::TerminalJumpAdapter;
 use crate::domain::agent_interaction::InteractionId;
 use crate::domain::agent_session::{JumpTarget, SessionKey};
@@ -100,8 +104,10 @@ pub fn get_panel_probe() -> PanelProbe {
 pub fn get_panel_settings() -> SettingsViewModel {
     let store = JsonSettingsStore::default_path();
     let service = SettingsService::new(&store);
+    let view = service.read_settings();
 
-    service.read_settings()
+    refresh_logger(&view.settings);
+    view
 }
 
 /// 保存 Builder Panel 设置。
@@ -110,9 +116,96 @@ pub fn save_panel_settings(settings: BuilderPanelSettings) -> Result<SettingsVie
     let store = JsonSettingsStore::default_path();
     let service = SettingsService::new(&store);
 
-    service
-        .save_settings(settings)
-        .map_err(|error| error.user_message)
+    match service.save_settings(settings) {
+        Ok(view) => {
+            refresh_logger(&view.settings);
+            log_info(
+                "设置已保存",
+                json!({
+                    "logging_enabled": view.settings.logging.enabled,
+                }),
+            );
+            Ok(view)
+        }
+        Err(error) => {
+            log_error(
+                "设置保存失败",
+                json!({
+                    "code": format!("{:?}", error.code),
+                    "message": error.user_message.clone(),
+                }),
+            );
+            Err(error.user_message)
+        }
+    }
+}
+
+/// 获取当前日志文件路径。
+#[tauri::command]
+pub fn get_log_info() -> LogInfo {
+    let path = event_logger().current_path();
+    LogInfo {
+        path: path.to_string_lossy().to_string(),
+    }
+}
+
+/// 在系统文件管理器中打开日志目录。
+#[tauri::command]
+pub fn open_log_folder() -> Result<(), String> {
+    let dir = event_logger().current_dir();
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        return Err(format!("日志目录创建失败：{error}"));
+    }
+    open_path_in_file_manager(&dir).map_err(|error| {
+        log_error(
+            "打开日志目录失败",
+            json!({
+                "message": error.clone(),
+            }),
+        );
+        error
+    })
+}
+
+/// 日志信息。
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+pub struct LogInfo {
+    /// 日志文件绝对路径。
+    pub path: String,
+}
+
+fn open_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("打开日志目录失败：{error}"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("打开日志目录失败：{error}"))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("打开日志目录失败：{error}"))
+    }
+}
+
+/// 根据设置刷新全局 logger 配置。
+fn refresh_logger(settings: &BuilderPanelSettings) {
+    event_logger().configure(settings.logging.enabled, Some(default_log_path()));
 }
 
 /// 保存 panel 窗口局部状态。
@@ -157,9 +250,27 @@ pub fn get_hook_install_status() -> Result<HookInstallStatus, String> {
 pub fn install_hooks(request: HookInstallRequest) -> Result<HookInstallManifest, String> {
     let installer = default_hook_installer()?;
 
-    installer
-        .install(&request.agents)
-        .map_err(|error| error.user_message)
+    match installer.install(&request.agents) {
+        Ok(manifest) => {
+            log_info(
+                "hook 安装",
+                json!({
+                    "agents": request.agents.iter().map(hook_agent_label).collect::<Vec<_>>(),
+                }),
+            );
+            Ok(manifest)
+        }
+        Err(error) => {
+            log_error(
+                "hook 安装失败",
+                json!({
+                    "agents": request.agents.iter().map(hook_agent_label).collect::<Vec<_>>(),
+                    "message": error.user_message.clone(),
+                }),
+            );
+            Err(error.user_message)
+        }
+    }
 }
 
 /// 卸载 hook。
@@ -167,9 +278,34 @@ pub fn install_hooks(request: HookInstallRequest) -> Result<HookInstallManifest,
 pub fn uninstall_hooks(request: HookInstallRequest) -> Result<(), String> {
     let installer = default_hook_installer()?;
 
-    installer
-        .uninstall_agents(&request.agents)
-        .map_err(|error| error.user_message)
+    match installer.uninstall_agents(&request.agents) {
+        Ok(()) => {
+            log_info(
+                "hook 卸载",
+                json!({
+                    "agents": request.agents.iter().map(hook_agent_label).collect::<Vec<_>>(),
+                }),
+            );
+            Ok(())
+        }
+        Err(error) => {
+            log_error(
+                "hook 卸载失败",
+                json!({
+                    "agents": request.agents.iter().map(hook_agent_label).collect::<Vec<_>>(),
+                    "message": error.user_message.clone(),
+                }),
+            );
+            Err(error.user_message)
+        }
+    }
+}
+
+fn hook_agent_label(agent: &HookInstallAgent) -> &'static str {
+    match agent {
+        HookInstallAgent::Codex => "codex",
+        HookInstallAgent::Claude => "claude",
+    }
 }
 
 /// 获取 Codex CLI session 列表。
@@ -685,11 +821,86 @@ fn ensure_codex_cli_bridge_started() -> Result<(), String> {
 
     let runtime = codex_cli_runtime();
     let codex_app_runtime = codex_app_runtime();
-    start_codex_cli_bridge_server(runtime, codex_app_runtime)
-        .map_err(|error| format!("Codex CLI bridge 启动失败：{error:?}"))?;
+    install_codex_cross_runtime_hooks();
+    if let Err(error) = start_codex_cli_bridge_server(runtime, codex_app_runtime) {
+        let message = format!("Codex CLI bridge 启动失败：{error:?}");
+        log_error("Codex CLI bridge 启动失败", json!({"message": message.clone()}));
+        return Err(message);
+    }
     start_codex_rollout_watcher_once();
     *started = true;
+    log_info("Codex CLI bridge 启动", json!({}));
     Ok(())
+}
+
+/// 把 codex_cli_runtime / codex_app_runtime 的跨 runtime hook 互相注入。
+///
+/// - codex_app_runtime 收录新 thread → 通知 codex_cli_runtime 清理同名孤儿 session。
+/// - codex_cli_hook reclassify 未命中已知 thread → 触发一次同步 thread list 刷新。
+fn install_codex_cross_runtime_hooks() {
+    use crate::adapters::codex_cli_hook::set_codex_app_thread_refresh_hook;
+
+    if let Ok(mut runtime) = codex_app_runtime().lock() {
+        runtime.set_orphan_eviction_callback(Arc::new(|cwd, thread_id, updated_at| {
+            if let Ok(mut cli) = codex_cli_runtime().lock() {
+                let evicted = cli.evict_codex_app_orphan_session(cwd, thread_id, updated_at);
+                drop(cli);
+                if evicted {
+                    // 删除后立即重新计算 rollout watcher 目标,避免追踪已删除的 session。
+                    refresh_rollout_watcher_targets();
+                }
+            }
+        }));
+    }
+
+    set_codex_app_thread_refresh_hook(Arc::new(|| {
+        synchronously_refresh_codex_app_thread_list(CODEX_APP_THREAD_LIST_SYNC_TIMEOUT);
+    }));
+}
+
+/// 同步刷新 codex_app_runtime 的 thread list 上限,留给 hook reclassify 兜底用。
+const CODEX_APP_THREAD_LIST_SYNC_TIMEOUT: Duration = Duration::from_millis(300);
+
+/// 在受限超时内尝试同步刷新一次 codex app-server 的 thread list。
+///
+/// 如果 codex app-server 尚未启动 / 拉取超时 / 锁失败,函数静默返回,
+/// reclassify 会沿用现有 in-memory 状态判定。
+fn synchronously_refresh_codex_app_thread_list(timeout: Duration) {
+    let started_at = Instant::now();
+    if ensure_codex_app_started().is_err() {
+        return;
+    }
+    if started_at.elapsed() >= timeout {
+        return;
+    }
+    let Ok(server) = codex_app_server_client() else {
+        return;
+    };
+    let remaining = timeout.saturating_sub(started_at.elapsed());
+    if remaining.is_zero() {
+        return;
+    }
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<CodexAppThreadMetadata>>(1);
+    let server_clone = server.clone();
+    std::thread::spawn(move || {
+        if let Ok(threads) = server_clone.list_loaded_threads() {
+            let _ = sender.send(threads);
+        }
+    });
+    let Ok(threads) = receiver.recv_timeout(remaining) else {
+        return;
+    };
+    if let Ok(mut runtime) = codex_app_runtime().lock() {
+        for thread in threads {
+            let _ = runtime.apply_thread_metadata(thread, command_unix_now());
+        }
+    }
+}
+
+/// 重新发布 rollout watcher 目标,避免删除孤儿后 tailer 仍跟踪它。
+fn refresh_rollout_watcher_targets() {
+    // 当前 watcher 在循环顶部每轮自己拉一次 targets,无需主动通知。
+    // 这里保留接口语义,便于未来切换为事件驱动。
 }
 
 /// 启动 Codex rollout 追加行 watcher。
@@ -768,11 +979,16 @@ fn ensure_codex_app_started() -> Result<(), String> {
         Err(error) => {
             reset_codex_app_server_slot()?;
             record_codex_app_startup_failure(&error.user_message)?;
+            log_error(
+                "Codex APP app-server 启动失败",
+                json!({"message": error.user_message.clone()}),
+            );
             return Err(error.user_message);
         }
     };
     publish_codex_app_server_client(Arc::new(client))?;
     clear_codex_app_startup_failure()?;
+    log_info("Codex APP app-server 启动", json!({}));
 
     Ok(())
 }

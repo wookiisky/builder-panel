@@ -269,6 +269,21 @@ impl Default for AdvancedSettings {
     }
 }
 
+/// 日志设置。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct LoggingSettings {
+    /// 是否启用本地事件日志。
+    pub enabled: bool,
+}
+
+impl Default for LoggingSettings {
+    /// 返回日志设置默认值。
+    fn default() -> Self {
+        Self { enabled: false }
+    }
+}
+
 /// Builder Panel 设置。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
@@ -297,6 +312,9 @@ pub struct BuilderPanelSettings {
     /// 高级设置。
     #[serde(default)]
     pub advanced: AdvancedSettings,
+    /// 日志设置。
+    #[serde(default)]
+    pub logging: LoggingSettings,
 }
 
 impl BuilderPanelSettings {
@@ -318,6 +336,7 @@ impl Default for BuilderPanelSettings {
             presets: PresetSettings::default(),
             terminal: TerminalSettings::default(),
             advanced: AdvancedSettings::default(),
+            logging: LoggingSettings::default(),
         }
     }
 }

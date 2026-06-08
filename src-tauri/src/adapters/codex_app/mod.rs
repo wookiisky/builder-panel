@@ -556,6 +556,8 @@ pub struct CodexAppRuntime {
     timeline_cache: InMemoryProcessTimelineCache,
     /// 清洗后 session 更新发布端口。
     update_sink: Arc<dyn SessionUpdateSinkPort>,
+    /// Codex APP 收录新 thread 时通知 Codex CLI runtime 清理同名孤儿 session。
+    orphan_eviction_callback: Option<Arc<dyn Fn(&str, &str, UnixMillis) + Send + Sync>>,
 }
 
 impl CodexAppRuntime {
@@ -579,7 +581,19 @@ impl CodexAppRuntime {
             pending_followup_turns: BTreeMap::new(),
             timeline_cache: InMemoryProcessTimelineCache::new(),
             update_sink,
+            orphan_eviction_callback: None,
         }
+    }
+
+    /// 注入 Codex APP 收录新 thread 时的孤儿 session 迁移回调。
+    ///
+    /// 该回调由 commands.rs 注入,接受 (cwd, thread_id, updated_at),让
+    /// codex_cli_runtime 清理同名误存条目。重复设置只保留最后一次。
+    pub fn set_orphan_eviction_callback(
+        &mut self,
+        callback: Arc<dyn Fn(&str, &str, UnixMillis) + Send + Sync>,
+    ) {
+        self.orphan_eviction_callback = Some(callback);
     }
 
     /// 返回 session 列表 view model。
@@ -722,6 +736,9 @@ impl CodexAppRuntime {
         }
         self.thread_cwds
             .insert(payload.session_id.clone(), payload.cwd.clone());
+        if let Some(callback) = self.orphan_eviction_callback.clone() {
+            callback(&payload.cwd, &payload.session_id, updated_at);
+        }
         let _ = self.migrate_codex_app_thread_to_cwd(&payload.session_id, &payload.cwd)?;
         let events =
             CodexAppAdapter::events_from_hook_payload(&request.request_id, payload, updated_at)
@@ -1236,6 +1253,9 @@ impl CodexAppRuntime {
         self.thread_cwds.insert(thread_id.clone(), cwd.clone());
         self.thread_metadata
             .insert(thread_id.clone(), metadata.clone());
+        if let Some(callback) = self.orphan_eviction_callback.clone() {
+            callback(&cwd, &thread_id, updated_at);
+        }
         let migrated = self.migrate_codex_app_thread_to_cwd(&thread_id, &cwd)?;
 
         if let Some(session) = self.session_state.sessions.get_mut(&target_key) {
@@ -5851,5 +5871,56 @@ mod tests {
             !runtime.claims_codex_app_thread("unrelated-thread", "/tmp/other"),
             "陌生 session_id + 陌生 cwd 不应命中"
         );
+    }
+
+    #[test]
+    fn orphan_eviction_callback_fires_on_thread_metadata_with_cwd() {
+        let mut runtime = CodexAppRuntime::empty();
+        let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let calls_clone = Arc::clone(&calls);
+        runtime.set_orphan_eviction_callback(Arc::new(move |cwd, thread_id, _| {
+            calls_clone
+                .lock()
+                .expect("lock")
+                .push((cwd.to_string(), thread_id.to_string()));
+        }));
+
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-app".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: Some("codex app".to_string()),
+                    preview: None,
+                    path: None,
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("metadata should apply");
+
+        let calls = calls.lock().expect("lock");
+        assert_eq!(calls.len(), 1, "callback 应触发一次");
+        assert_eq!(calls[0].0, "/tmp/builder-panel");
+        assert_eq!(calls[0].1, "thread-app");
+    }
+
+    #[test]
+    fn orphan_eviction_callback_fires_on_hook_request() {
+        let mut runtime = CodexAppRuntime::empty();
+        let calls: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let calls_clone = Arc::clone(&calls);
+        runtime.set_orphan_eviction_callback(Arc::new(move |_, _, _| {
+            *calls_clone.lock().expect("lock") += 1;
+        }));
+
+        let hook = hook_payload(BridgeHookEventName::SessionStart);
+        let request = BridgeRequestEnvelope::process_agent_hook("request-1".to_string(), hook);
+        runtime
+            .apply_hook_request(&request, UnixMillis::new(1))
+            .expect("hook should apply");
+
+        assert_eq!(*calls.lock().expect("lock"), 1);
     }
 }

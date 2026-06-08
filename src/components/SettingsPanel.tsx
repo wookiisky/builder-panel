@@ -32,12 +32,16 @@ export interface SettingsPanelProps {
   readonly saving: boolean;
   /// hook 安装 UI 状态。
   readonly hookInstall: HookInstallPanelState;
+  /// 日志文件路径（仅展示）。
+  readonly logPath: string | null;
   /// 设置变化回调。
   readonly onChange: (settings: BuilderPanelSettings) => void;
   /// 安装单个 hook 回调。
   readonly onInstallHook: (agent: HookInstallAgent) => void;
   /// 卸载单个 hook 回调。
   readonly onUninstallHook: (agent: HookInstallAgent) => void;
+  /// 打开日志目录回调。
+  readonly onOpenLogFolder: () => void;
 }
 
 /// Builder Panel 设置页。
@@ -46,9 +50,11 @@ export const SettingsPanel = ({
   statusMessage,
   saving,
   hookInstall,
+  logPath,
   onChange,
   onInstallHook,
   onUninstallHook,
+  onOpenLogFolder,
 }: SettingsPanelProps) => {
   const update = (next: BuilderPanelSettings): void => {
     onChange(next);
@@ -483,6 +489,31 @@ export const SettingsPanel = ({
             });
           }}
         />
+      </SettingsGroup>
+      <SettingsGroup title="Logging">
+        <ToggleRow
+          checked={settings.logging.enabled}
+          label="启用事件日志"
+          onChange={(checked) => {
+            update({
+              ...settings,
+              logging: {
+                ...settings.logging,
+                enabled: checked,
+              },
+            });
+          }}
+        />
+        {logPath !== null && (
+          <p className="settings-note settings-log-path" title={logPath}>
+            日志文件：{logPath}
+          </p>
+        )}
+        <div className="settings-log-actions">
+          <button type="button" onClick={onOpenLogFolder}>
+            打开日志目录
+          </button>
+        </div>
       </SettingsGroup>
     </section>
   );

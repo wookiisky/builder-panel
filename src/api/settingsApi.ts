@@ -48,6 +48,9 @@ export const defaultSettings = (): BuilderPanelSettings => ({
   advanced: {
     developer_diagnostics: false,
   },
+  logging: {
+    enabled: false,
+  },
 });
 
 /// 读取设置。
@@ -59,6 +62,30 @@ export const fetchPanelSettings = async (): Promise<SettingsViewModel> => {
       throw errorWithCause(error, "读取设置失败");
     }
     return readFallbackSettings();
+  }
+};
+
+/// 日志信息。
+export interface LogInfo {
+  /// 日志文件绝对路径。
+  readonly path: string;
+}
+
+/// 读取日志文件路径。
+export const fetchLogInfo = async (): Promise<LogInfo | null> => {
+  try {
+    return await invoke<LogInfo>("get_log_info");
+  } catch {
+    return null;
+  }
+};
+
+/// 在文件管理器中打开日志目录。
+export const openLogFolder = async (): Promise<void> => {
+  try {
+    await invoke("open_log_folder");
+  } catch (error) {
+    throw errorWithCause(error, "打开日志目录失败");
   }
 };
 
@@ -139,6 +166,10 @@ export const normalizeFallbackSettings = (
     candidate.advanced,
     defaults.advanced,
   );
+  const logging = normalizeLoggingSettings(
+    candidate.logging,
+    defaults.logging,
+  );
 
   if (
     general === null ||
@@ -148,7 +179,8 @@ export const normalizeFallbackSettings = (
     replies === null ||
     presets === null ||
     terminal === null ||
-    advanced === null
+    advanced === null ||
+    logging === null
   ) {
     return null;
   }
@@ -162,6 +194,7 @@ export const normalizeFallbackSettings = (
     presets,
     terminal,
     advanced,
+    logging,
   };
 };
 
@@ -630,6 +663,29 @@ const normalizeAdvancedSettings = (
 
   return {
     developer_diagnostics: developerDiagnostics,
+  };
+};
+
+/// 归一日志设置。
+const normalizeLoggingSettings = (
+  value: unknown,
+  defaults: BuilderPanelSettings["logging"],
+): BuilderPanelSettings["logging"] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!isObjectRecord(value)) {
+    return null;
+  }
+
+  const candidate = value as Partial<BuilderPanelSettings["logging"]>;
+  const enabled = normalizeBoolean(candidate.enabled, defaults.enabled);
+  if (enabled === null) {
+    return null;
+  }
+
+  return {
+    enabled,
   };
 };
 

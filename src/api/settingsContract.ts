@@ -111,6 +111,12 @@ export interface AdvancedSettings {
   readonly developer_diagnostics: boolean;
 }
 
+/// 日志设置。
+export interface LoggingSettings {
+  /// 是否启用本地事件日志。
+  readonly enabled: boolean;
+}
+
 /// Builder Panel 设置。
 export interface BuilderPanelSettings {
   /// 通用设置。
@@ -129,6 +135,8 @@ export interface BuilderPanelSettings {
   readonly terminal: TerminalSettings;
   /// 高级设置。
   readonly advanced: AdvancedSettings;
+  /// 日志设置。
+  readonly logging: LoggingSettings;
 }
 
 /// 设置读取结果。

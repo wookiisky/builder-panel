@@ -8,6 +8,7 @@ pub mod codex_cli_hook;
 pub mod config_file;
 pub mod hook_install;
 pub mod log_sanitizer;
+pub mod logging;
 pub mod mock_agent;
 pub mod notification;
 pub mod terminal;
