@@ -72,6 +72,28 @@ APP 启动后仍在运行的任务如果继续发出 hook、notification 或 ser
 
 无选项的回复区展示设置中的自定义快捷输入。
 
+## session 实时更新流程
+
+Codex CLI hook、Codex APP hook、Codex APP app-server 和 Codex rollout tailer 事件先在 adapter 边界清洗为归一事件。
+
+adapter 清洗可展示摘要时只保留用户输入原文、assistant 输出原文和工具 preview；没有原文或 preview 的过程事件不写摘要。
+
+工具输出结束后的唯一状态文案是 `正在思考`。
+
+runtime 应用归一事件后同步写入 session state 和 timeline 缓存。
+
+runtime 通过 session 更新端口发布轻量通知。
+
+Tauri 事件发布器按 session 合并更新，并在短节流窗口后向前端发送 `session_updated` 事件。
+
+`session_updated` 事件只包含 runtime source、session key、变更区域和更新时间。
+
+前端订阅 `session_updated` 后节流刷新 session 列表。
+
+当前 timeline 弹层打开且事件 session 与当前 session 匹配时，前端节流刷新当前 timeline 查询页。
+
+前端仍保留定时刷新作为实时事件缺失时的兜底。
+
 ## 设置流程
 
 前端启动后读取 panel 设置。
@@ -244,6 +266,8 @@ Codex CLI hook helper 将已清洗 payload 发送到 bridge server。
 
 bridge server 调用 Codex CLI hook adapter 生成归一事件。
 
+Codex CLI hook payload 携带 transcript path 时，runtime 记录该 session 的 rollout tail 目标。
+
 bridge server 对每个已接收连接启动独立处理线程。
 
 长等待的 `PermissionRequest` 不阻塞 listener 接收后续 hook 请求。
@@ -261,6 +285,16 @@ bridge server 返回 Codex allow 或 deny stdout directive。
 等待超时或 runtime 锁损坏时返回 bridge error，hook helper fail-open。
 
 bridge server 首次 bind 失败时不会标记为已启动，后续读取 Codex CLI session 时可重试启动。
+
+Codex rollout watcher 在 bridge server 首次成功启动后启动。
+
+watcher 只 tail 已知 Codex CLI 或 Codex APP session 的已知 rollout path。
+
+watcher 新增目标时从当前 EOF 后开始读取，不回放历史行。
+
+watcher 读取新增完整行后，在 adapter 边界清洗为活动或完成事件。
+
+watcher 生成的事件按 session 所属 runtime 写回 Codex CLI 或 Codex APP runtime。
 
 ## Codex APP app-server 流程
 
@@ -302,6 +336,8 @@ Codex APP recent rollout 扫描结果只补齐已知候选 thread，不从任意
 
 Codex APP thread 元数据携带的 rollout path 只有在快照 session ID 与 thread ID 一致且属于候选集合时才会应用。
 
+Codex APP thread 元数据携带的 rollout path 可作为该 thread 的实时 tail 目标。
+
 app-server 启动和初始化在全局 client slot 锁外执行；slot 在启动期间仅标记为启动中。
 
 app-server stdout 由后台线程按行读取。
@@ -322,7 +358,7 @@ app-server notification 和 server request 写入 runtime 前，会先用可信 
 
 `turn/started` 和 follow-up 成功提交会清空对应 thread 的当前 turn 输出。
 
-`turn/completed` 和 `idle` 状态优先使用当前 turn 最新 Agent 输出作为 session 摘要。
+`turn/completed` 和 `idle` 状态优先使用当前 turn 最新 Agent 输出作为 session 摘要；没有 Agent 原文时不写完成或空闲兜底摘要。
 
 adapter 接收 app-server notification 后，在 adapter 边界读取 JSON 字段并转换为归一事件。
 
@@ -338,11 +374,13 @@ Codex APP follow-up turn 通过 `turn/start` 写入 app-server。
 
 Codex APP follow-up turn 创建前，runtime 校验 session 无 pending interaction 且处于完成或失败状态；`idle` 状态 notification 会先折叠为完成态。
 
-Codex APP follow-up turn 写入 app-server 成功后，runtime 才写入“已提交”activity。
+Codex APP follow-up turn 写入 app-server 成功后，runtime 才写入用户输入原文事件。
 
 Codex APP session 跳回目标使用 `codex://threads/<thread_id>`。
 
 Codex APP hook 和 app-server 事件写入进程内 timeline 缓存。
+
+Codex APP 已知 rollout 追加行清洗后的实时输出和工具 preview 写入进程内 timeline 缓存。
 
 ## mock 测试基线流程
 
@@ -434,15 +472,19 @@ Codex CLI session 的 timeline 条目来自 hook 事件内存缓存。
 
 Codex CLI hook adapter 生成归一事件后，runtime 同步写入 session state 和 timeline 缓存。
 
+Codex CLI 已知 rollout 追加行清洗后的实时输出和工具 preview 写入进程内 timeline 缓存。
+
+Codex APP session 的 timeline 条目来自 hook、app-server 和已知 rollout 追加行的内存缓存。
+
 timeline 缓存按 session 分片，并用条目 ID 去重。
 
 timeline 缓存达到上限时优先淘汰最旧低优先级条目。
 
-Process Timeline Service 执行类型筛选、搜索和分页。
+Process Timeline Service 执行类型筛选、正文搜索和分页。
 
 前端展示当前页条目。
 
-前端可复制单条或当前筛选页的 timeline 文本。
+前端可复制单条或当前筛选页的 timeline 正文文本。
 
 前端可将 timeline 弹层滚动到最新条目。
 
@@ -450,7 +492,9 @@ Process Timeline Service 执行类型筛选、搜索和分页。
 
 timeline 不写文件或数据库。
 
-timeline 不从 transcript 或 JSONL 反向读取。
+timeline 不从 transcript 或 JSONL 反向恢复历史。
+
+timeline 允许记录已知 session 的 rollout 新增追加行所产生的实时托管事件。
 
 timeline 不提供导出过程事件文件入口。
 
@@ -492,6 +536,12 @@ timeline 释放失败时不阻塞关闭弹层。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP app-server 探针和 notification 转换入口。
 
+`src-tauri/src/adapters/codex_app/codex_rollout.rs` 是 Codex rollout 历史快照清洗和实时追加行 tail 入口。
+
+`src-tauri/src/ports/session_update_port.rs` 是 session 实时更新端口入口。
+
+`src-tauri/src/tauri_api/events.rs` 是 Tauri session 更新事件发布入口。
+
 `src-tauri/src/services/session_service.rs` 是 mock 测试基线 session 读取流程入口。
 
 `src-tauri/src/services/interaction_service.rs` 是 mock 测试基线审批和选项链路入口。
@@ -513,6 +563,8 @@ timeline 释放失败时不阻塞关闭弹层。
 `src-tauri/src/adapters/config_file/mod.rs` 是设置文件读写流程入口。
 
 `src/api/sessionJumpApi.ts` 是前端跳回 command 调用入口。
+
+`src/api/sessionUpdateApi.ts` 是前端 session 更新事件订阅入口。
 
 `src/api/panelWindowApi.ts` 是前端窗口关闭调用入口。
 

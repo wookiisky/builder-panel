@@ -34,7 +34,7 @@
 
 阶段 5 当前不执行 Windows 本机人工验证。
 
-阶段 6 测试 timeline 内存缓存、分页、搜索、筛选、去重、淘汰、Codex CLI hook 接收、前端复制筛选结果、虚拟列表范围和缓存释放。
+阶段 6 测试 timeline 内存缓存、分页、正文搜索、筛选、去重、淘汰、Codex CLI hook 接收、前端复制筛选结果、虚拟列表范围和缓存释放。
 
 阶段 6 当前不执行 Windows 本机人工验证。
 
@@ -94,11 +94,13 @@ Rust Codex APP adapter 测试验证当前 turn Agent message delta 会累积展�
 
 Rust Codex APP adapter 测试验证同一 thread 新 turn 不串联上一 turn 输出。
 
-Rust Codex APP adapter 测试验证 follow-up 成功提交会清空上一 turn Agent 输出，后续 idle/completed 不再复用旧摘要。
+Rust Codex APP adapter 测试验证 follow-up 成功提交会清空上一 turn Agent 输出，并用用户输入原文更新摘要。
 
 Rust Codex APP rollout 测试验证 `session_meta`、`agent_message`、`task_complete.last_agent_message` 和 assistant `output_text` 清洗。
 
 Rust Codex APP rollout 测试验证范围外 path 被忽略，超长 JSONL 行被跳过且后续有效行仍可读取。
+
+Rust Codex APP rollout 测试验证 tailer 只读取已知 session 的新增追加行，并验证用户输入事件、工具 preview、重复正文事件时间偏移、未知 JSON arguments 不展示、超长追加行后继续读取有效行和 `正在思考` 状态。
 
 Rust Codex APP adapter 测试验证孤立 rollout 快照不会单独创建当前 session。
 
@@ -132,7 +134,7 @@ Rust service 测试验证 session 读取、审批、回复和 timeline 查询。
 
 Rust service 测试验证选项校验、快捷回复过滤和预设命令计划生成。
 
-Rust timeline adapter 测试验证去重、单 session 上限、全局上限、优先级淘汰和大文本释放。
+Rust timeline adapter 测试验证用户类型映射、空摘要不写条目、去重、单 session 上限、全局上限、优先级淘汰和大文本释放。
 
 Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复制降级。
 
@@ -140,7 +142,7 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 mock store 测试验证选项选择按 interaction 隔离，失败后可保留，成功后只清当前交互。
 
-前端 mock store 测试验证复制筛选结果和虚拟列表可见范围计算。
+前端 mock store 测试验证复制筛选结果只复制正文和虚拟列表可见范围计算。
 
 前端 Builder Panel 测试验证轮询刷新后新出现的 Codex CLI 或 Codex APP session 会被选中。
 
@@ -177,6 +179,10 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 前端 Settings Panel 测试验证 hook 状态列表展示和单项安装卸载按钮回调。
 
 前端 Builder Panel 测试验证窗口移动和尺寸变化的局部保存更新会合并。
+
+前端 Builder Panel 测试验证实时更新只刷新匹配 session 的 timeline。
+
+前端 Builder Panel 测试验证用户 timeline 行样式和单条复制只使用正文。
 
 Rust settings service 测试验证配置缺失、配置损坏和保存。
 
@@ -240,7 +246,7 @@ Shortcut Reply Service 测试断言启用状态、agent 绑定、项目绑定和
 
 Preset Command Service 测试断言结构化创建优先、托管进程降级和复制降级。
 
-Process Timeline Service 测试断言分页、搜索和类型筛选。
+Process Timeline Service 测试断言分页、正文搜索和类型筛选。
 
 Timeline adapter 测试断言重复条目不重复写入。
 

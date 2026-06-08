@@ -19,12 +19,15 @@ import {
   panelSessionToId,
   selectPanelSession,
   selectFirstSessionWhenMissing,
+  shouldRefreshTimelineForUpdate,
   shouldSubmitReplyOnKeyDown,
   shouldUseFollowupShortcut,
   sortPanelSessions,
+  timelineItemCopyText,
+  timelineRowClassName,
   type PanelSessionListItem,
 } from "./BuilderPanelApp";
-import type { SessionKey } from "../api/mockPanelContract";
+import type { ProcessTimelineItem, SessionKey } from "../api/mockPanelContract";
 import { defaultSettings } from "../api/settingsApi";
 import { createDefaultMockPanelUiState } from "../stores/mockPanelStore";
 
@@ -147,6 +150,58 @@ describe("BuilderPanelApp session refresh", () => {
   it("only shows timeline entry when capability exists", () => {
     expect(canShowTimelineEntry(["jump", "view_process_timeline"])).toBe(true);
     expect(canShowTimelineEntry(["jump", "send_reply"])).toBe(false);
+  });
+
+  it("styles user timeline rows by kind and copies body only", () => {
+    const item: ProcessTimelineItem = {
+      item_id: "item-1",
+      session_key: codexSessionKey,
+      kind: "user",
+      title: "用户输入",
+      body: "继续处理",
+      created_at: { value: 1 },
+    };
+
+    expect(timelineRowClassName(item.kind)).toBe("timeline-row timeline-row-user");
+    expect(timelineItemCopyText(item)).toBe("继续处理");
+  });
+
+  it("refreshes timeline only for matching realtime updates", () => {
+    const session = sessionItem(codexAppSessionKey, "codex_app");
+
+    expect(
+      shouldRefreshTimelineForUpdate(
+        {
+          runtime_source: "codex_app",
+          session_key: codexAppSessionKey,
+          changed_area: "both",
+          updated_at: { value: 10 },
+        },
+        session,
+      ),
+    ).toBe(true);
+    expect(
+      shouldRefreshTimelineForUpdate(
+        {
+          runtime_source: "codex_cli",
+          session_key: codexAppSessionKey,
+          changed_area: "both",
+          updated_at: { value: 10 },
+        },
+        session,
+      ),
+    ).toBe(false);
+    expect(
+      shouldRefreshTimelineForUpdate(
+        {
+          runtime_source: "codex_app",
+          session_key: codexAppSessionKey,
+          changed_area: "session",
+          updated_at: { value: 10 },
+        },
+        session,
+      ),
+    ).toBe(false);
   });
 
   it("only jumps on row click when jump action exists", () => {

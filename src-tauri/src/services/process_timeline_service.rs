@@ -118,17 +118,21 @@ fn matches_search(item: &ProcessTimelineItem, search: Option<&str>) -> bool {
     let Some(search) = search else {
         return true;
     };
-    let title = item.title.to_lowercase();
     let body = item.body.to_lowercase();
 
-    title.contains(search) || body.contains(search)
+    body.contains(search)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ProcessTimelineService, TimelineQuery};
     use crate::adapters::mock_agent::MockAgentRuntime;
-    use crate::ports::process_timeline_port::ProcessTimelineEventKind;
+    use crate::adapters::timeline::InMemoryProcessTimelineCache;
+    use crate::domain::agent_session::{AgentKind, ConversationId, ProjectId, SessionKey};
+    use crate::domain::usage::UnixMillis;
+    use crate::ports::process_timeline_port::{
+        ProcessTimelineEventKind, ProcessTimelineItem, ProcessTimelineWriterPort,
+    };
 
     #[test]
     fn query_paginates_timeline() {
@@ -177,5 +181,38 @@ mod tests {
         assert_eq!(page.total, 1);
         assert_eq!(page.filter_count, 2);
         assert_eq!(page.items[0].kind, ProcessTimelineEventKind::Approval);
+    }
+
+    #[test]
+    fn query_search_matches_body_only() {
+        let key = SessionKey::new(
+            AgentKind::CodexCli,
+            ProjectId::new("project-a"),
+            ConversationId::new("conversation-a"),
+        );
+        let mut cache = InMemoryProcessTimelineCache::with_limits(10, 10);
+        cache
+            .record_timeline_item(ProcessTimelineItem {
+                item_id: "item-1".to_string(),
+                session_key: key.clone(),
+                kind: ProcessTimelineEventKind::Activity,
+                title: "隐藏标题包含等待".to_string(),
+                body: "cargo test".to_string(),
+                created_at: UnixMillis::new(1),
+            })
+            .expect("timeline item should record");
+        let service = ProcessTimelineService::new(&cache);
+
+        let page = service
+            .query_timeline(TimelineQuery {
+                session_key: key,
+                page: 0,
+                page_size: 20,
+                search: Some("等待".to_string()),
+                kind: None,
+            })
+            .expect("timeline should load");
+
+        assert_eq!(page.total, 0);
     }
 }

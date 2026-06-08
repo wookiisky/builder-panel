@@ -194,15 +194,17 @@
 
 ## 决策 13
 
-决策：阶段 6 的 process timeline 只使用进程内内存缓存，不写入文件或数据库，也不从 transcript 或 JSONL 反向读取。
+决策：阶段 6 的 process timeline 只使用进程内内存缓存，不写入文件或数据库，也不从 transcript 或 JSONL 反向恢复历史。
 
 原因：timeline 是托管事件流的观察入口，不应把历史文件解析伪装成实时托管能力；进程内缓存能满足当前查询、搜索、筛选和释放需求。
 
-代码影响：`src-tauri/src/adapters/timeline/mod.rs` 保存内存缓存、去重、淘汰和大文本释放逻辑；Codex CLI hook runtime 在写 session state 的同时写 timeline 缓存。
+约束：已知 Codex CLI 或 Codex APP session 的 rollout 新增追加行属于实时托管事件来源，可以在 adapter 边界清洗后写入 timeline；未知或历史 rollout 不得用于恢复 timeline。
 
-测试影响：Rust 测试覆盖去重、单 session 上限、全局上限、优先级淘汰、大文本释放和 Codex CLI hook 接收。
+代码影响：`src-tauri/src/adapters/timeline/mod.rs` 保存内存缓存、去重、淘汰和大文本释放逻辑；Codex CLI hook runtime 在写 session state 的同时写 timeline 缓存；Codex rollout tailer 只处理已知 session 的新增追加行。
 
-排障影响：若 timeline 缺失，应先检查托管 hook 事件是否到达 runtime，不应通过读取 transcript 或 JSONL 补数据。
+测试影响：Rust 测试覆盖去重、单 session 上限、全局上限、优先级淘汰、大文本释放、Codex CLI hook 接收和 rollout tailer 只读取追加行。
+
+排障影响：若 timeline 缺失，应先检查托管 hook、app-server 或已知 rollout 追加行是否到达 runtime，不应通过读取未知 transcript 或历史 JSONL 补数据。
 
 状态：生效。
 
@@ -306,14 +308,16 @@
 
 ## 决策 21
 
-决策：Codex CLI 和未接入 agent session 只来自当前 Builder Panel 进程启动后的实时事件；Codex APP 可通过 app-server thread 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；Builder Panel 不持久化 session。
+决策：Codex CLI 和未接入 agent session 只来自当前 Builder Panel 进程启动后的实时事件；Codex APP 可通过 app-server thread 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；已知 Codex CLI 和 Codex APP session 可 tail rollout 新增追加行展示实时输出；Builder Panel 不持久化 session。
 
 原因：用户打开面板时需要一个干净的当前观察窗口，不能把普通历史记录误当成本次 APP 状态；但 Codex APP app-server 和 rollout 已提供 thread 级项目与最新输出事实，读取这些事实可以修正待识别项目和输出摘要缺失，同时不恢复历史 timeline。
 
-代码影响：`src-tauri/src/tauri_api/commands.rs` 读取 Codex APP session 时可同步 app-server thread 元数据和 Codex rollout 历史；`src-tauri/src/adapters/codex_app/mod.rs` 编码 `thread/loaded/list` 和 `thread/list`，并在实时事件首次到达时初始化 Codex APP session 交互能力；无可信 cwd 的 app-server 事件会先进入待识别项目，后续按 thread ID 迁移到真实 cwd session；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 rollout 历史；`src-tauri/src/adapters/timeline/mod.rs` 支持 session key 迁移。
+约束：rollout tailer 只接收当前 runtime 已知 session 的 path，从新增目标当前 EOF 后开始读取，不从任意历史 rollout 创建 session 或恢复 timeline。
 
-测试影响：Rust Codex APP 测试覆盖首个实时审批或回复事件初始化可操作 session、无可信 cwd 不生成 jump、thread 元数据迁移、rollout 输出清洗和多 turn 输出不串联；前端测试覆盖初始空列表后 Codex APP session 出现时自动选中，以及无 jump 行点击无反应。
+代码影响：`src-tauri/src/tauri_api/commands.rs` 读取 Codex APP session 时可同步 app-server thread 元数据和 Codex rollout 历史，并启动 Codex rollout watcher；`src-tauri/src/adapters/codex_app/mod.rs` 编码 `thread/loaded/list` 和 `thread/list`，并在实时事件首次到达时初始化 Codex APP session 交互能力；无可信 cwd 的 app-server 事件会先进入待识别项目，后续按 thread ID 迁移到真实 cwd session；`src-tauri/src/adapters/codex_cli_hook/mod.rs` 记录 Codex CLI 已知 rollout path；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 rollout 历史和已知 session 追加行；`src-tauri/src/adapters/timeline/mod.rs` 支持 session key 迁移。
 
-排障影响：若 Codex APP session 显示待识别项目，先检查 app-server thread 元数据和 rollout 是否能提供可信 cwd；若其它 agent 旧任务未显示，先确认该任务在 APP 打开后是否继续发出实时事件。
+测试影响：Rust Codex APP 测试覆盖首个实时审批或回复事件初始化可操作 session、无可信 cwd 不生成 jump、thread 元数据迁移、rollout 输出清洗、多 turn 输出不串联和 rollout tailer 只读取追加行；前端测试覆盖初始空列表后 Codex APP session 出现时自动选中、无 jump 行点击无反应和实时更新只刷新匹配 timeline。
+
+排障影响：若 Codex APP session 显示待识别项目，先检查 app-server thread 元数据和 rollout 是否能提供可信 cwd；若实时输出没有更新，先检查 session 是否已有合法 rollout path、watcher 是否能读取新增追加行、前端是否收到 `session_updated` 事件；若其它 agent 旧任务未显示，先确认该任务在 APP 打开后是否继续发出实时事件。
 
 状态：生效。

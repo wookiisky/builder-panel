@@ -34,6 +34,7 @@ export type ApprovalDecision = "allow" | "allow_and_remember" | "deny";
 /// 时间线事件类型。
 export type TimelineEventKind =
   | "activity"
+  | "user"
   | "tool"
   | "approval"
   | "reply"

@@ -16,9 +16,13 @@ Builder Panel APP 读取 Codex CLI session 时会启动 Mac Unix Domain Socket b
 
 Builder Panel APP 打开期间会定时刷新 Codex CLI session，承接后续真实 hook 事件。
 
-Codex CLI session 只来自当前 APP 进程启动后送达 bridge 的实时 hook 事件。
+Codex CLI session 只由当前 APP 进程启动后送达 bridge 的实时 hook 事件创建。
 
-Codex CLI 不从 transcript、JSONL 或其它历史记录恢复 session。
+Codex CLI 不从 transcript、JSONL 或其它历史记录恢复历史 session 或历史 timeline。
+
+Codex CLI hook payload 携带 transcript path 时，runtime 可把该 path 作为已知 session 的 rollout tail 目标。
+
+已知 Codex CLI session 的 rollout tail 只读取新增追加行，不回放已有历史行。
 
 APP 启动后仍在运行的 Codex CLI 任务如果继续触发 hook 事件，可以进入当前 session 列表。
 
@@ -30,19 +34,21 @@ Codex CLI bridge server 对每个连接启动独立处理线程。
 
 长等待的 `PermissionRequest` 不阻塞 listener 接收后续 hook 请求。
 
-Codex CLI `SessionStart` 会生成运行中的 Codex CLI session。
+Codex CLI `SessionStart` 会生成运行中的 Codex CLI session，但不写启动包装摘要。
 
-Codex CLI `UserPromptSubmit` 会更新 session 活动摘要。
+Codex CLI `UserPromptSubmit` 会以用户原始输入更新 session 摘要和 timeline。
 
-Codex CLI `PreToolUse` 和 `PostToolUse` 会更新工具活动摘要。
+Codex CLI `PreToolUse` 只有提取到工具 preview 时才更新活动摘要。
 
-Codex CLI `PermissionRequest` 会生成 pending approval。
+Codex CLI `PostToolUse` 会写入唯一状态文案 `正在思考`。
+
+Codex CLI `PermissionRequest` 会生成 pending approval；有工具 preview 时使用 preview 作为请求摘要，没有 preview 时不写包装正文。
 
 用户在 panel 中允许或拒绝 pending approval 后，bridge 返回 Codex stdout directive。
 
 Codex CLI `PermissionRequest` 等待超时时，runtime 会移除 pending approval 并写入失败 session 状态。
 
-Codex CLI `Stop` 会生成 turn completed 并清理 pending interaction。
+Codex CLI `Stop` 会生成 turn completed 并清理 pending interaction；只有携带 assistant 原文时才更新摘要。
 
 Codex CLI hook 事件会写入进程内过程事件 timeline 缓存。
 

@@ -141,7 +141,7 @@ describe("mockPanelStore", () => {
     expect(selected.timeline.page).toBeNull();
   });
 
-  it("复制筛选结果只包含当前页标题和正文", () => {
+  it("复制筛选结果只包含当前页正文", () => {
     const page: TimelinePage = {
       items: [
         {
@@ -168,9 +168,7 @@ describe("mockPanelStore", () => {
       filter_count: 1,
     };
 
-    expect(timelinePageToCopyText(page)).toBe(
-      "读取任务\n读取用户输入\n\n执行工具\n运行测试",
-    );
+    expect(timelinePageToCopyText(page)).toBe("读取用户输入\n\n运行测试");
   });
 
   it("虚拟列表只计算可见范围", () => {

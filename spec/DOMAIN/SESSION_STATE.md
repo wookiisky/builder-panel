@@ -46,6 +46,8 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 `SessionStarted` 创建或更新 session，并保留已有 pending interaction。
 
+`SessionStarted` 只有携带摘要时才更新 session 摘要；空摘要不得清空已有原始摘要。
+
 没有 pending interaction 时，`SessionStarted` 将旧的完成、失败或失联状态恢复为运行中。
 
 非 `SessionStarted` 的实时事件可以创建占位 session，用于纳入 APP 启动后仍继续运行并发出事件的任务。
@@ -53,6 +55,8 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 占位 session 的 agent 能力和跳回目标由对应 adapter 在事件进入 reducer 前或同批事件中补齐。
 
 `ActivityUpdated` 更新摘要；已有 pending interaction 时不覆盖等待状态。
+
+`UserMessageUpdated` 使用用户输入原文更新摘要；已有 pending interaction 时不覆盖等待状态。
 
 `ApprovalRequested` 设置审批等待状态，并替换旧 pending。
 
@@ -63,6 +67,8 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 `InteractionCompleted` 清理 pending interaction，并保持或恢复运行状态，不表示 turn 完成。
 
 `TurnCompleted` 设置完成状态，并清理 pending interaction。
+
+`TurnCompleted` 只有携带摘要时才更新 session 摘要；空摘要不得生成完成兜底文案。
 
 `Failed` 设置失败状态，记录错误，并清理 pending interaction。
 

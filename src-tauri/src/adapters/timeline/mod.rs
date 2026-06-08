@@ -275,13 +275,15 @@ fn oldest_index(items: &[CachedTimelineItem]) -> Option<usize> {
 /// 将归一领域事件转换成过程时间线条目。
 pub fn timeline_item_from_agent_event(event: &AgentEvent) -> Option<ProcessTimelineItem> {
     match event {
-        AgentEvent::SessionStarted(event) => Some(process_item(
-            &event.session_key,
-            ProcessTimelineEventKind::System,
-            "会话开始",
-            event.summary.as_deref().unwrap_or("agent 会话已开始"),
-            event.updated_at,
-        )),
+        AgentEvent::SessionStarted(event) => event.summary.as_deref().map(|summary| {
+            process_item(
+                &event.session_key,
+                ProcessTimelineEventKind::System,
+                "会话",
+                summary,
+                event.updated_at,
+            )
+        }),
         AgentEvent::ActivityUpdated(event) => Some(process_item(
             &event.session_key,
             ProcessTimelineEventKind::Activity,
@@ -289,13 +291,26 @@ pub fn timeline_item_from_agent_event(event: &AgentEvent) -> Option<ProcessTimel
             &event.summary,
             event.updated_at,
         )),
-        AgentEvent::ApprovalRequested(event) => Some(process_item(
+        AgentEvent::UserMessageUpdated(event) => Some(process_item(
             &event.session_key,
-            ProcessTimelineEventKind::Approval,
-            "等待审批",
-            &event.interaction.request_summary,
+            ProcessTimelineEventKind::User,
+            "用户输入",
+            &event.summary,
             event.updated_at,
         )),
+        AgentEvent::ApprovalRequested(event) => {
+            let summary = event.interaction.request_summary.trim();
+            if summary.is_empty() {
+                return None;
+            }
+            Some(process_item(
+                &event.session_key,
+                ProcessTimelineEventKind::Approval,
+                "等待审批",
+                summary,
+                event.updated_at,
+            ))
+        }
         AgentEvent::AnswerRequested(event) => Some(process_item(
             &event.session_key,
             ProcessTimelineEventKind::Reply,
@@ -310,13 +325,15 @@ pub fn timeline_item_from_agent_event(event: &AgentEvent) -> Option<ProcessTimel
             event.summary.as_deref().unwrap_or("用户交互已回写"),
             event.updated_at,
         )),
-        AgentEvent::TurnCompleted(event) => Some(process_item(
-            &event.session_key,
-            ProcessTimelineEventKind::System,
-            "Turn 完成",
-            event.summary.as_deref().unwrap_or("agent turn 已完成"),
-            event.updated_at,
-        )),
+        AgentEvent::TurnCompleted(event) => event.summary.as_deref().map(|summary| {
+            process_item(
+                &event.session_key,
+                ProcessTimelineEventKind::System,
+                "Turn 完成",
+                summary,
+                event.updated_at,
+            )
+        }),
         AgentEvent::Failed(event) => Some(process_item(
             &event.session_key,
             ProcessTimelineEventKind::System,
@@ -398,10 +415,15 @@ pub fn timeline_unavailable(message: &str) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        InMemoryProcessTimelineCache, TimelineRetentionPriority, LARGE_TEXT_RELEASE_THRESHOLD_CHARS,
+        timeline_item_from_agent_event, InMemoryProcessTimelineCache, TimelineRetentionPriority,
+        LARGE_TEXT_RELEASE_THRESHOLD_CHARS,
+    };
+    use crate::domain::agent_event::{
+        AgentEvent, SessionStartedEvent, TurnCompletedEvent, UserMessageUpdatedEvent,
     };
     use crate::domain::agent_session::{AgentKind, ConversationId, ProjectId, SessionKey};
     use crate::domain::usage::UnixMillis;
+    use crate::domain::usage::UsageSnapshot;
     use crate::ports::process_timeline_port::{
         ProcessTimelineEventKind, ProcessTimelineItem, ProcessTimelineReaderPort,
         ProcessTimelineReleasePort, ProcessTimelineWriterPort,
@@ -537,6 +559,46 @@ mod tests {
 
         assert_eq!(released, 1);
         assert!(after < before);
+    }
+
+    #[test]
+    fn user_message_maps_to_user_timeline_kind() {
+        let key = session_key("project-a", "conversation-a");
+        let item = timeline_item_from_agent_event(&AgentEvent::UserMessageUpdated(
+            UserMessageUpdatedEvent {
+                session_key: key.clone(),
+                summary: "继续处理".to_string(),
+                updated_at: UnixMillis::new(1),
+            },
+        ))
+        .expect("user message should map to timeline");
+
+        assert_eq!(item.session_key, key);
+        assert_eq!(item.kind, ProcessTimelineEventKind::User);
+        assert_eq!(item.body, "继续处理");
+    }
+
+    #[test]
+    fn empty_session_or_turn_summary_does_not_create_timeline_item() {
+        let key = session_key("project-a", "conversation-a");
+        let started = AgentEvent::SessionStarted(SessionStartedEvent {
+            session_key: key.clone(),
+            project_label: "project-a".to_string(),
+            conversation_label: "conversation-a".to_string(),
+            title: None,
+            summary: None,
+            capabilities: crate::domain::agent_session::SessionCapabilities::none(),
+            usage: UsageSnapshot::unavailable(),
+            updated_at: UnixMillis::new(1),
+        });
+        let completed = AgentEvent::TurnCompleted(TurnCompletedEvent {
+            session_key: key,
+            summary: None,
+            updated_at: UnixMillis::new(2),
+        });
+
+        assert!(timeline_item_from_agent_event(&started).is_none());
+        assert!(timeline_item_from_agent_event(&completed).is_none());
     }
 
     #[test]

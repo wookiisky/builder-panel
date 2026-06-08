@@ -8,3 +8,4 @@ pub mod managed_process_port;
 pub mod notification_port;
 pub mod process_timeline_port;
 pub mod reply_sender_port;
+pub mod session_update_port;

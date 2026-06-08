@@ -58,7 +58,9 @@ impl SessionState {
                 session.project_label = event.project_label;
                 session.conversation_label = event.conversation_label;
                 session.title = event.title;
-                session.summary = event.summary;
+                if let Some(summary) = event.summary {
+                    session.summary = Some(summary);
+                }
                 session.status = preserve_waiting_status(pending_interaction.as_ref());
                 session.capabilities = event.capabilities;
                 session.usage = event.usage;
@@ -67,6 +69,14 @@ impl SessionState {
                 self.sessions.insert(session.session_key.clone(), session);
             }
             AgentEvent::ActivityUpdated(event) => {
+                let session = self.ensure_session(event.session_key, event.updated_at);
+                session.summary = Some(event.summary);
+                if session.pending_interaction.is_none() {
+                    session.status = SessionStatus::Running;
+                }
+                session.updated_at = event.updated_at;
+            }
+            AgentEvent::UserMessageUpdated(event) => {
                 let session = self.ensure_session(event.session_key, event.updated_at);
                 session.summary = Some(event.summary);
                 if session.pending_interaction.is_none() {
@@ -181,7 +191,7 @@ mod tests {
     use crate::domain::agent_event::{
         ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, ApprovalRequestedEvent,
         CapabilitiesUpdatedEvent, DetachedEvent, FailedEvent, InteractionCompletedEvent,
-        SessionStartedEvent, TurnCompletedEvent, UsageUpdatedEvent,
+        SessionStartedEvent, TurnCompletedEvent, UsageUpdatedEvent, UserMessageUpdatedEvent,
     };
     use crate::domain::agent_interaction::{
         AnswerInteraction, ApprovalInteraction, ChoiceInteraction, ClipboardFallbackTarget,
@@ -261,6 +271,43 @@ mod tests {
             session.pending_interaction,
             Some(crate::domain::agent_interaction::AgentInteraction::Approval(_))
         ));
+    }
+
+    #[test]
+    fn session_started_without_summary_preserves_existing_summary() {
+        let key = session_key("project-a", "conversation-a");
+        let state = SessionState::empty()
+            .apply_event(started_event(key.clone(), 1))
+            .apply_event(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+                session_key: key.clone(),
+                summary: "原始输出".to_string(),
+                updated_at: UnixMillis::new(2),
+            }))
+            .apply_event(started_event(key.clone(), 3));
+        let session = state.sessions.get(&key).expect("session should exist");
+
+        assert_eq!(session.summary.as_deref(), Some("原始输出"));
+    }
+
+    #[test]
+    fn user_message_update_uses_raw_text_and_running_status() {
+        let key = session_key("project-a", "conversation-a");
+        let state = SessionState::empty()
+            .apply_event(started_event(key.clone(), 1))
+            .apply_event(AgentEvent::TurnCompleted(TurnCompletedEvent {
+                session_key: key.clone(),
+                summary: Some("上一轮输出".to_string()),
+                updated_at: UnixMillis::new(2),
+            }))
+            .apply_event(AgentEvent::UserMessageUpdated(UserMessageUpdatedEvent {
+                session_key: key.clone(),
+                summary: "继续处理".to_string(),
+                updated_at: UnixMillis::new(3),
+            }));
+        let session = state.sessions.get(&key).expect("session should exist");
+
+        assert_eq!(session.summary.as_deref(), Some("继续处理"));
+        assert_eq!(session.status, SessionStatus::Running);
     }
 
     #[test]
@@ -519,7 +566,7 @@ mod tests {
             conversation_label: session_key.conversation_id.value.clone(),
             session_key,
             title: None,
-            summary: Some("开始".to_string()),
+            summary: None,
             capabilities: SessionCapabilities::none(),
             usage: UsageSnapshot::unavailable(),
             updated_at: UnixMillis::new(updated_at),

@@ -23,7 +23,7 @@ use crate::adapters::timeline::InMemoryProcessTimelineCache;
 use crate::domain::agent_event::{
     ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, ApprovalRequestedEvent, DetachedEvent,
     FailedEvent, InteractionCompletedEvent, JumpTargetUpdatedEvent, SessionStartedEvent,
-    TurnCompletedEvent, UsageUpdatedEvent,
+    TurnCompletedEvent, UsageUpdatedEvent, UserMessageUpdatedEvent,
 };
 use crate::domain::agent_interaction::{
     AgentInteraction, AnswerInteraction, ApprovalInteraction, ChoiceInteraction,
@@ -48,8 +48,12 @@ use crate::ports::agent_adapter_port::ChoiceSubmission;
 use crate::ports::process_timeline_port::{
     ProcessTimelineItem, ProcessTimelineReaderPort, ProcessTimelineReleasePort,
 };
+use crate::ports::session_update_port::{
+    NoopSessionUpdateSink, SessionRuntimeSource, SessionUpdateArea, SessionUpdateNotification,
+    SessionUpdateSinkPort,
+};
 
-pub use self::codex_rollout::CodexRolloutDiscovery;
+pub use self::codex_rollout::{CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget};
 
 use self::codex_rollout::CodexRolloutSnapshot;
 
@@ -155,12 +159,10 @@ impl CodexAppAdapter {
 
         match method.as_str() {
             "thread/started" => Ok(Some(started_from_thread(params, cwd, updated_at)?)),
-            "turn/started" => Ok(Some(turn_activity(
-                params,
-                cwd,
-                "Codex APP turn 已开始",
-                updated_at,
-            )?)),
+            "turn/started" => {
+                let _ = required_string(params.get("threadId"), "threadId")?;
+                Ok(None)
+            }
             "item/agentMessage/delta" => Ok(Some(agent_message_delta(params, cwd, updated_at)?)),
             "thread/status/changed" => Ok(status_changed(params, cwd, updated_at)?),
             "thread/tokenUsage/updated" => Ok(Some(usage_updated(params, cwd, updated_at)?)),
@@ -192,18 +194,27 @@ impl CodexAppAdapter {
                 ]);
             }
             BridgeHookEventName::UserPromptSubmit => {
-                AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+                let Some(prompt) = prompt_summary(payload) else {
+                    return Ok(Vec::new());
+                };
+                AgentEvent::UserMessageUpdated(UserMessageUpdatedEvent {
                     session_key,
-                    summary: prompt_summary(payload),
+                    summary: prompt,
                     updated_at,
                 })
             }
-            BridgeHookEventName::PreToolUse => AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
-                session_key,
-                summary: hook_tool_summary("Codex APP 准备执行工具", payload),
-                updated_at,
-            }),
+            BridgeHookEventName::PreToolUse => {
+                let Some(summary) = hook_tool_preview(payload) else {
+                    return Ok(Vec::new());
+                };
+                AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+                    session_key,
+                    summary,
+                    updated_at,
+                })
+            }
             BridgeHookEventName::PermissionRequest => {
+                let request_summary = hook_tool_preview(payload).unwrap_or_default();
                 return Ok(vec![
                     AgentEvent::SessionStarted(started_from_hook(
                         payload,
@@ -222,7 +233,7 @@ impl CodexAppAdapter {
                                 request_id: request_id.to_string(),
                             }),
                             status: InteractionStatus::Pending,
-                            request_summary: hook_tool_summary("Codex APP 请求权限", payload),
+                            request_summary,
                         },
                         updated_at,
                     }),
@@ -230,7 +241,7 @@ impl CodexAppAdapter {
             }
             BridgeHookEventName::PostToolUse => AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
                 session_key,
-                summary: hook_tool_summary("Codex APP 工具执行完成", payload),
+                summary: "正在思考".to_string(),
                 updated_at,
             }),
             BridgeHookEventName::Stop => AgentEvent::TurnCompleted(TurnCompletedEvent {
@@ -238,7 +249,7 @@ impl CodexAppAdapter {
                 summary: payload
                     .last_assistant_message
                     .as_ref()
-                    .map(|message| format!("Codex APP turn 完成：{}", truncate(message, 120))),
+                    .map(|message| truncate(message, 120)),
                 updated_at,
             }),
             BridgeHookEventName::Notification | BridgeHookEventName::SessionEnd => {
@@ -478,17 +489,26 @@ pub struct CodexAppRuntime {
     thread_cwds: BTreeMap<String, String>,
     /// Codex APP thread 元数据缓存。
     thread_metadata: BTreeMap<String, CodexAppThreadMetadata>,
+    /// Codex APP thread 到 rollout path 的映射。
+    thread_rollout_paths: BTreeMap<String, PathBuf>,
     /// 当前 turn 已累积的 Agent 输出。
     current_turn_agent_outputs: BTreeMap<String, String>,
     /// 已发起但尚未完成写入确认的 follow-up turn。
-    pending_followup_turns: BTreeSet<SessionKey>,
+    pending_followup_turns: BTreeMap<SessionKey, String>,
     /// 托管事件时间线缓存。
     timeline_cache: InMemoryProcessTimelineCache,
+    /// 清洗后 session 更新发布端口。
+    update_sink: Arc<dyn SessionUpdateSinkPort>,
 }
 
 impl CodexAppRuntime {
     /// 创建空 Codex APP runtime。
     pub fn empty() -> Self {
+        Self::with_update_sink(Arc::new(NoopSessionUpdateSink))
+    }
+
+    /// 使用指定更新端口创建空 Codex APP runtime。
+    pub fn with_update_sink(update_sink: Arc<dyn SessionUpdateSinkPort>) -> Self {
         Self {
             session_state: SessionState::empty(),
             pending_hook_approvals: BTreeMap::new(),
@@ -497,9 +517,11 @@ impl CodexAppRuntime {
             pending_rpc_submissions: BTreeSet::new(),
             thread_cwds: BTreeMap::new(),
             thread_metadata: BTreeMap::new(),
+            thread_rollout_paths: BTreeMap::new(),
             current_turn_agent_outputs: BTreeMap::new(),
-            pending_followup_turns: BTreeSet::new(),
+            pending_followup_turns: BTreeMap::new(),
             timeline_cache: InMemoryProcessTimelineCache::new(),
+            update_sink,
         }
     }
 
@@ -519,6 +541,31 @@ impl CodexAppRuntime {
     /// 返回当前 session 状态。
     pub fn session_state(&self) -> &SessionState {
         &self.session_state
+    }
+
+    /// 返回当前已知 rollout tail 目标。
+    pub fn rollout_watch_targets(&self) -> Vec<CodexRolloutWatchTarget> {
+        self.thread_rollout_paths
+            .iter()
+            .filter_map(|metadata| {
+                let (thread_id, path) = metadata;
+                let cwd = self.thread_cwds.get(thread_id)?;
+                let target_key = session_key(cwd, thread_id);
+                if !self.session_state.sessions.contains_key(&target_key) {
+                    return None;
+                }
+
+                Some(CodexRolloutWatchTarget {
+                    session_key: target_key,
+                    path: path.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// 应用 rollout tail 清洗出的实时事件。
+    pub fn apply_rollout_event(&mut self, event: AgentEvent) -> Result<(), AppError> {
+        self.apply_event(event)
     }
 
     /// 返回仍缺真实 cwd 的 Codex APP thread ID。
@@ -692,7 +739,7 @@ impl CodexAppRuntime {
                     return Err(invalid_interaction("审批交互已过期"));
                 }
                 self.pending_hook_approvals.remove(interaction_id);
-                self.complete_interaction(session_key, decision_summary(decision))?;
+                self.complete_interaction(session_key, None)?;
                 Ok(None)
             }
             ReplyTarget::StructuredRpc(_) => {
@@ -775,7 +822,7 @@ impl CodexAppRuntime {
         &mut self,
         session_key: &SessionKey,
         interaction_id: &InteractionId,
-        summary: &str,
+        _summary: &str,
     ) -> Result<(), AppError> {
         self.pending_rpc_submissions.remove(interaction_id);
         let interaction = self
@@ -788,7 +835,7 @@ impl CodexAppRuntime {
 
         self.pending_rpc_approvals.remove(interaction_id);
         self.pending_rpc_answers.remove(interaction_id);
-        self.complete_interaction(session_key, summary)
+        self.complete_interaction(session_key, None)
     }
 
     /// 释放未成功写入的 RPC 提交占位。
@@ -817,7 +864,7 @@ impl CodexAppRuntime {
                 "当前会话仍有待处理交互，不能创建 follow-up turn",
             ));
         }
-        if self.pending_followup_turns.contains(session_key) {
+        if self.pending_followup_turns.contains_key(session_key) {
             return Err(invalid_interaction("当前会话已有 follow-up turn 正在提交"));
         }
         if !matches!(
@@ -829,7 +876,8 @@ impl CodexAppRuntime {
             ));
         }
 
-        self.pending_followup_turns.insert(session_key.clone());
+        self.pending_followup_turns
+            .insert(session_key.clone(), prompt.to_string());
         Ok(CodexAppRpcWrite::request(
             CodexAppAdapter::turn_start_request(0, &session_key.conversation_id.value, prompt),
         ))
@@ -837,12 +885,16 @@ impl CodexAppRuntime {
 
     /// 标记 follow-up turn 已成功写入 app-server。
     pub fn complete_followup_turn(&mut self, session_key: &SessionKey) -> Result<(), AppError> {
-        self.pending_followup_turns.remove(session_key);
+        let prompt = self.pending_followup_turns.remove(session_key);
         self.current_turn_agent_outputs
             .remove(&session_key.conversation_id.value);
-        self.apply_event(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+        let Some(prompt) = prompt else {
+            return Ok(());
+        };
+
+        self.apply_event(AgentEvent::UserMessageUpdated(UserMessageUpdatedEvent {
             session_key: session_key.clone(),
-            summary: "Codex APP follow-up 已提交".to_string(),
+            summary: truncate(&prompt, 120),
             updated_at: unix_now(),
         }))
     }
@@ -871,14 +923,22 @@ impl CodexAppRuntime {
             _ => None,
         };
         self.timeline_cache.record_agent_event(&event)?;
+        let notification = session_update_notification(&event);
         self.session_state = self.session_state.apply_event(event);
+        if let Some(notification) = notification {
+            self.update_sink.publish_session_update(notification);
+        }
         if let Some((session_key, thread_id, updated_at)) = codex_app_started {
             if is_unresolved_session_key(&session_key) {
                 return Ok(());
             }
             let jump_event = jump_target_event(session_key, &thread_id, updated_at);
             self.timeline_cache.record_agent_event(&jump_event)?;
+            let notification = session_update_notification(&jump_event);
             self.session_state = self.session_state.apply_event(jump_event);
+            if let Some(notification) = notification {
+                self.update_sink.publish_session_update(notification);
+            }
         }
         Ok(())
     }
@@ -953,7 +1013,7 @@ impl CodexAppRuntime {
             .or_default();
         output.push_str(&delta);
         truncate_to_recent_chars(output, MAX_CURRENT_TURN_OUTPUT_CHARS);
-        let summary = format!("Codex APP 回复：{}", truncate(output, 240));
+        let summary = truncate(output, 240);
         self.apply_event(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
             session_key: session_key(cwd, &thread_id),
             summary,
@@ -982,19 +1042,17 @@ impl CodexAppRuntime {
                     .get(&event.session_key.conversation_id.value)
                     .filter(|value| !value.trim().is_empty())
                 {
-                    event.summary = Some(format!("Codex APP 回复：{}", truncate(output, 240)));
+                    event.summary = Some(truncate(output, 240));
                 }
                 AgentEvent::TurnCompleted(event)
             }
-            AgentEvent::ActivityUpdated(mut event)
-                if event.summary == "Codex APP thread 运行中" =>
-            {
+            AgentEvent::ActivityUpdated(mut event) => {
                 if let Some(output) = self
                     .current_turn_agent_outputs
                     .get(&event.session_key.conversation_id.value)
                     .filter(|value| !value.trim().is_empty())
                 {
-                    event.summary = format!("Codex APP 回复：{}", truncate(output, 240));
+                    event.summary = truncate(output, 240);
                 }
                 AgentEvent::ActivityUpdated(event)
             }
@@ -1013,15 +1071,14 @@ impl CodexAppRuntime {
         }
 
         let thread_id = metadata.id.clone();
+        if let Some(path) = metadata.path.clone() {
+            self.thread_rollout_paths.insert(thread_id.clone(), path);
+        }
         let Some(cwd) = metadata.cwd.clone() else {
             return Ok(());
         };
         let target_key = session_key(&cwd, &thread_id);
-        let summary = metadata
-            .preview
-            .clone()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "Codex APP thread 已发现".to_string());
+        let summary = metadata.preview.clone().filter(|value| !value.is_empty());
         self.thread_cwds.insert(thread_id.clone(), cwd.clone());
         self.thread_metadata
             .insert(thread_id.clone(), metadata.clone());
@@ -1034,7 +1091,7 @@ impl CodexAppRuntime {
                 session.title = metadata.name.clone();
             }
             if session.summary.is_none() {
-                session.summary = Some(summary.clone());
+                session.summary = summary.clone();
             }
             if session.capabilities == SessionCapabilities::none()
                 || is_unresolved_session_key(&session.session_key)
@@ -1054,7 +1111,7 @@ impl CodexAppRuntime {
             project_label: project_label(&cwd),
             conversation_label: metadata.id.clone(),
             title: metadata.name.clone(),
-            summary: Some(summary.clone()),
+            summary: summary.clone(),
             capabilities: codex_app_capabilities(),
             usage: UsageSnapshot::unavailable(),
             updated_at,
@@ -1068,13 +1125,13 @@ impl CodexAppRuntime {
         &mut self,
         target_key: &SessionKey,
         status_type: &str,
-        summary: String,
+        summary: Option<String>,
         updated_at: UnixMillis,
     ) -> Result<(), AppError> {
         match status_type {
             "idle" => self.apply_event_direct(AgentEvent::TurnCompleted(TurnCompletedEvent {
                 session_key: target_key.clone(),
-                summary: Some(summary),
+                summary,
                 updated_at,
             })),
             "systemError" => self.apply_event_direct(AgentEvent::Failed(FailedEvent {
@@ -1098,6 +1155,8 @@ impl CodexAppRuntime {
     ) -> Result<(), AppError> {
         self.thread_cwds
             .insert(snapshot.session_id.clone(), snapshot.cwd.clone());
+        self.thread_rollout_paths
+            .insert(snapshot.session_id.clone(), snapshot.path.clone());
         self.migrate_codex_app_thread_to_cwd(&snapshot.session_id, &snapshot.cwd)?;
         let target_key = session_key(&snapshot.cwd, &snapshot.session_id);
         let Some(session) = self.session_state.sessions.get_mut(&target_key) else {
@@ -1133,12 +1192,12 @@ impl CodexAppRuntime {
     fn complete_interaction(
         &mut self,
         session_key: &SessionKey,
-        summary: &str,
+        summary: Option<String>,
     ) -> Result<(), AppError> {
         self.apply_event(AgentEvent::InteractionCompleted(
             InteractionCompletedEvent {
                 session_key: session_key.clone(),
-                summary: Some(summary.to_string()),
+                summary,
                 updated_at: unix_now(),
             },
         ))
@@ -1354,8 +1413,9 @@ impl CodexAppRuntime {
                 pending.session_key = target_key.clone();
             }
         }
-        if self.pending_followup_turns.remove(stale_key) {
-            self.pending_followup_turns.insert(target_key.clone());
+        if let Some(prompt) = self.pending_followup_turns.remove(stale_key) {
+            self.pending_followup_turns
+                .insert(target_key.clone(), prompt);
         }
         self.timeline_cache
             .migrate_session_key(stale_key, target_key)?;
@@ -1779,14 +1839,6 @@ fn permissions_approval_response(decision: ApprovalDecision, permissions: Value)
             "permissions": {},
             "scope": "turn"
         }),
-    }
-}
-
-fn decision_summary(decision: ApprovalDecision) -> &'static str {
-    match decision {
-        ApprovalDecision::Allow => "Codex APP 审批已允许",
-        ApprovalDecision::AllowAndRemember => "Codex APP 审批已允许并记住",
-        ApprovalDecision::Deny => "Codex APP 审批已拒绝",
     }
 }
 
@@ -2232,24 +2284,9 @@ fn started_from_thread(
         project_label: project_label(cwd),
         conversation_label: thread_id,
         title,
-        summary: Some("Codex APP thread 已启动".to_string()),
+        summary: None,
         capabilities,
         usage: UsageSnapshot::unavailable(),
-        updated_at,
-    }))
-}
-
-fn turn_activity(
-    params: &Value,
-    cwd: &str,
-    summary: &str,
-    updated_at: UnixMillis,
-) -> Result<AgentEvent, CodexAppAdapterError> {
-    let thread_id = required_string(params.get("threadId"), "threadId")?;
-
-    Ok(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
-        session_key: session_key(cwd, &thread_id),
-        summary: summary.to_string(),
         updated_at,
     }))
 }
@@ -2264,7 +2301,7 @@ fn agent_message_delta(
 
     Ok(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
         session_key: session_key(cwd, &thread_id),
-        summary: truncate(&format!("Codex APP 回复中：{delta}"), 120),
+        summary: truncate(&delta, 120),
         updated_at,
     }))
 }
@@ -2281,14 +2318,10 @@ fn status_changed(
     )?;
     let session_key = session_key(cwd, &thread_id);
     match status_type.as_str() {
-        "active" => Ok(Some(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
-            session_key,
-            summary: "Codex APP thread 运行中".to_string(),
-            updated_at,
-        }))),
+        "active" => Ok(None),
         "idle" => Ok(Some(AgentEvent::TurnCompleted(TurnCompletedEvent {
             session_key,
-            summary: Some("Codex APP thread 空闲".to_string()),
+            summary: None,
             updated_at,
         }))),
         "systemError" => Ok(Some(AgentEvent::Failed(FailedEvent {
@@ -2348,7 +2381,7 @@ fn turn_completed(
 
     Ok(AgentEvent::TurnCompleted(TurnCompletedEvent {
         session_key: session_key(cwd, &thread_id),
-        summary: Some("Codex APP turn 已完成".to_string()),
+        summary: None,
         updated_at,
     }))
 }
@@ -2363,7 +2396,7 @@ fn started_from_hook(
         project_label: project_label(&payload.cwd),
         conversation_label: payload.session_id.clone(),
         title: payload.model.clone(),
-        summary: Some(start_hook_summary(payload)),
+        summary: None,
         capabilities: codex_app_capabilities(),
         usage: UsageSnapshot::unavailable(),
         updated_at,
@@ -2375,7 +2408,7 @@ fn realtime_started_event(session_key: SessionKey, updated_at: UnixMillis) -> Se
         project_label: project_label(&session_key.project_id.value),
         conversation_label: session_key.conversation_id.value.clone(),
         title: None,
-        summary: Some("Codex APP 实时事件已捕捉".to_string()),
+        summary: None,
         capabilities: codex_app_capabilities_for_key(&session_key),
         usage: UsageSnapshot::unavailable(),
         session_key,
@@ -2387,6 +2420,7 @@ fn event_updated_at(event: &AgentEvent) -> UnixMillis {
     match event {
         AgentEvent::SessionStarted(event) => event.updated_at,
         AgentEvent::ActivityUpdated(event) => event.updated_at,
+        AgentEvent::UserMessageUpdated(event) => event.updated_at,
         AgentEvent::ApprovalRequested(event) => event.updated_at,
         AgentEvent::AnswerRequested(event) => event.updated_at,
         AgentEvent::InteractionCompleted(event) => event.updated_at,
@@ -2661,16 +2695,15 @@ fn validated_choice_values(
     Ok(validated)
 }
 
-fn approval_request_summary(method: &str, params: &Value) -> Result<String, CodexAppAdapterError> {
+fn approval_request_summary(_method: &str, params: &Value) -> Result<String, CodexAppAdapterError> {
     let command = optional_string(params.get("command"), "command")?;
     let reason = optional_string(params.get("reason"), "reason")?;
     let item_id = optional_string(params.get("itemId"), "itemId")?;
-    let subject = command
-        .or(reason)
-        .or(item_id)
-        .unwrap_or_else(|| method.to_string());
+    let Some(subject) = command.or(reason).or(item_id) else {
+        return Ok(String::new());
+    };
 
-    Ok(format!("Codex APP 请求审批：{}", truncate(&subject, 120)))
+    Ok(truncate(&subject, 120))
 }
 
 fn jump_target_event(
@@ -2804,6 +2837,18 @@ fn should_apply_rollout_summary(session: &crate::domain::agent_session::AgentSes
     ) || session.summary.is_none()
 }
 
+fn session_update_notification(event: &AgentEvent) -> Option<SessionUpdateNotification> {
+    let session_key = event.session_key().clone();
+    let runtime_source = SessionRuntimeSource::from_agent_kind(&session_key.agent_kind)?;
+
+    Some(SessionUpdateNotification {
+        runtime_source,
+        session_key,
+        changed_area: SessionUpdateArea::Both,
+        updated_at: event_updated_at(event),
+    })
+}
+
 fn truncate(value: &str, max_chars: usize) -> String {
     let mut output = String::new();
     for (index, character) in value.chars().enumerate() {
@@ -2840,35 +2885,20 @@ fn rpc_interaction_id(request_id: &str) -> InteractionId {
     InteractionId::new(format!("codex-app-rpc-{request_id}"))
 }
 
-fn start_hook_summary(payload: &ValidatedHookPayload) -> String {
-    let Some(model) = &payload.model else {
-        return "Codex APP 会话已启动".to_string();
-    };
-
-    format!("Codex APP 会话已启动，模型 {model}")
+fn prompt_summary(payload: &ValidatedHookPayload) -> Option<String> {
+    payload.prompt.as_ref().map(|prompt| truncate(prompt, 120))
 }
 
-fn prompt_summary(payload: &ValidatedHookPayload) -> String {
-    let Some(prompt) = &payload.prompt else {
-        return "用户提交了 Codex APP prompt".to_string();
-    };
-
-    format!("用户提交了 Codex APP prompt：{}", truncate(prompt, 120))
-}
-
-fn hook_tool_summary(prefix: &str, payload: &ValidatedHookPayload) -> String {
-    let tool_name = payload.tool_name.as_deref().unwrap_or("未知工具");
-    let Some(tool_input) = &payload.tool_input else {
-        return format!("{prefix}：{tool_name}");
-    };
+fn hook_tool_preview(payload: &ValidatedHookPayload) -> Option<String> {
+    let tool_input = payload.tool_input.as_ref()?;
     if let Some(command) = tool_input.get("command").and_then(Value::as_str) {
-        return format!("{prefix}：{tool_name} {}", truncate(command, 120));
+        return Some(truncate(command, 120));
     }
     if let Some(description) = tool_input.get("description").and_then(Value::as_str) {
-        return format!("{prefix}：{tool_name} {}", truncate(description, 120));
+        return Some(truncate(description, 120));
     }
 
-    format!("{prefix}：{tool_name}")
+    None
 }
 
 fn schema_probe_dir() -> PathBuf {
@@ -2909,8 +2939,9 @@ mod tests {
     use super::{
         app_server_protocol_error_response, handle_rpc_response, schema_probe_from_dir,
         session_key, CodexAppAdapter, CodexAppRuntime, CodexAppThreadMetadata,
-        CodexRolloutSnapshot, PendingRpcResult, MAX_CURRENT_TURN_OUTPUT_CHARS,
-        UNRESOLVED_CODEX_APP_PROJECT_ID, UNRESOLVED_CODEX_APP_PROJECT_LABEL,
+        CodexRolloutSnapshot, CodexRolloutWatchTarget, PendingRpcResult,
+        MAX_CURRENT_TURN_OUTPUT_CHARS, UNRESOLVED_CODEX_APP_PROJECT_ID,
+        UNRESOLVED_CODEX_APP_PROJECT_LABEL,
     };
     use crate::adapters::bridge::codec::{
         BridgeHookEventName, BridgeRequestEnvelope, ValidatedHookPayload,
@@ -3810,6 +3841,13 @@ mod tests {
             .contains_key(&unresolved_key));
         assert_eq!(session.status, SessionStatus::WaitingForAnswer);
         assert!(session.capabilities.can_jump);
+        assert_eq!(
+            runtime.rollout_watch_targets(),
+            vec![CodexRolloutWatchTarget {
+                session_key: real_key,
+                path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
+            }]
+        );
     }
 
     #[test]
@@ -3879,10 +3917,7 @@ mod tests {
             .expect("session should exist");
 
         assert_eq!(session.status, SessionStatus::Completed);
-        assert_eq!(
-            session.summary.as_deref(),
-            Some("Codex APP 回复：第一段，第二段")
-        );
+        assert_eq!(session.summary.as_deref(), Some("第一段，第二段"));
     }
 
     #[test]
@@ -3980,7 +4015,7 @@ mod tests {
             .get(&session_key("/tmp/builder-panel", "thread-1"))
             .expect("session should exist");
 
-        assert_eq!(session.summary.as_deref(), Some("Codex APP 回复：当前输出"));
+        assert_eq!(session.summary.as_deref(), Some("当前输出"));
     }
 
     #[test]
@@ -4031,6 +4066,9 @@ mod tests {
         let key = session_key("/tmp/builder-panel", "thread-1");
 
         runtime
+            .create_followup_turn(&key, "继续")
+            .expect("followup should create");
+        runtime
             .complete_followup_turn(&key)
             .expect("followup should complete");
         runtime
@@ -4055,10 +4093,7 @@ mod tests {
             .expect("session should exist");
 
         assert_eq!(session.status, SessionStatus::Completed);
-        assert_ne!(
-            session.summary.as_deref(),
-            Some("Codex APP 回复：上一轮输出")
-        );
+        assert_eq!(session.summary.as_deref(), Some("继续"));
     }
 
     #[test]
@@ -4389,7 +4424,7 @@ mod tests {
         runtime
             .apply_event(AgentEvent::TurnCompleted(TurnCompletedEvent {
                 session_key: session_key.clone(),
-                summary: Some("Codex APP thread 空闲".to_string()),
+                summary: Some("上一轮输出".to_string()),
                 updated_at: UnixMillis::new(2),
             }))
             .expect("session should become idle");
@@ -4405,7 +4440,7 @@ mod tests {
             .sessions
             .get(&session_key)
             .expect("session should exist");
-        assert_eq!(session.summary, Some("Codex APP thread 空闲".to_string()));
+        assert_eq!(session.summary, Some("上一轮输出".to_string()));
     }
 
     #[test]
@@ -4428,7 +4463,7 @@ mod tests {
         runtime
             .apply_event(AgentEvent::TurnCompleted(TurnCompletedEvent {
                 session_key: session_key.clone(),
-                summary: Some("Codex APP thread 空闲".to_string()),
+                summary: Some("上一轮输出".to_string()),
                 updated_at: UnixMillis::new(2),
             }))
             .expect("session should become idle");

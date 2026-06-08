@@ -62,6 +62,14 @@ session 列表合并 Codex CLI 和 Codex APP session 后，等待用户操作的
 
 Builder Panel 可为 Codex APP 读取 app-server 已加载 thread 元数据和 Codex rollout 历史，用于补齐项目名、跳回目标和最新 Agent 输出。
 
+Builder Panel 可在已知 Codex CLI 或 Codex APP session 的 rollout path 后展示新增追加行产生的实时输出和工具 preview。
+
+实时输出会更新 session 行摘要，并可出现在该 session 的 timeline 弹层中。
+
+session 摘要和 timeline 正文中的用户输入、assistant 输出、命令、路径、搜索词、prompt 和参数 preview 只展示原始内容，不展示 `Codex 回复`、`用户输入` 或工具动作前缀。
+
+工具输出结束后的唯一可见状态文案是 `正在思考`。
+
 APP 打开后仍在运行并继续发出实时事件的任务会进入 session 列表。
 
 APP 打开前已经结束且不再发出实时事件的 Codex CLI 或未接入 agent 历史任务不会进入 session 列表。
@@ -94,9 +102,11 @@ APP 打开前已经结束且不再发出实时事件的 Codex CLI 或未接入 a
 
 用户可以打开支持 timeline 的 Codex CLI 或 Codex APP session 过程事件弹层。
 
-用户可以搜索、筛选和复制单条 timeline 条目。
+用户可以按正文搜索、按类型筛选和复制单条 timeline 条目。
 
 用户可以复制当前筛选页的 timeline 条目。
+
+timeline 条目复制只复制正文，不复制隐藏标题。
 
 用户可以在 timeline 弹层中跳到最新条目。
 
@@ -105,6 +115,8 @@ APP 打开前已经结束且不再发出实时事件的 Codex CLI 或未接入 a
 关闭 timeline 弹层后，后端会尝试释放该 session 的大文本正文缓存。
 
 timeline 弹层不提供导出过程事件文件入口。
+
+timeline 弹层不回放未知历史 JSONL；只展示当前进程内已接收的事件和已知 session 新增追加行产生的实时事件。
 
 mock agent 不再作为产品运行时 session 来源。
 
@@ -119,6 +131,8 @@ Codex CLI 审批决策会通过 hook stdout directive 返回给 Codex CLI。
 Codex CLI 的允许并记住入口当前按允许 directive 返回，不声明真实记忆规则已支持。
 
 Codex CLI hook 产生的托管事件可在支持 timeline 的 session 中查询。
+
+Codex CLI 已知 rollout path 后，新增追加行中的实时工具 preview 和 assistant 输出可在 session 摘要和 timeline 中展示。
 
 Codex APP 开关默认开启。开关开启后，panel 会尝试启动 Codex APP app-server 并接收启动后的 Codex APP 实时事件。
 
@@ -141,6 +155,8 @@ Codex APP app-server 实时事件缺少可信项目路径且历史补齐尚未�
 Codex APP 待识别项目 session 不提供跳回行为。
 
 Codex APP session 可打开 timeline 弹层查看 hook 和 app-server 过程事件。
+
+Codex APP 已知 rollout path 后，新增追加行中的实时工具 preview、命令预览和 assistant 输出可在 session 摘要和 timeline 中展示。
 
 Codex APP session 跳回目标为 `codex://threads/<thread_id>`。
 

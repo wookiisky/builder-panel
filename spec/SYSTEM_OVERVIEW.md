@@ -64,15 +64,21 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 当前 Codex CLI hook 事件可写入进程内 timeline 缓存。
 
+当前 Codex CLI 已知 rollout path 后，可 tail 该已知 session 的新增 JSONL 追加行，并将清洗后的实时输出和工具 preview 写入 session 摘要与进程内 timeline。
+
 当前 Codex APP 已接入 Codex hook 分流、app-server stdio 子进程、session 展示、审批、回复、follow-up turn、跳回和进程内 timeline。
 
 当前 Codex APP hook 与 app-server 事件通过 thread ID 和 cwd 映射统一为同一个 session。
+
+当前 Codex APP 已知 thread rollout path 后，可 tail 该已知 session 的新增 JSONL 追加行，并将清洗后的实时输出和工具 preview 写入 session 摘要与进程内 timeline。
 
 当前产品运行时只读取 Codex CLI 和 Codex APP session。
 
 Codex CLI session 读取只以当前 Builder Panel 进程启动后的实时 hook 为来源。
 
 Codex APP session 读取可通过 app-server 已加载 thread 列表创建或补齐当前 APP thread，并可通过 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出。
+
+Codex rollout 实时 tail 只处理当前 APP 已知 session 的新增追加行，不从任意历史 JSONL 恢复 timeline。
 
 除 Codex APP 的项目名、跳回目标和最新输出补齐外，Builder Panel APP 启动时不从 coding agent 的历史文件、transcript、JSONL、rollout、已加载 thread 列表或其它持久化记录恢复 session。
 
@@ -124,6 +130,10 @@ Builder Panel 不持久化 session、pending interaction 或 timeline。
 
 `src-tauri/src/adapters/codex_app/codex_rollout.rs` 是 Codex rollout JSONL 发现和摘要清洗入口。
 
+`src-tauri/src/ports/session_update_port.rs` 是清洗后 session 更新通知端口入口。
+
+`src-tauri/src/tauri_api/events.rs` 是 Tauri 事件发布入口。
+
 `src-tauri/src/services/session_service.rs` 是 session 读取服务入口。
 
 `src-tauri/src/services/interaction_service.rs` 是审批交互服务入口。
@@ -164,6 +174,8 @@ Builder Panel 不持久化 session、pending interaction 或 timeline。
 
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
+`src/api/sessionUpdateApi.ts` 是前端 session 实时更新事件订阅入口。
+
 `src/api/hookInstallApi.ts` 是前端 hook 状态查询和安装 command 调用入口。
 
 `src-tauri/src/domain/session_state.rs` 是 session 状态入口。
@@ -191,6 +203,8 @@ Builder Panel 不持久化 session、pending interaction 或 timeline。
 `src-tauri/src/adapters/codex_app/mod.rs` 验证 Codex APP schema 探针、hook 分流、request 编码、notification 转换和完整能力 capability。
 
 `src-tauri/src/adapters/codex_app/codex_rollout.rs` 验证 Codex rollout JSONL 项目名和 Agent 输出清洗。
+
+`src-tauri/src/adapters/codex_app/codex_rollout.rs` 验证 Codex rollout tailer 只读取已知 session 的新增追加行。
 
 `src-tauri/src/services/interaction_service.rs` 验证审批闭环。
 

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::adapters::codex_app::{
     CodexAppAdapter, CodexAppRuntime, CodexAppSchemaProbe, CodexAppServerClient,
-    CodexRolloutDiscovery,
+    CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget,
 };
 use crate::adapters::codex_cli_hook::{start_codex_cli_bridge_server, CodexCliHookRuntime};
 use crate::adapters::config_file::JsonSettingsStore;
@@ -26,6 +26,7 @@ use crate::ports::agent_adapter_port::ApprovalDecision;
 use crate::ports::agent_adapter_port::ChoiceSubmission;
 use crate::ports::jump_target_port::JumpTargetPort;
 use crate::ports::process_timeline_port::ProcessTimelineReleasePort;
+use crate::ports::session_update_port::{NoopSessionUpdateSink, SessionUpdateSinkPort};
 use crate::services::process_timeline_service::{
     ProcessTimelineService, TimelinePage, TimelineQuery,
 };
@@ -43,16 +44,21 @@ static CODEX_APP_SERVER: OnceLock<Mutex<CodexAppServerSlot>> = OnceLock::new();
 static CODEX_APP_STARTUP_FAILURE: OnceLock<Mutex<Option<CodexAppStartupFailure>>> = OnceLock::new();
 /// Codex CLI bridge server 启动标记。
 static CODEX_CLI_BRIDGE_STARTED: OnceLock<Mutex<bool>> = OnceLock::new();
+/// Codex rollout watcher 启动标记。
+static CODEX_ROLLOUT_WATCHER_STARTED: OnceLock<Mutex<bool>> = OnceLock::new();
 /// Codex rollout 最近一次全量扫描时间。
 static CODEX_APP_ROLLOUT_LAST_SYNC: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 /// Codex APP thread 元数据最近一次同步时间。
 static CODEX_APP_THREAD_METADATA_LAST_SYNC: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 /// Codex APP 后台上下文同步是否正在运行。
 static CODEX_APP_CONTEXT_SYNC_IN_FLIGHT: OnceLock<Mutex<bool>> = OnceLock::new();
+/// 全局 session 更新发布端口。
+static SESSION_UPDATE_SINK: OnceLock<Arc<dyn SessionUpdateSinkPort>> = OnceLock::new();
 
 const CODEX_APP_STARTUP_RETRY_DELAY: Duration = Duration::from_secs(30);
 const CODEX_APP_ROLLOUT_SYNC_INTERVAL: Duration = Duration::from_secs(10);
 const CODEX_APP_THREAD_METADATA_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+const CODEX_ROLLOUT_WATCH_INTERVAL: Duration = Duration::from_millis(300);
 
 /// Codex APP app-server 启动失败退避记录。
 struct CodexAppStartupFailure {
@@ -323,11 +329,7 @@ pub fn submit_codex_app_choice(request: SubmitCodexAppChoiceRequest) -> Result<(
         .lock()
         .map_err(|_| "Codex APP runtime 锁已损坏".to_string())?;
     runtime
-        .complete_rpc_interaction(
-            &request.session_key,
-            &request.interaction_id,
-            "Codex APP 选项已提交",
-        )
+        .complete_rpc_interaction(&request.session_key, &request.interaction_id, "")
         .map_err(|error| error.user_message)
 }
 
@@ -356,11 +358,7 @@ pub fn send_codex_app_reply(request: SendCodexAppReplyRequest) -> Result<(), Str
         .lock()
         .map_err(|_| "Codex APP runtime 锁已损坏".to_string())?;
     runtime
-        .complete_rpc_interaction(
-            &request.session_key,
-            &request.interaction_id,
-            "Codex APP 回复已发送",
-        )
+        .complete_rpc_interaction(&request.session_key, &request.interaction_id, "")
         .map_err(|error| error.user_message)
 }
 
@@ -618,21 +616,33 @@ fn hook_executable_name() -> &'static str {
 /// 获取 Codex CLI runtime。
 fn codex_cli_runtime() -> Arc<Mutex<CodexCliHookRuntime>> {
     CODEX_CLI_RUNTIME
-        .get_or_init(|| Arc::new(Mutex::new(CodexCliHookRuntime::empty())))
+        .get_or_init(|| {
+            Arc::new(Mutex::new(CodexCliHookRuntime::with_update_sink(
+                session_update_sink(),
+            )))
+        })
         .clone()
 }
 
 /// 获取 Codex APP runtime。
 fn codex_app_runtime() -> Arc<Mutex<CodexAppRuntime>> {
     CODEX_APP_RUNTIME
-        .get_or_init(|| Arc::new(Mutex::new(CodexAppRuntime::empty())))
+        .get_or_init(|| {
+            Arc::new(Mutex::new(CodexAppRuntime::with_update_sink(
+                session_update_sink(),
+            )))
+        })
         .clone()
 }
 
 /// 获取 Codex CLI runtime 锁。
 fn lock_codex_cli_runtime() -> Result<MutexGuard<'static, CodexCliHookRuntime>, String> {
     CODEX_CLI_RUNTIME
-        .get_or_init(|| Arc::new(Mutex::new(CodexCliHookRuntime::empty())))
+        .get_or_init(|| {
+            Arc::new(Mutex::new(CodexCliHookRuntime::with_update_sink(
+                session_update_sink(),
+            )))
+        })
         .lock()
         .map_err(|_| "Codex CLI runtime 锁已损坏".to_string())
 }
@@ -640,9 +650,25 @@ fn lock_codex_cli_runtime() -> Result<MutexGuard<'static, CodexCliHookRuntime>, 
 /// 获取 Codex APP runtime 锁。
 fn lock_codex_app_runtime() -> Result<MutexGuard<'static, CodexAppRuntime>, String> {
     CODEX_APP_RUNTIME
-        .get_or_init(|| Arc::new(Mutex::new(CodexAppRuntime::empty())))
+        .get_or_init(|| {
+            Arc::new(Mutex::new(CodexAppRuntime::with_update_sink(
+                session_update_sink(),
+            )))
+        })
         .lock()
         .map_err(|_| "Codex APP runtime 锁已损坏".to_string())
+}
+
+/// 配置全局 session 更新发布端口。
+pub fn configure_session_update_sink(update_sink: Arc<dyn SessionUpdateSinkPort>) {
+    let _ = SESSION_UPDATE_SINK.set(update_sink);
+}
+
+/// 返回全局 session 更新发布端口。
+fn session_update_sink() -> Arc<dyn SessionUpdateSinkPort> {
+    SESSION_UPDATE_SINK
+        .get_or_init(|| Arc::new(NoopSessionUpdateSink))
+        .clone()
 }
 
 /// 确保 Codex CLI bridge server 已启动。
@@ -659,8 +685,59 @@ fn ensure_codex_cli_bridge_started() -> Result<(), String> {
     let codex_app_runtime = codex_app_runtime();
     start_codex_cli_bridge_server(runtime, codex_app_runtime)
         .map_err(|error| format!("Codex CLI bridge 启动失败：{error:?}"))?;
+    start_codex_rollout_watcher_once();
     *started = true;
     Ok(())
+}
+
+/// 启动 Codex rollout 追加行 watcher。
+fn start_codex_rollout_watcher_once() {
+    let started = CODEX_ROLLOUT_WATCHER_STARTED.get_or_init(|| Mutex::new(false));
+    let Ok(mut started) = started.lock() else {
+        return;
+    };
+    if *started {
+        return;
+    }
+    *started = true;
+
+    std::thread::spawn(|| {
+        let mut tailer = CodexRolloutTailer::default_root();
+        loop {
+            tailer.sync_targets(current_codex_rollout_watch_targets());
+            let events = tailer.poll_events(command_unix_now());
+            for event in events {
+                match event.session_key().agent_kind.clone() {
+                    crate::domain::agent_session::AgentKind::CodexCli => {
+                        if let Ok(mut runtime) = codex_cli_runtime().lock() {
+                            let _ = runtime.apply_event(event);
+                        }
+                    }
+                    crate::domain::agent_session::AgentKind::CodexApp => {
+                        if let Ok(mut runtime) = codex_app_runtime().lock() {
+                            let _ = runtime.apply_rollout_event(event);
+                        }
+                    }
+                    crate::domain::agent_session::AgentKind::ClaudeCodeApp
+                    | crate::domain::agent_session::AgentKind::ClaudeCodeCli => {}
+                }
+            }
+            std::thread::sleep(CODEX_ROLLOUT_WATCH_INTERVAL);
+        }
+    });
+}
+
+/// 返回当前 Codex rollout watcher 目标。
+fn current_codex_rollout_watch_targets() -> Vec<CodexRolloutWatchTarget> {
+    let mut targets = Vec::new();
+    if let Ok(runtime) = codex_cli_runtime().lock() {
+        targets.extend(runtime.rollout_watch_targets());
+    }
+    if let Ok(runtime) = codex_app_runtime().lock() {
+        targets.extend(runtime.rollout_watch_targets());
+    }
+
+    targets
 }
 
 /// 确保 Codex APP hook bridge 和 app-server 已启动。

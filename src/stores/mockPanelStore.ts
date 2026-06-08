@@ -272,7 +272,7 @@ export const setTimelinePage = (
 
 /// 将当前筛选结果格式化为可复制文本。
 export const timelinePageToCopyText = (page: TimelinePage): string => {
-  return page.items.map((item) => `${item.title}\n${item.body}`).join("\n\n");
+  return page.items.map((item) => item.body).join("\n\n");
 };
 
 /// 计算虚拟列表可见范围。

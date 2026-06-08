@@ -1,5 +1,7 @@
 //! Builder Panel Tauri 后端入口。
 
+use std::sync::Arc;
+
 pub mod adapters;
 pub mod domain;
 pub mod ports;
@@ -10,6 +12,12 @@ pub mod tauri_api;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            tauri_api::commands::configure_session_update_sink(Arc::new(
+                tauri_api::events::TauriSessionUpdateSink::new(app.handle().clone()),
+            ));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             tauri_api::commands::get_panel_probe,
             tauri_api::commands::get_panel_settings,

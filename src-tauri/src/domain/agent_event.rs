@@ -39,6 +39,17 @@ pub struct ActivityUpdatedEvent {
     pub updated_at: UnixMillis,
 }
 
+/// 用户原始输入更新事件。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UserMessageUpdatedEvent {
+    /// 会话唯一键。
+    pub session_key: SessionKey,
+    /// 已清洗用户输入原文。
+    pub summary: String,
+    /// 事件更新时间。
+    pub updated_at: UnixMillis,
+}
+
 /// 审批请求事件。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ApprovalRequestedEvent {
@@ -146,6 +157,8 @@ pub enum AgentEvent {
     SessionStarted(SessionStartedEvent),
     /// 活动摘要或运行状态更新。
     ActivityUpdated(ActivityUpdatedEvent),
+    /// 用户原始输入更新。
+    UserMessageUpdated(UserMessageUpdatedEvent),
     /// 审批请求。
     ApprovalRequested(ApprovalRequestedEvent),
     /// 问题或选项请求。
@@ -172,6 +185,7 @@ impl AgentEvent {
         match self {
             Self::SessionStarted(event) => &event.session_key,
             Self::ActivityUpdated(event) => &event.session_key,
+            Self::UserMessageUpdated(event) => &event.session_key,
             Self::ApprovalRequested(event) => &event.session_key,
             Self::AnswerRequested(event) => &event.session_key,
             Self::InteractionCompleted(event) => &event.session_key,
@@ -187,7 +201,7 @@ impl AgentEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentEvent, SessionStartedEvent};
+    use super::{AgentEvent, SessionStartedEvent, UserMessageUpdatedEvent};
     use crate::domain::agent_session::{
         AgentKind, ConversationId, ProjectId, SessionCapabilities, SessionKey,
     };
@@ -217,5 +231,26 @@ mod tests {
         assert_eq!(decoded.session_key(), &session_key);
         assert!(!text.contains("raw_payload"));
         assert!(!text.contains("swift"));
+    }
+
+    #[test]
+    fn user_message_event_serializes_as_explicit_kind() {
+        let session_key = SessionKey::new(
+            AgentKind::CodexCli,
+            ProjectId::new("project"),
+            ConversationId::new("conversation"),
+        );
+        let event = AgentEvent::UserMessageUpdated(UserMessageUpdatedEvent {
+            session_key: session_key.clone(),
+            summary: "请实现实时输出".to_string(),
+            updated_at: UnixMillis::new(11),
+        });
+
+        let text = serde_json::to_string(&event).expect("event should serialize");
+        let decoded: AgentEvent = serde_json::from_str(&text).expect("event should deserialize");
+
+        assert_eq!(decoded.session_key(), &session_key);
+        assert!(text.contains("user_message_updated"));
+        assert!(text.contains("请实现实时输出"));
     }
 }

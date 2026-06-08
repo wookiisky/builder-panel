@@ -12,6 +12,8 @@ use crate::domain::usage::UnixMillis;
 pub enum ProcessTimelineEventKind {
     /// 普通运行活动。
     Activity,
+    /// 用户原始输入。
+    User,
     /// 工具调用。
     Tool,
     /// 审批相关事件。

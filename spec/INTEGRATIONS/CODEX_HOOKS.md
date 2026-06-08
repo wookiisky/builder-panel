@@ -24,6 +24,8 @@ hook helper 只在 payload 基础校验通过后发送 bridge command。
 
 Codex hook 只处理 Builder Panel APP 启动后送达 bridge 的实时 hook payload。
 
+Codex hook 事件进入 session 摘要或 timeline 时，只展示用户输入原文、assistant 输出原文、工具 preview 或 `正在思考` 状态。
+
 Codex hook 不从 transcript、JSONL 或其它历史记录恢复 session。
 
 APP 启动后仍在运行的 Codex 任务如果继续触发 hook payload，可以进入当前 session 状态。

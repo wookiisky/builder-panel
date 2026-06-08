@@ -44,7 +44,7 @@ Codex APP follow-up turn 通过 app-server `turn/start` 发送。
 
 Codex APP follow-up 只允许在 session 无 pending interaction 且状态为完成或失败时创建；app-server `idle` 状态会映射为可 follow-up 的完成态。
 
-Codex APP follow-up 只有在 `turn/start` 写入成功后才写入 activity 事件。
+Codex APP follow-up 只有在 `turn/start` 写入成功后才写入用户输入原文事件。
 
 Codex APP follow-up 的 app-server request id 由 app-server client 内部递增分配。
 
@@ -70,17 +70,35 @@ Codex APP thread status 缺失时可按 idle 处理；`status.type` 类型错误
 
 Codex APP session 列表和详情读取可读取 Codex rollout JSONL 补齐 cwd 和最新 Agent 输出，但 rollout 不单独创建当前 session。
 
+Codex APP thread 元数据或候选快照携带 rollout path 后，可作为已知 session 的实时 tail 目标。
+
+Codex APP rollout tail 只读取已知 session 的新增追加行，不回放历史行。
+
+Codex APP rollout tail 可将新增追加行清洗为用户输入、活动更新或 turn 完成事件，用于展示实时输出和工具 preview。
+
 Codex rollout path 必须位于 `~/.codex/sessions` root 内，文件名必须匹配 `rollout-*.jsonl`，且必须通过普通文件和大小上限校验。
 
 Codex rollout 读取只在 adapter 边界清洗 `session_meta`、`event_msg` 和 `response_item` 的必要字段，不把原始 JSON 写入 Domain。
 
 Codex rollout 中 `event_msg.agent_message`、`task_complete.last_agent_message`、`turn_complete.last_agent_message` 和 assistant `response_item` 的 `output_text` 可作为最新 Agent 输出摘要。
 
-Codex rollout 中的工具事件只用于运行摘要，不得在完成后覆盖最终 Agent 输出。
+Codex rollout 中的用户输入、Agent 输出和工具 preview 只展示原文，不拼接 `用户输入`、`Codex 回复` 或工具动作前缀。
+
+Codex rollout 中没有 preview 的工具开始、计划更新和 turn 开始事件不写摘要或 timeline。
+
+Codex rollout 中未知工具或动态工具的 JSON arguments 不作为 preview 展示。
+
+Codex rollout 中的工具输出结束事件可写入唯一状态文案 `正在思考`。
+
+Codex rollout 中的工具事件不得在完成后覆盖最终 Agent 输出。
 
 Codex APP 当前 turn 的 `item/agentMessage/delta` 会在 runtime 内按 thread 累积有界输出；`turn/started` 或 follow-up 成功提交会清空该 thread 的当前 turn 输出。
 
-Codex APP `turn/completed` 和 `thread/status/changed` 的 `idle` 优先保留当前 turn 最新 Agent 输出；没有当前输出时才使用固定完成或空闲文案。
+Codex APP `turn/completed` 和 `thread/status/changed` 的 `idle` 优先保留当前 turn 最新 Agent 输出；没有当前输出时不写固定完成或空闲文案。
+
+Codex APP hook、app-server delta 和 app-server approval request 的可展示摘要只使用用户输入原文、assistant 输出原文或工具 preview。
+
+Codex APP hook 和 app-server 权限请求没有 preview 时仍创建 pending interaction，但不写包装正文或 timeline 条目。
 
 Codex APP app-server 实时事件可以为当前进程创建 session，即使对应 thread 早于 Builder Panel APP 启动。
 
@@ -91,6 +109,10 @@ Codex APP app-server 无 cwd 实时事件先创建的 session，会在后续真�
 Codex APP session 跳回目标使用 `codex://threads/<thread_id>`。
 
 Codex APP hook 和 app-server 事件写入进程内 process timeline。
+
+Codex APP 已知 rollout 追加行清洗后的实时事件写入进程内 process timeline。
+
+Codex APP runtime 应用归一事件后通过 session 更新端口发布轻量 Tauri 事件。
 
 Codex APP token usage 只在 app-server 发送 `thread/tokenUsage/updated` 且包含 `tokenUsage.total.totalTokens` 时展示已验证 token 数。
 
@@ -125,6 +147,8 @@ Codex APP 当前不从 app-server 原始 JSON 直接污染 Domain。
 当前不持久化 Codex APP session。
 
 当前不从 Codex transcript 或 rollout 文件恢复 Codex APP timeline。
+
+当前不从未知或非候选 rollout 文件创建 Codex APP session。
 
 当前不声明 Codex APP app-server WebSocket transport 已接入。
 

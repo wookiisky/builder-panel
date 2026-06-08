@@ -44,6 +44,10 @@ Codex APP app-server thread 列表 response 可能缺少必填字段或字段类
 
 Codex APP rollout 文件可能不存在、过旧、过大、格式无效或缺少 session 元数据。
 
+Codex rollout tail 目标可能不存在、被截断、被替换、超出大小上限、出现超长行或出现无效 JSON 行。
+
+Tauri session 更新事件可能发送失败。
+
 阶段 0 本地验证可能因缺少 Rust 工具链失败。
 
 Domain 失败事件可能携带统一 `AppError`。
@@ -172,6 +176,20 @@ Codex APP app-server thread 列表中 `status.type` 类型错误时跳过该条�
 
 Codex APP rollout 历史读取失败不写 session 失败状态。
 
+Codex rollout tail 读取失败不写 session 失败状态。
+
+Codex rollout tail 遇到无效 JSON 行时跳过该行。
+
+Codex rollout tail 遇到超长行时丢弃当前半行缓存。
+
+Codex rollout tail 遇到文件截断或替换时重置该目标本地读取状态，不回放旧历史。
+
+Codex rollout tail 目标不在 Codex sessions root 内、文件名不匹配、不是普通文件或文件过大时丢弃该目标。
+
+Codex rollout tail 清洗出的事件写入 runtime 失败时丢弃该事件，不阻塞 watcher 后续轮询。
+
+Tauri session 更新事件发送失败时不写 session 失败状态，前端继续依赖定时刷新兜底。
+
 Codex APP rollout 命中不存在且不可迁移的 session 时丢弃该快照，不创建新的当前 session。
 
 Codex APP recent rollout 命中非候选 thread 时丢弃该历史快照，不创建新的当前 session。
@@ -182,7 +200,7 @@ Codex APP thread path 不在 Codex sessions root 内、文件名不匹配、不�
 
 Codex APP 缺少可信 cwd 时写入待识别项目占位，不生成跳回目标。
 
-Codex APP follow-up 写入失败时，不写入“已提交”activity。
+Codex APP follow-up 写入失败时，不写入用户输入原文事件。
 
 Codex APP follow-up 若 session 仍在运行或存在 pending interaction，后端拒绝创建后续 turn。
 
@@ -257,6 +275,10 @@ Codex APP session 来源读取失败时，前端跳过 Codex APP 来源，不阻
 Codex APP app-server 启动失败时，不通过已加载 thread 列表补齐 session，但仍可读取当前进程内已捕捉的 hook runtime 状态。
 
 Codex APP app-server thread 列表后台读取被节流或短超时打断时，仅跳过本轮元数据补齐，不阻断当前 session 列表返回。
+
+Codex rollout tail 不可用时，对应 session 仍保留 hook、app-server 和定时刷新可见能力。
+
+Tauri session 更新事件缺失时，前端仍通过定时刷新展示 session 最新状态。
 
 Codex APP rollout 读取不可用时，不补齐历史项目名或历史输出，已捕捉实时 session 继续展示。
 

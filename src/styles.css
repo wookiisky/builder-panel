@@ -976,6 +976,14 @@ button:disabled {
   background: var(--panel-strong);
 }
 
+.timeline-row-user {
+  border-left: 3px solid var(--accent);
+}
+
+.timeline-row-user p {
+  color: var(--text);
+}
+
 .timeline-row p {
   max-height: 36px;
   white-space: normal;

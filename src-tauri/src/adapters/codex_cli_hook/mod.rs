@@ -1,6 +1,7 @@
 //! Codex CLI hook adapter。
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -12,11 +13,13 @@ use crate::adapters::bridge::codec::{
     BridgeHookEventName, BridgeRequestEnvelope, BridgeResponseEnvelope, ValidatedHookPayload,
 };
 use crate::adapters::bridge::transport::default_bridge_location;
-use crate::adapters::codex_app::{handle_codex_app_bridge_request, CodexAppRuntime};
+use crate::adapters::codex_app::{
+    handle_codex_app_bridge_request, CodexAppRuntime, CodexRolloutWatchTarget,
+};
 use crate::adapters::timeline::InMemoryProcessTimelineCache;
 use crate::domain::agent_event::{
     ActivityUpdatedEvent, AgentEvent, ApprovalRequestedEvent, FailedEvent, SessionStartedEvent,
-    TurnCompletedEvent,
+    TurnCompletedEvent, UserMessageUpdatedEvent,
 };
 use crate::domain::agent_interaction::{
     AgentInteraction, ApprovalInteraction, HookDirectiveTarget, InteractionId, InteractionStatus,
@@ -35,6 +38,10 @@ use crate::domain::view_model::{
 use crate::ports::agent_adapter_port::ApprovalDecision;
 use crate::ports::process_timeline_port::{
     ProcessTimelineItem, ProcessTimelineReaderPort, ProcessTimelineReleasePort,
+};
+use crate::ports::session_update_port::{
+    NoopSessionUpdateSink, SessionRuntimeSource, SessionUpdateArea, SessionUpdateNotification,
+    SessionUpdateSinkPort,
 };
 
 const APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -59,18 +66,27 @@ impl CodexCliHookAdapter {
                 AgentEvent::SessionStarted(started_event(payload, session_key, updated_at))
             }
             BridgeHookEventName::UserPromptSubmit => {
-                AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+                let Some(prompt) = prompt_summary(payload) else {
+                    return Ok(Vec::new());
+                };
+                AgentEvent::UserMessageUpdated(UserMessageUpdatedEvent {
                     session_key,
-                    summary: prompt_summary(payload),
+                    summary: prompt,
                     updated_at,
                 })
             }
-            BridgeHookEventName::PreToolUse => AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
-                session_key,
-                summary: tool_summary("准备执行工具", payload),
-                updated_at,
-            }),
+            BridgeHookEventName::PreToolUse => {
+                let Some(summary) = tool_preview(payload) else {
+                    return Ok(Vec::new());
+                };
+                AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+                    session_key,
+                    summary,
+                    updated_at,
+                })
+            }
             BridgeHookEventName::PermissionRequest => {
+                let request_summary = tool_preview(payload).unwrap_or_default();
                 return Ok(vec![
                     AgentEvent::SessionStarted(started_event(
                         payload,
@@ -88,7 +104,7 @@ impl CodexCliHookAdapter {
                                 request_id: request_id.to_string(),
                             }),
                             status: InteractionStatus::Pending,
-                            request_summary: tool_summary("Codex 请求权限", payload),
+                            request_summary,
                         },
                         updated_at,
                     }),
@@ -96,7 +112,7 @@ impl CodexCliHookAdapter {
             }
             BridgeHookEventName::PostToolUse => AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
                 session_key,
-                summary: tool_summary("工具执行完成", payload),
+                summary: "正在思考".to_string(),
                 updated_at,
             }),
             BridgeHookEventName::Stop => AgentEvent::TurnCompleted(TurnCompletedEvent {
@@ -130,15 +146,26 @@ pub struct CodexCliHookRuntime {
     pending_approvals: BTreeMap<InteractionId, PendingHookApproval>,
     /// 托管 hook 事件时间线缓存。
     timeline_cache: InMemoryProcessTimelineCache,
+    /// 已知 Codex rollout 文件路径。
+    rollout_paths: BTreeMap<SessionKey, PathBuf>,
+    /// 清洗后 session 更新发布端口。
+    update_sink: Arc<dyn SessionUpdateSinkPort>,
 }
 
 impl CodexCliHookRuntime {
     /// 创建空 Codex CLI hook runtime。
     pub fn empty() -> Self {
+        Self::with_update_sink(Arc::new(NoopSessionUpdateSink))
+    }
+
+    /// 使用指定更新端口创建 Codex CLI hook runtime。
+    pub fn with_update_sink(update_sink: Arc<dyn SessionUpdateSinkPort>) -> Self {
         Self {
             session_state: SessionState::empty(),
             pending_approvals: BTreeMap::new(),
             timeline_cache: InMemoryProcessTimelineCache::new(),
+            rollout_paths: BTreeMap::new(),
+            update_sink,
         }
     }
 
@@ -187,13 +214,17 @@ impl CodexCliHookRuntime {
         }
 
         let payload = &request.payload.validated_payload;
+        let session_key = session_key(payload);
+        if let Some(path) = &payload.transcript_path {
+            self.rollout_paths
+                .insert(session_key.clone(), PathBuf::from(path));
+        }
         let events =
             CodexCliHookAdapter::events_from_payload(&request.request_id, payload, updated_at)
                 .map_err(|_| protocol_error("Codex hook payload 不受支持"))?;
 
         for event in events {
-            self.timeline_cache.record_agent_event(&event)?;
-            self.session_state = self.session_state.apply_event(event);
+            self.apply_event(event)?;
         }
 
         if payload.hook_event_name != BridgeHookEventName::PermissionRequest {
@@ -201,7 +232,6 @@ impl CodexCliHookRuntime {
         }
 
         let interaction_id = interaction_id(&request.request_id);
-        let session_key = session_key(payload);
         let waiter = PendingHookApprovalWaiter::new();
         self.expire_stale_approvals_for_session(&session_key, &interaction_id);
         let replaced = self.pending_approvals.insert(
@@ -246,24 +276,16 @@ impl CodexCliHookRuntime {
 
         if !pending.waiter.resolve(decision) {
             self.pending_approvals.remove(interaction_id);
-            self.fail_expired_approval(session_key);
+            self.fail_expired_approval(session_key)?;
             return Err(invalid_interaction("审批交互已过期"));
         }
         self.pending_approvals.remove(interaction_id);
 
-        self.session_state =
-            self.session_state
-                .apply_event(AgentEvent::TurnCompleted(TurnCompletedEvent {
-                    session_key: session_key.clone(),
-                    summary: Some(match decision {
-                        ApprovalDecision::Allow => "Codex 审批已允许".to_string(),
-                        ApprovalDecision::AllowAndRemember => {
-                            "Codex 审批已允许，本入口不支持记住".to_string()
-                        }
-                        ApprovalDecision::Deny => "Codex 审批已拒绝".to_string(),
-                    }),
-                    updated_at: unix_now(),
-                }));
+        self.apply_event(AgentEvent::TurnCompleted(TurnCompletedEvent {
+            session_key: session_key.clone(),
+            summary: None,
+            updated_at: unix_now(),
+        }))?;
 
         Ok(())
     }
@@ -279,7 +301,31 @@ impl CodexCliHookRuntime {
         }
 
         self.pending_approvals.remove(interaction_id);
-        self.fail_expired_approval(session_key);
+        let _ = self.fail_expired_approval(session_key);
+    }
+
+    /// 应用归一事件并发布轻量更新。
+    pub fn apply_event(&mut self, event: AgentEvent) -> Result<(), AppError> {
+        self.timeline_cache.record_agent_event(&event)?;
+        let notification = session_update_notification(&event);
+        self.session_state = self.session_state.apply_event(event);
+        if let Some(notification) = notification {
+            self.update_sink.publish_session_update(notification);
+        }
+
+        Ok(())
+    }
+
+    /// 返回当前已知 rollout tail 目标。
+    pub fn rollout_watch_targets(&self) -> Vec<CodexRolloutWatchTarget> {
+        self.rollout_paths
+            .iter()
+            .filter(|(session_key, _)| self.session_state.sessions.contains_key(session_key))
+            .map(|(session_key, path)| CodexRolloutWatchTarget {
+                session_key: session_key.clone(),
+                path: path.clone(),
+            })
+            .collect()
     }
 
     fn expire_stale_approvals_for_session(
@@ -318,20 +364,47 @@ impl CodexCliHookRuntime {
         interaction.interaction_id == *interaction_id
     }
 
-    fn fail_expired_approval(&mut self, session_key: &SessionKey) {
-        self.session_state = self
-            .session_state
-            .apply_event(AgentEvent::Failed(FailedEvent {
-                session_key: session_key.clone(),
-                error: AppError::new(
-                    AppErrorCode::BridgeUnavailable,
-                    "Codex 审批等待超时",
-                    None,
-                    true,
-                    Some(FallbackAction::RetryLater),
-                ),
-                updated_at: unix_now(),
-            }));
+    fn fail_expired_approval(&mut self, session_key: &SessionKey) -> Result<(), AppError> {
+        self.apply_event(AgentEvent::Failed(FailedEvent {
+            session_key: session_key.clone(),
+            error: AppError::new(
+                AppErrorCode::BridgeUnavailable,
+                "Codex 审批等待超时",
+                None,
+                true,
+                Some(FallbackAction::RetryLater),
+            ),
+            updated_at: unix_now(),
+        }))
+    }
+}
+
+fn session_update_notification(event: &AgentEvent) -> Option<SessionUpdateNotification> {
+    let session_key = event.session_key().clone();
+    let runtime_source = SessionRuntimeSource::from_agent_kind(&session_key.agent_kind)?;
+
+    Some(SessionUpdateNotification {
+        runtime_source,
+        session_key,
+        changed_area: SessionUpdateArea::Both,
+        updated_at: event_updated_at(event),
+    })
+}
+
+fn event_updated_at(event: &AgentEvent) -> UnixMillis {
+    match event {
+        AgentEvent::SessionStarted(event) => event.updated_at,
+        AgentEvent::ActivityUpdated(event) => event.updated_at,
+        AgentEvent::UserMessageUpdated(event) => event.updated_at,
+        AgentEvent::ApprovalRequested(event) => event.updated_at,
+        AgentEvent::AnswerRequested(event) => event.updated_at,
+        AgentEvent::InteractionCompleted(event) => event.updated_at,
+        AgentEvent::TurnCompleted(event) => event.updated_at,
+        AgentEvent::Failed(event) => event.updated_at,
+        AgentEvent::Detached(event) => event.updated_at,
+        AgentEvent::CapabilitiesUpdated(event) => event.updated_at,
+        AgentEvent::UsageUpdated(event) => event.updated_at,
+        AgentEvent::JumpTargetUpdated(event) => event.updated_at,
     }
 }
 
@@ -571,7 +644,7 @@ fn started_event(
         project_label: project_label(&payload.cwd),
         conversation_label: payload.session_id.clone(),
         title: payload.model.clone(),
-        summary: Some(start_summary(payload)),
+        summary: None,
         capabilities: codex_cli_capabilities(),
         usage: UsageSnapshot::unavailable(),
         updated_at,
@@ -608,51 +681,33 @@ fn project_label(cwd: &str) -> String {
         .to_string()
 }
 
-fn start_summary(payload: &ValidatedHookPayload) -> String {
-    let Some(model) = &payload.model else {
-        return "Codex CLI 会话已启动".to_string();
-    };
-
-    format!("Codex CLI 会话已启动，模型 {model}")
+fn prompt_summary(payload: &ValidatedHookPayload) -> Option<String> {
+    payload.prompt.as_ref().map(|prompt| truncate(prompt, 120))
 }
 
-fn prompt_summary(payload: &ValidatedHookPayload) -> String {
-    let Some(prompt) = &payload.prompt else {
-        return "用户提交了 Codex prompt".to_string();
-    };
-
-    format!("用户提交了 Codex prompt：{}", truncate(prompt, 120))
-}
-
-fn tool_summary(prefix: &str, payload: &ValidatedHookPayload) -> String {
-    let tool_name = payload.tool_name.as_deref().unwrap_or("未知工具");
-    let Some(tool_input) = &payload.tool_input else {
-        return format!("{prefix}：{tool_name}");
-    };
-
-    format!("{prefix}：{tool_name} {}", summarize_tool_input(tool_input))
+fn tool_preview(payload: &ValidatedHookPayload) -> Option<String> {
+    payload.tool_input.as_ref().and_then(summarize_tool_input)
 }
 
 fn stop_summary(payload: &ValidatedHookPayload) -> Option<String> {
     payload
         .last_assistant_message
         .as_ref()
-        .map(|message| format!("Codex turn 完成：{}", truncate(message, 120)))
-        .or_else(|| Some("Codex turn 已完成".to_string()))
+        .map(|message| truncate(message, 120))
 }
 
-fn summarize_tool_input(value: &Value) -> String {
+fn summarize_tool_input(value: &Value) -> Option<String> {
     match value {
         Value::Object(object) => {
             if let Some(Value::String(command)) = object.get("command") {
-                return truncate(command, 120);
+                return Some(truncate(command, 120));
             }
             if let Some(Value::String(path)) = object.get("path") {
-                return truncate(path, 120);
+                return Some(truncate(path, 120));
             }
-            format!("包含 {} 个字段", object.len())
+            None
         }
-        _ => "输入已清洗".to_string(),
+        _ => None,
     }
 }
 
@@ -762,10 +817,7 @@ mod tests {
         let AgentEvent::ApprovalRequested(event) = &events[1] else {
             panic!("event should be approval");
         };
-        assert_eq!(
-            event.interaction.request_summary,
-            "Codex 请求权限：Bash cargo test"
-        );
+        assert_eq!(event.interaction.request_summary, "cargo test");
         assert_eq!(
             event.interaction.interaction_id.value,
             "codex-hook-request-1"
@@ -787,7 +839,8 @@ mod tests {
     #[test]
     fn runtime_records_managed_hook_events_to_timeline() {
         let mut runtime = CodexCliHookRuntime::empty();
-        let request = request(BridgeHookEventName::PreToolUse, "request-1");
+        let mut request = request(BridgeHookEventName::PreToolUse, "request-1");
+        request.payload.validated_payload.tool_input = Some(json!({"command": "cargo test"}));
 
         runtime
             .apply_hook_request(&request, UnixMillis::new(1))
@@ -806,7 +859,7 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].kind, ProcessTimelineEventKind::Activity);
-        assert!(items[0].body.contains("准备执行工具"));
+        assert_eq!(items[0].body, "cargo test");
     }
 
     #[test]

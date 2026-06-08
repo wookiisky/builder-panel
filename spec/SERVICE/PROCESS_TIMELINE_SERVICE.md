@@ -12,9 +12,21 @@ mock 测试基线中，timeline 数据可来自 mock agent runtime。
 
 Codex APP hook 和 app-server 事件由 Codex APP runtime 写入进程内 timeline。
 
+Codex CLI 和 Codex APP 已知 session 的 rollout 新增追加行可由 rollout tailer 清洗后写入进程内 timeline。
+
 timeline 不进入 `SessionState`。
 
-timeline 不从 transcript 或 JSONL 反向读取。
+timeline 条目正文只保存已清洗后的可展示内容；用户输入、assistant 输出和工具 preview 不带来源前缀。
+
+timeline 支持 `activity`、`user`、`tool`、`approval`、`reply` 和 `system` 类型。
+
+`user` 类型用于用户原始输入，前端通过类型样式区分，不依赖正文前缀。
+
+没有可展示正文的 session start、turn complete 或审批请求不生成 timeline 条目。
+
+timeline 不从 transcript 或 JSONL 反向恢复历史。
+
+timeline 允许记录已知 session 的 rollout 新增追加行所产生的实时事件。
 
 timeline 不支持导出过程事件文件。
 
@@ -31,6 +43,8 @@ timeline 不支持导出过程事件文件。
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是阶段 6 Codex CLI hook timeline 接收入口。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP timeline 接收入口。
+
+`src-tauri/src/adapters/codex_app/codex_rollout.rs` 是已知 rollout 追加行实时事件清洗入口。
 
 `src-tauri/src/tauri_api/commands.rs` 是 timeline 查询 command 入口。
 
@@ -54,13 +68,15 @@ timeline 不支持导出过程事件文件。
 
 托管 hook 事件在 adapter 边界转换为 `ProcessTimelineItem`。
 
+已知 rollout 追加行在 adapter 边界先转换为归一 agent 事件，再由 timeline adapter 转换为 `ProcessTimelineItem`。
+
 timeline adapter 使用 `SessionKey` 和条目 ID 去重。
 
 Process Timeline Service 通过 reader 端口读取指定 session 的 timeline 条目。
 
 服务先执行类型筛选。
 
-服务再执行标题和正文的搜索匹配。
+服务再执行正文搜索匹配；隐藏标题不参与搜索。
 
 服务按页码和页大小截取当前页。
 
@@ -98,15 +114,15 @@ reader 端口返回错误时，服务直接返回应用错误。
 
 只有具备 `ViewProcessTimeline` 动作的 session 展示 timeline 入口。
 
-搜索只展示标题或正文匹配的条目。
+搜索只展示正文匹配的条目。
 
 类型筛选只展示匹配类型的条目。
 
 关闭弹层后，前端不保留当前页缓存。
 
-复制单条 timeline 只复制该条标题和正文。
+复制单条 timeline 只复制该条正文。
 
-复制筛选结果只复制当前筛选页的标题和正文。
+复制筛选结果只复制当前筛选页的正文。
 
 跳到最新只影响弹层滚动位置，不改变后端数据。
 
@@ -116,9 +132,9 @@ reader 端口返回错误时，服务直接返回应用错误。
 
 ## 相关测试
 
-`src-tauri/src/services/process_timeline_service.rs` 覆盖分页、搜索和类型筛选。
+`src-tauri/src/services/process_timeline_service.rs` 覆盖分页、正文搜索和类型筛选。
 
-`src-tauri/src/adapters/timeline/mod.rs` 覆盖去重、单 session 上限、全局上限、优先级淘汰和大文本释放。
+`src-tauri/src/adapters/timeline/mod.rs` 覆盖用户类型映射、空摘要不写条目、去重、单 session 上限、全局上限、优先级淘汰和大文本释放。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 覆盖 Codex CLI hook 事件写入 timeline。
 

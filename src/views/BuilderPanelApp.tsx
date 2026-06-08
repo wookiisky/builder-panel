@@ -47,6 +47,10 @@ import {
   fetchPanelSettings,
   savePanelSettings,
 } from "../api/settingsApi";
+import {
+  subscribeSessionUpdates,
+  type SessionUpdateNotification,
+} from "../api/sessionUpdateApi";
 import type {
   BuilderPanelSettings,
   CustomShortcutInput,
@@ -101,6 +105,8 @@ export type PanelSessionListItem = SessionListItemViewModel & {
 
 /// Codex CLI hook 写入 runtime 后，前端刷新 session 的间隔。
 export const SESSION_REFRESH_INTERVAL_MS = 1000;
+/// 后端实时更新触发前端刷新时的节流间隔。
+const SESSION_UPDATE_REFRESH_DEBOUNCE_MS = 180;
 
 /// Timeline 单次读取页大小。
 const TIMELINE_PAGE_SIZE = 50;
@@ -148,7 +154,10 @@ export const BuilderPanelApp = () => {
   const settingsSaveVersion = useRef(0);
   const panelGeometryApplied = useRef(false);
   const panelGeometrySaveTimer = useRef<number | null>(null);
+  const sessionUpdateRefreshTimer = useRef<number | null>(null);
+  const timelineUpdateRefreshTimer = useRef<number | null>(null);
   const pendingPanelWindowUpdate = useRef<PanelWindowStateUpdate>({});
+  const [timelineRefreshToken, setTimelineRefreshToken] = useState(0);
 
   useEffect(() => {
     let disposed = false;
@@ -287,6 +296,83 @@ export const BuilderPanelApp = () => {
 
   useEffect(() => {
     let disposed = false;
+    let unsubscribe: (() => void) | null = null;
+
+    const scheduleSessionsRefresh = (): void => {
+      if (sessionUpdateRefreshTimer.current !== null) {
+        window.clearTimeout(sessionUpdateRefreshTimer.current);
+      }
+      sessionUpdateRefreshTimer.current = window.setTimeout(() => {
+        void fetchAllSessions(settingsView.settings)
+          .then((items) => {
+            if (disposed) {
+              return;
+            }
+            setSessions(items);
+            setMockUiState((current) =>
+              selectFirstSessionWhenMissing(current, items),
+            );
+          })
+          .catch((error: unknown) => {
+            if (!disposed) {
+              setMockUiState((current) =>
+                endSubmit(current, readableError(error, "读取 session 失败")),
+              );
+            }
+          });
+      }, SESSION_UPDATE_REFRESH_DEBOUNCE_MS);
+    };
+
+    const scheduleTimelineRefresh = (): void => {
+      if (timelineUpdateRefreshTimer.current !== null) {
+        window.clearTimeout(timelineUpdateRefreshTimer.current);
+      }
+      timelineUpdateRefreshTimer.current = window.setTimeout(() => {
+        if (!disposed) {
+          setTimelineRefreshToken((current) => current + 1);
+        }
+      }, SESSION_UPDATE_REFRESH_DEBOUNCE_MS);
+    };
+
+    subscribeSessionUpdates((notification) => {
+      scheduleSessionsRefresh();
+      if (
+        mockUiState.timeline.open &&
+        selectedSession !== null &&
+        shouldRefreshTimelineForUpdate(notification, selectedSession)
+      ) {
+        scheduleTimelineRefresh();
+      }
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+          return;
+        }
+        unsubscribe = unlisten;
+      })
+      .catch((error: unknown) => {
+        setMockUiState((current) =>
+          endSubmit(current, readableError(error, "监听 session 更新失败")),
+        );
+      });
+
+    return () => {
+      disposed = true;
+      if (unsubscribe !== null) {
+        unsubscribe();
+      }
+      if (sessionUpdateRefreshTimer.current !== null) {
+        window.clearTimeout(sessionUpdateRefreshTimer.current);
+      }
+      if (timelineUpdateRefreshTimer.current !== null) {
+        window.clearTimeout(timelineUpdateRefreshTimer.current);
+      }
+    };
+  }, [mockUiState.timeline.open, selectedSession, settingsView.settings]);
+
+  useEffect(() => {
+    let disposed = false;
 
     if (!mockUiState.timeline.open || selectedSession === null) {
       return;
@@ -328,6 +414,7 @@ export const BuilderPanelApp = () => {
     mockUiState.timeline.open,
     mockUiState.timeline.search,
     selectedSession,
+    timelineRefreshToken,
   ]);
 
   const refreshSessions = async (): Promise<void> => {
@@ -995,6 +1082,25 @@ export const panelSessionToId = (session: PanelSessionListItem): string => {
   );
 };
 
+/// 判断实时更新是否影响当前打开的 timeline。
+export const shouldRefreshTimelineForUpdate = (
+  notification: SessionUpdateNotification,
+  session: PanelSessionListItem,
+): boolean => {
+  if (
+    notification.changed_area !== "timeline" &&
+    notification.changed_area !== "both"
+  ) {
+    return false;
+  }
+  if (notification.runtime_source !== session.runtimeSource) {
+    return false;
+  }
+
+  return sessionKeyToId(notification.session_key) ===
+    sessionKeyToId(session.session_key);
+};
+
 /// 选择合并后的前端 session。
 export const selectPanelSession = (
   current: MockPanelUiState,
@@ -1128,6 +1234,16 @@ export const actionLabel = (action: UiAction): string => {
     case "view_process_timeline":
       return "过程";
   }
+};
+
+/// Timeline 行 className。
+export const timelineRowClassName = (kind: ProcessTimelineItem["kind"]): string => {
+  return `timeline-row timeline-row-${kind}`;
+};
+
+/// 单条 timeline 复制文本。
+export const timelineItemCopyText = (item: ProcessTimelineItem): string => {
+  return item.body;
 };
 
 /// 按运行时来源读取 timeline。
@@ -2251,6 +2367,7 @@ const TimelineOverlay = ({
           >
             <option value="all">全部</option>
             <option value="activity">活动</option>
+            <option value="user">用户</option>
             <option value="tool">工具</option>
             <option value="approval">审批</option>
             <option value="reply">回复</option>
@@ -2322,9 +2439,8 @@ interface TimelineRowProps {
 
 /// Timeline 行。
 const TimelineRow = ({ item }: TimelineRowProps) => (
-  <article className="timeline-row">
+  <article className={timelineRowClassName(item.kind)}>
     <div>
-      <strong>{item.title}</strong>
       <p>{item.body}</p>
     </div>
     <button
@@ -2340,8 +2456,7 @@ const TimelineRow = ({ item }: TimelineRowProps) => (
 
 /// 复制单条 timeline 文本。
 const copyTimelineItem = async (item: ProcessTimelineItem): Promise<void> => {
-  await copyText(`${item.title}
-${item.body}`);
+  await copyText(timelineItemCopyText(item));
 };
 
 /// 复制纯文本。
