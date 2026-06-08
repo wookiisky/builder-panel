@@ -86,13 +86,13 @@ pnpm install
 启动 Tauri 开发环境：
 
 ```bash
-pnpm tauri:dev
+pnpm dev
 ```
 
 只启动前端 Vite 服务：
 
 ```bash
-pnpm dev
+pnpm dev:web
 ```
 
 构建前端：

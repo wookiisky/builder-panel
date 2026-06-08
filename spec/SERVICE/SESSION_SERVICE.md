@@ -40,6 +40,12 @@ Session Service 在测试基线中从 mock agent runtime 读取 `SessionState`�
 
 Session Service 调用 Domain view model 纯转换。
 
+Session view model 的 `TextDisplay` 同时提供截断展示文本和当前 view model 可用的完整清洗文本。
+
+前端 session 行按当前段落截断展示；当前段过长时可用完整当前段作为 tooltip。
+
+Session 详情可使用 `TextDisplay` 的完整清洗文本展示多段摘要。
+
 产品 Tauri command 当前不通过 Session Service 读取 mock runtime。
 
 ## 状态与幂等

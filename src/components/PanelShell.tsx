@@ -9,10 +9,7 @@ export interface PanelShellProps {
 }
 
 /// Builder Panel 的基础窗口外壳。
-export const PanelShell = ({
-  title,
-  children,
-}: PanelShellProps) => {
+export const PanelShell = ({ title, children }: PanelShellProps) => {
   return (
     <section className="panel-shell" aria-label={title}>
       <header className="panel-drag-region" data-tauri-drag-region>

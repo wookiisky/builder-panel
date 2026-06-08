@@ -43,7 +43,10 @@ if (!existsSync(indexPath)) {
     const text = readText(filePath);
     const relativePath = relative(repositoryRoot, filePath);
 
-    if (relativePath !== "spec/00_INDEX.md" && !indexText.includes(relativePath)) {
+    if (
+      relativePath !== "spec/00_INDEX.md" &&
+      !indexText.includes(relativePath)
+    ) {
       fail(filePath, "未登记到 spec/00_INDEX.md");
     }
 
@@ -67,7 +70,10 @@ if (!existsSync(indexPath)) {
       fail(filePath, "缺少代码入口");
     }
 
-    if (!isSpecialSpecDoc(relativePath) && !/^## (相关测试|验收入口)$/m.test(text)) {
+    if (
+      !isSpecialSpecDoc(relativePath) &&
+      !/^## (相关测试|验收入口)$/m.test(text)
+    ) {
       fail(filePath, "缺少测试或验收入口");
     }
   }

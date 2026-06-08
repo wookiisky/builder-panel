@@ -44,31 +44,51 @@ panel 顶部状态区右侧展示最小化、设置和关闭按钮。
 
 session 列表展示等待审批、等待回复、运行中、完成和失败状态。
 
-每个 session 行从左到右展示固定宽度状态区、来源标签、项目名和当前输出文本。
+每个 session 行从左到右展示状态、来源标签、项目名、thread 名和当前输出文本。
 
 当前输出文本超过行宽时截断展示。
+
+当前输出文本按段落展示；用户可通过立即显示的 tooltip 查看同一段完整文本。
+
+当前输出文本 tooltip 保留段内换行，并按 Markdown 渲染标题、列表、引用、代码、链接和基础行内强调。
+
+当前输出文本 tooltip 在视口内展示；下方空间不足时会改为在当前输出文本上方展示。
+
+session 详情可展示当前 view model 可用的完整多段摘要。
+
+任务结束时，最终 Agent 输出按 65535 字符上限保留多段内容。
 
 完成、失败或等待用户回复的 session 可展示为两行。
 
 两行 session 的第一行展示最后一段输出文本。
 
+Codex CLI 和 Codex APP thread 名最长展示 10 个字符；缺少真实名称时，session 行、详情标题和 timeline 标题显示为未命名，不展示 thread ID。
+
+Codex APP thread 名可由 Codex session index、app-server thread metadata 或 app-server 实时改名通知补齐。
+
+Codex CLI hook 的模型字段和 Codex APP 中形似模型名的值不展示为 thread 名。
+
 两行 session 的第二行展示回复区。
 
-session 列表合并 Codex CLI 和 Codex APP session 后，等待用户操作的 session 排在前面。
+session 列表合并 Codex CLI 和 Codex APP session 后按首次捕捉顺序保持稳定。
 
-同一状态的 session 按更新时间倒序展示。
+新捕捉到的 session 展示在列表顶部。
 
 每次打开 Builder Panel APP 时，session 列表先从进程内空状态开始；Codex APP 可随后通过当前已加载 thread 元数据补出当前 APP thread。
 
 Builder Panel 可为 Codex APP 读取 app-server 已加载 thread 元数据和 Codex rollout 历史，用于补齐项目名、跳回目标和最新 Agent 输出。
 
-Builder Panel 可在已知 Codex CLI 或 Codex APP session 的 rollout path 后展示新增追加行产生的实时输出和工具 preview。
+Builder Panel 可在已知 Codex CLI session 的 rollout path 后展示新增追加行产生的用户文本和 assistant 文本。
+
+Builder Panel 可在已知 Codex APP session 的 rollout path 后展示新增追加行产生的用户文本和 assistant 文本。
 
 实时输出会更新 session 行摘要，并可出现在该 session 的 timeline 弹层中。
 
-session 摘要和 timeline 正文中的用户输入、assistant 输出、命令、路径、搜索词、prompt 和参数 preview 只展示原始内容，不展示 `Codex 回复`、`用户输入` 或工具动作前缀。
+session 摘要和普通文本 timeline 正文只展示用户输入和 assistant 输出的原始内容，不展示 `Codex 回复`、`用户输入` 或工具动作前缀。
 
-工具输出结束后的唯一可见状态文案是 `正在思考`。
+Codex CLI 和 Codex APP session 最后消息不展示 hook 工具调用、命令预览或其它工具调用参数。
+
+工具输出结束事件不单独展示状态文案。
 
 APP 打开后仍在运行并继续发出实时事件的任务会进入 session 列表。
 
@@ -132,11 +152,11 @@ Codex CLI 的允许并记住入口当前按允许 directive 返回，不声明�
 
 Codex CLI hook 产生的托管事件可在支持 timeline 的 session 中查询。
 
-Codex CLI 已知 rollout path 后，新增追加行中的实时工具 preview 和 assistant 输出可在 session 摘要和 timeline 中展示。
+Codex CLI 已知 rollout path 后，新增追加行中的用户文本和 assistant 输出可在 session 摘要和 timeline 中展示。
 
 Codex APP 开关默认开启。开关开启后，panel 会尝试启动 Codex APP app-server 并接收启动后的 Codex APP 实时事件。
 
-Codex APP hook payload 中 `terminal_app` 为 `Codex.app` 时，会显示为 Codex APP session。
+Codex APP hook payload 中 `terminal_app` 归一化后等于 `codexapp` 时，会显示为 Codex APP session。
 
 Codex APP 请求权限时，用户可在 panel 中点击允许或拒绝。
 
@@ -154,9 +174,13 @@ Codex APP app-server 实时事件缺少可信项目路径且历史补齐尚未�
 
 Codex APP 待识别项目 session 不提供跳回行为。
 
+Codex CLI 和 Codex APP session 使用可信 cwd 派生项目名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
+
 Codex APP session 可打开 timeline 弹层查看 hook 和 app-server 过程事件。
 
-Codex APP 已知 rollout path 后，新增追加行中的实时工具 preview、命令预览和 assistant 输出可在 session 摘要和 timeline 中展示。
+Codex APP 已知 rollout path 后，新增追加行中的用户文本和 assistant 输出可在 session 摘要和 timeline 中展示。
+
+Codex APP session 最后消息不展示 hook 工具调用、命令预览或其它工具调用参数。
 
 Codex APP session 跳回目标为 `codex://threads/<thread_id>`。
 
@@ -340,7 +364,9 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 ## 验收入口
 
-`pnpm tauri:dev` 用于人工启动空 panel。
+`pnpm tauri:dev` 和 `pnpm dev` 用于人工启动桌面 panel。
+
+`pnpm dev:web` 只启动前端 Vite 服务，不启动桌面程序。
 
 `pnpm test` 用于验证前端状态转换。
 
@@ -354,7 +380,7 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 `cargo test --manifest-path src-tauri/Cargo.toml codex_app` 用于验证 Codex APP app-server adapter。
 
-`./node_modules/.bin/vitest run` 用于验证阶段 7 前端排序、统计、设置默认值、工具用量聚合和自定义快捷输入。
+`./node_modules/.bin/vitest run` 用于验证阶段 7 前端捕捉顺序、统计、设置默认值、工具用量聚合和自定义快捷输入。
 
 `cargo test --manifest-path src-tauri/Cargo.toml settings_service` 用于验证设置服务。
 

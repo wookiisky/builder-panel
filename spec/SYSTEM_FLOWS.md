@@ -54,7 +54,9 @@ APP 启动后仍在运行的任务如果继续发出 hook、notification 或 ser
 
 单一来源读取失败时，前端保留其它来源结果。
 
-前端合并 session 后重新排序，等待用户操作优先，同状态按更新时间倒序。
+前端合并 session 后按首次捕捉顺序保持稳定。
+
+刷新时新捕捉到的 session 插入顶部，已捕捉 session 不因状态或更新时间变化重排。
 
 前端顶部状态区从合并后的 session 计算运行中数量和总数。
 
@@ -76,9 +78,11 @@ APP 启动后仍在运行的任务如果继续发出 hook、notification 或 ser
 
 Codex CLI hook、Codex APP hook、Codex APP app-server 和 Codex rollout tailer 事件先在 adapter 边界清洗为归一事件。
 
-adapter 清洗可展示摘要时只保留用户输入原文、assistant 输出原文和工具 preview；没有原文或 preview 的过程事件不写摘要。
+adapter 清洗 Codex CLI 可展示摘要时只保留用户输入原文、assistant 输出原文和完成时最后 assistant 输出；没有文本的过程事件不写摘要。
 
-工具输出结束后的唯一状态文案是 `正在思考`。
+adapter 清洗 Codex APP 最后消息时只保留用户输入原文、assistant 输出原文和完成时最后 assistant 输出；工具调用、hook 工具事件和工具参数不写最后消息。
+
+工具输出结束事件不写活动摘要。
 
 runtime 应用归一事件后同步写入 session state 和 timeline 缓存。
 
@@ -300,7 +304,7 @@ watcher 生成的事件按 session 所属 runtime 写回 Codex CLI 或 Codex APP
 
 Codex hook helper 仍通过 `--source codex` 接收 Codex hook payload。
 
-hook payload 中 `terminal_app` 为 `Codex.app` 时，payload 被归类为 Codex APP session。
+hook payload 中 `terminal_app` 归一化后等于 `codexapp` 时，payload 被归类为 Codex APP session。
 
 Codex APP hook request 进入 Codex APP runtime，不进入 Codex CLI runtime。
 
@@ -328,15 +332,23 @@ app-server 启动后，后台同步可按节流窗口调用 `thread/loaded/list`
 
 后台 thread metadata 的状态只用于创建新的已加载 session；已有实时 session 只补齐缺失信息，不用 metadata 覆盖运行状态或最新摘要。
 
-存在待识别 thread 时，后台同步可按节流窗口调用有限数量的 `thread/list` 补齐 thread 历史元数据。
+后台 thread metadata 补齐已有 session 的标题、项目、跳回目标或能力时，会发布 `session_updated` 通知前端刷新列表。
+
+后台同步会先用 Codex session index 直接补齐当前已知但缺标题或标题形似模型名的 session。
+
+存在待识别 thread 或当前已知但缺标题的 thread 时，后台同步可按节流窗口调用有限数量的 `thread/list` 补齐 thread 历史元数据。
 
 Codex APP session 列表和详情读取可通过 Codex rollout JSONL 补齐真实 cwd 和最新 Agent 输出。
+
+Codex rollout 历史补齐已有 session 的真实 cwd、跳回目标、能力或摘要时，会发布 `session_updated` 通知前端刷新列表。
 
 Codex APP recent rollout 扫描结果只补齐已知候选 thread，不从任意历史 rollout 创建当前 session。
 
 Codex APP thread 元数据携带的 rollout path 只有在快照 session ID 与 thread ID 一致且属于候选集合时才会应用。
 
 Codex APP thread 元数据携带的 rollout path 可作为该 thread 的实时 tail 目标。
+
+Codex APP path-only thread metadata 不创建新 session；runtime 已有该 thread 可信 cwd 时，可用于补齐标题和 rollout path。
 
 app-server 启动和初始化在全局 client slot 锁外执行；slot 在启动期间仅标记为启动中。
 
@@ -350,7 +362,11 @@ Codex APP app-server 实时事件首次到达时，runtime 会为该 thread 初�
 
 Codex APP app-server 事件缺少可信 cwd 时会先建立待识别项目 session，且不生成跳回目标。
 
+Codex APP `thread/name/updated` notification 只更新 thread 标题；形似模型名的值会被忽略，不覆盖真实标题。
+
 后续 hook、thread 元数据或 rollout 历史携带真实 cwd 时，runtime 按 thread ID 合并 session、pending interaction 和 timeline，并补齐跳回目标。
+
+待识别 session 迁移到真实 cwd 后，runtime 会对真实 session key 发布 `session_updated` 通知。
 
 app-server notification 和 server request 写入 runtime 前，会先用可信 cwd 统一 session key；不得用 Builder Panel 进程 cwd 代替 Codex thread cwd。
 
@@ -380,7 +396,7 @@ Codex APP session 跳回目标使用 `codex://threads/<thread_id>`。
 
 Codex APP hook 和 app-server 事件写入进程内 timeline 缓存。
 
-Codex APP 已知 rollout 追加行清洗后的实时输出和工具 preview 写入进程内 timeline 缓存。
+Codex APP 已知 rollout 追加行清洗后的用户文本和 assistant 输出写入进程内 timeline 缓存。
 
 ## mock 测试基线流程
 
@@ -472,7 +488,7 @@ Codex CLI session 的 timeline 条目来自 hook 事件内存缓存。
 
 Codex CLI hook adapter 生成归一事件后，runtime 同步写入 session state 和 timeline 缓存。
 
-Codex CLI 已知 rollout 追加行清洗后的实时输出和工具 preview 写入进程内 timeline 缓存。
+Codex CLI 已知 rollout 追加行清洗后的用户文本和 assistant 输出写入进程内 timeline 缓存。
 
 Codex APP session 的 timeline 条目来自 hook、app-server 和已知 rollout 追加行的内存缓存。
 

@@ -25,6 +25,7 @@ const DEFAULT_MAX_VISITED_ENTRIES: usize = 5_000;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_LINE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TAIL_READ_BYTES: usize = 256 * 1024;
+const MAX_FINAL_OUTPUT_CHARS: usize = 65_535;
 
 /// Codex rollout 清洗后的会话快照。
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -459,12 +460,17 @@ fn live_event_from_event_msg(
             clean_string(payload.get("message"))
                 .map(|message| user_message_event(state, &message, updated_at))
         }
-        Some("agent_message") => clean_string(payload.get("message"))
-            .map(|message| activity_event(state, &truncate(&message, 240), updated_at)),
+        Some("agent_message") => clean_string(payload.get("message")).map(|message| {
+            activity_event(
+                state,
+                &truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS),
+                updated_at,
+            )
+        }),
         Some("task_complete") | Some("turn_complete") => {
             state.completed = true;
             let summary = clean_string(payload.get("last_agent_message"))
-                .map(|message| truncate(&message, 240));
+                .map(|message| truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS));
             Some(AgentEvent::TurnCompleted(TurnCompletedEvent {
                 session_key: state.session_key.clone(),
                 summary,
@@ -479,42 +485,22 @@ fn live_event_from_event_msg(
                 updated_at,
             }))
         }
-        Some("exec_command_begin") => {
-            live_preview_event(state, command_preview(payload.get("command")), updated_at)
-        }
-        Some("terminal_interaction") => {
-            live_preview_event(state, clean_string(payload.get("stdin")), updated_at)
-        }
-        Some("patch_apply_begin") | Some("patch_apply_updated") => {
-            live_preview_event(state, changes_preview(payload.get("changes")), updated_at)
-        }
-        Some("mcp_tool_call_begin") => {
-            live_preview_event(state, mcp_tool_preview(payload), updated_at)
-        }
+        Some("exec_command_begin")
+        | Some("terminal_interaction")
+        | Some("patch_apply_begin")
+        | Some("patch_apply_updated")
+        | Some("mcp_tool_call_begin") => None,
         Some("dynamic_tool_call_request") => None,
         Some("web_search_begin") => None,
-        Some("web_search_end") => {
-            live_preview_event(state, web_search_preview(payload), updated_at)
-        }
+        Some("web_search_end") => None,
         Some("image_generation_begin") => None,
-        Some("image_generation_end") => live_preview_event(
-            state,
-            clean_string(payload.get("revised_prompt")),
-            updated_at,
-        ),
-        Some("view_image_tool_call") => {
-            live_preview_event(state, clean_string(payload.get("path")), updated_at)
-        }
+        Some("image_generation_end") => None,
+        Some("view_image_tool_call") => None,
         Some("plan_update") => None,
         Some("exec_command_end")
         | Some("patch_apply_end")
         | Some("mcp_tool_call_end")
-        | Some("dynamic_tool_call_response") => {
-            if state.completed {
-                return None;
-            }
-            Some(activity_event(state, "正在思考", updated_at))
-        }
+        | Some("dynamic_tool_call_response") => None,
         _ => None,
     }
 }
@@ -530,28 +516,21 @@ fn live_event_from_response_item(
         .unwrap_or(payload);
     match item.get("type").and_then(Value::as_str) {
         Some("message") if item.get("role").and_then(Value::as_str) == Some("assistant") => {
-            response_message_text(item, "output_text")
-                .map(|message| activity_event(state, &truncate(&message, 240), updated_at))
+            response_message_text(item, "output_text").map(|message| {
+                activity_event(
+                    state,
+                    &truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS),
+                    updated_at,
+                )
+            })
         }
-        Some("function_call") | Some("custom_tool_call") => {
-            live_preview_event(state, command_preview_for_tool(item), updated_at)
-        }
-        Some("local_shell_call") => {
-            live_preview_event(state, local_shell_command_preview(item), updated_at)
-        }
-        Some("tool_search_call") => {
-            live_preview_event(state, clean_string(item.get("execution")), updated_at)
-        }
-        Some("web_search_call") => live_preview_event(state, web_search_preview(item), updated_at),
-        Some("image_generation_call") => {
-            live_preview_event(state, clean_string(item.get("revised_prompt")), updated_at)
-        }
-        Some("function_call_output") | Some("custom_tool_call_output") => {
-            if state.completed {
-                return None;
-            }
-            Some(activity_event(state, "正在思考", updated_at))
-        }
+        Some("function_call")
+        | Some("custom_tool_call")
+        | Some("local_shell_call")
+        | Some("tool_search_call")
+        | Some("web_search_call")
+        | Some("image_generation_call") => None,
+        Some("function_call_output") | Some("custom_tool_call_output") => None,
         _ => None,
     }
 }
@@ -766,28 +745,19 @@ fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRo
                 state.summary = Some(truncate(&message, 120));
             }
         }
-        Some("exec_command_begin") => {
-            apply_preview_summary(command_preview(payload.get("command")), state)
-        }
-        Some("terminal_interaction") => {
-            apply_preview_summary(clean_string(payload.get("stdin")), state)
-        }
-        Some("patch_apply_begin") | Some("patch_apply_updated") => {
-            apply_preview_summary(changes_preview(payload.get("changes")), state)
-        }
-        Some("mcp_tool_call_begin") => apply_preview_summary(mcp_tool_preview(payload), state),
+        Some("exec_command_begin")
+        | Some("terminal_interaction")
+        | Some("patch_apply_begin")
+        | Some("patch_apply_updated")
+        | Some("mcp_tool_call_begin") => {}
         Some("dynamic_tool_call_request") => {}
-        Some("web_search_end") => apply_preview_summary(web_search_preview(payload), state),
-        Some("image_generation_end") => {
-            apply_preview_summary(clean_string(payload.get("revised_prompt")), state)
-        }
-        Some("view_image_tool_call") => {
-            apply_preview_summary(clean_string(payload.get("path")), state)
-        }
+        Some("web_search_end") => {}
+        Some("image_generation_end") => {}
+        Some("view_image_tool_call") => {}
         Some("exec_command_end")
         | Some("patch_apply_end")
         | Some("mcp_tool_call_end")
-        | Some("dynamic_tool_call_response") => apply_thinking_summary(state),
+        | Some("dynamic_tool_call_response") => {}
         _ => {}
     }
 }
@@ -804,51 +774,22 @@ fn apply_response_item(payload: &serde_json::Map<String, Value>, state: &mut Cod
                 apply_agent_message(message, state);
             }
         }
-        Some("function_call") | Some("custom_tool_call") => {
-            apply_preview_summary(command_preview_for_tool(item), state)
-        }
-        Some("local_shell_call") => apply_preview_summary(local_shell_command_preview(item), state),
-        Some("tool_search_call") => {
-            apply_preview_summary(clean_string(item.get("execution")), state)
-        }
-        Some("web_search_call") => apply_preview_summary(web_search_preview(item), state),
-        Some("image_generation_call") => {
-            apply_preview_summary(clean_string(item.get("revised_prompt")), state)
-        }
-        Some("function_call_output") | Some("custom_tool_call_output") => {
-            apply_thinking_summary(state);
-        }
+        Some("function_call")
+        | Some("custom_tool_call")
+        | Some("local_shell_call")
+        | Some("tool_search_call")
+        | Some("web_search_call")
+        | Some("image_generation_call") => {}
+        Some("function_call_output") | Some("custom_tool_call_output") => {}
         _ => {}
     }
 }
 
 /// 应用 Agent 输出。
 fn apply_agent_message(message: String, state: &mut CodexRolloutState) {
-    let message = truncate(&message, 240);
+    let message = truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS);
     state.last_agent_message = Some(message.clone());
     state.summary = Some(message);
-}
-
-fn apply_preview_summary(preview: Option<String>, state: &mut CodexRolloutState) {
-    if state.completed {
-        return;
-    }
-    let Some(preview) = preview else {
-        return;
-    };
-    if preview.trim().is_empty() {
-        return;
-    }
-
-    state.summary = Some(truncate(&preview, 160));
-}
-
-fn apply_thinking_summary(state: &mut CodexRolloutState) {
-    if state.completed {
-        return;
-    }
-
-    state.summary = Some("正在思考".to_string());
 }
 
 /// 提取 response message 文本。
@@ -904,117 +845,6 @@ fn user_message_event(
     })
 }
 
-fn live_preview_event(
-    state: &CodexRolloutTailState,
-    preview: Option<String>,
-    updated_at: UnixMillis,
-) -> Option<AgentEvent> {
-    if state.completed {
-        return None;
-    }
-    let preview = preview?;
-    if preview.trim().is_empty() {
-        return None;
-    }
-
-    Some(activity_event(state, &truncate(&preview, 160), updated_at))
-}
-
-fn command_preview(value: Option<&Value>) -> Option<String> {
-    match value? {
-        Value::String(command) => Some(command.clone()),
-        Value::Array(items) => {
-            let parts = items.iter().filter_map(Value::as_str).collect::<Vec<_>>();
-            if parts.len() >= 3 && parts[1] == "-lc" {
-                return Some(parts[2].to_string());
-            }
-            if parts.is_empty() {
-                None
-            } else {
-                Some(parts.join(" "))
-            }
-        }
-        _ => None,
-    }
-}
-
-fn changes_preview(value: Option<&Value>) -> Option<String> {
-    let object = value?.as_object()?;
-    if object.is_empty() {
-        return None;
-    }
-    let mut names = object
-        .keys()
-        .take(3)
-        .map(|path| {
-            Path::new(path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .filter(|name| !name.is_empty())
-                .unwrap_or(path)
-                .to_string()
-        })
-        .collect::<Vec<_>>();
-    names.sort();
-    let suffix = if object.len() > names.len() {
-        " ..."
-    } else {
-        ""
-    };
-
-    Some(format!("{}{}", names.join(", "), suffix))
-}
-
-fn mcp_tool_preview(payload: &serde_json::Map<String, Value>) -> Option<String> {
-    let invocation = payload.get("invocation").and_then(Value::as_object)?;
-    clean_string(invocation.get("tool"))
-}
-
-fn web_search_preview(payload: &serde_json::Map<String, Value>) -> Option<String> {
-    if let Some(action) = payload.get("action").and_then(Value::as_object) {
-        if let Some(query) = clean_string(action.get("query")) {
-            return Some(query);
-        }
-        if let Some(url) = clean_string(action.get("url")) {
-            return Some(url);
-        }
-        if let Some(pattern) = clean_string(action.get("pattern")) {
-            return Some(pattern);
-        }
-    }
-
-    clean_string(payload.get("query"))
-}
-
-fn command_preview_for_tool(item: &serde_json::Map<String, Value>) -> Option<String> {
-    let name = item.get("name").and_then(Value::as_str);
-    let arguments = decoded_arguments(item.get("arguments"))?;
-    match name {
-        Some("exec_command") => clean_string(arguments.get("cmd")),
-        Some("write_stdin") => clean_string(arguments.get("chars")),
-        Some("view_image") => clean_string(arguments.get("path")),
-        _ => None,
-    }
-}
-
-fn local_shell_command_preview(item: &serde_json::Map<String, Value>) -> Option<String> {
-    if let Some(action) = item.get("action").and_then(Value::as_object) {
-        return command_preview(action.get("command"));
-    }
-
-    command_preview(item.get("command"))
-}
-
-fn decoded_arguments(value: Option<&Value>) -> Option<serde_json::Map<String, Value>> {
-    match value? {
-        Value::Object(object) => Some(object.clone()),
-        Value::String(text) => serde_json::from_str::<Value>(text)
-            .ok()
-            .and_then(|value| value.as_object().cloned()),
-        _ => None,
-    }
-}
-
 /// 清洗字符串。
 fn clean_string(value: Option<&Value>) -> Option<String> {
     let text = value?.as_str()?.trim();
@@ -1045,6 +875,10 @@ fn truncate(value: &str, max_chars: usize) -> String {
     output
 }
 
+fn truncate_strict(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -1052,7 +886,7 @@ mod tests {
 
     use super::{
         CodexRolloutDiscovery, CodexRolloutSnapshot, CodexRolloutTailer, CodexRolloutWatchTarget,
-        MAX_LINE_BYTES,
+        MAX_FINAL_OUTPUT_CHARS, MAX_LINE_BYTES,
     };
     use crate::domain::agent_event::AgentEvent;
     use crate::domain::agent_session::{AgentKind, ConversationId, ProjectId, SessionKey};
@@ -1094,6 +928,34 @@ mod tests {
         ]);
 
         assert_eq!(snapshot.summary.as_deref(), Some("第一段\n第二段"));
+    }
+
+    #[test]
+    fn rollout_final_message_respects_strict_limit() {
+        let message = "甲".repeat(MAX_FINAL_OUTPUT_CHARS + 1);
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            &format!(
+                r#"{{"type":"event_msg","payload":{{"type":"task_complete","last_agent_message":"{message}"}}}}"#
+            ),
+        ]);
+
+        let summary = snapshot.summary.expect("summary should exist");
+        assert_eq!(summary.chars().count(), MAX_FINAL_OUTPUT_CHARS);
+    }
+
+    #[test]
+    fn rollout_response_item_respects_strict_limit() {
+        let message = "甲".repeat(MAX_FINAL_OUTPUT_CHARS + 1);
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            &format!(
+                r#"{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"{message}"}}]}}}}"#
+            ),
+        ]);
+
+        let summary = snapshot.summary.expect("summary should exist");
+        assert_eq!(summary.chars().count(), MAX_FINAL_OUTPUT_CHARS);
     }
 
     #[test]
@@ -1155,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn rollout_tailer_reads_only_appended_lines_for_known_session() {
+    fn rollout_tailer_ignores_appended_tool_preview_lines_for_last_message() {
         let root = test_root("rollout-tail");
         let file = root.join("rollout-thread-1.jsonl");
         std::fs::create_dir_all(&root).expect("root should create");
@@ -1191,12 +1053,7 @@ mod tests {
 
         let events = tailer.poll_events(UnixMillis::new(2));
 
-        assert_eq!(events.len(), 1);
-        let AgentEvent::ActivityUpdated(event) = &events[0] else {
-            panic!("event should be activity");
-        };
-        assert_eq!(event.session_key, session_key);
-        assert_eq!(event.summary, "cargo test");
+        assert!(events.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1297,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn rollout_tailer_uses_thinking_after_tool_output() {
+    fn rollout_tailer_ignores_tool_output_end() {
         let root = test_root("rollout-tail-thinking");
         let file = root.join("rollout-thread-1.jsonl");
         std::fs::create_dir_all(&root).expect("root should create");
@@ -1324,11 +1181,7 @@ mod tests {
 
         let events = tailer.poll_events(UnixMillis::new(2));
 
-        assert_eq!(events.len(), 1);
-        let AgentEvent::ActivityUpdated(event) = &events[0] else {
-            panic!("event should be activity");
-        };
-        assert_eq!(event.summary, "正在思考");
+        assert!(events.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1361,17 +1214,7 @@ mod tests {
 
         let events = tailer.poll_events(UnixMillis::new(20));
 
-        assert_eq!(events.len(), 2);
-        let AgentEvent::ActivityUpdated(first) = &events[0] else {
-            panic!("first event should be activity");
-        };
-        let AgentEvent::ActivityUpdated(second) = &events[1] else {
-            panic!("second event should be activity");
-        };
-        assert_eq!(first.summary, "cargo test");
-        assert_eq!(second.summary, "cargo test");
-        assert_eq!(first.updated_at, UnixMillis::new(20));
-        assert_eq!(second.updated_at, UnixMillis::new(21));
+        assert!(events.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 

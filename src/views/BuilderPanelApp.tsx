@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 
 import {
   createCodexAppFollowupTurn,
@@ -38,6 +46,7 @@ import type {
   SessionDetailViewModel,
   SessionKey,
   SessionListItemViewModel,
+  TextDisplay,
   TimelinePage,
   TimelineQuery,
   UiAction,
@@ -117,25 +126,13 @@ const TIMELINE_VIEWPORT_HEIGHT = 330;
 /// Timeline 虚拟列表额外渲染行数。
 const TIMELINE_OVERSCAN = 4;
 
-/// session 状态排序权重。
-const SESSION_STATUS_ORDER: Record<
-  SessionListItemViewModel["status_kind"],
-  number
-> = {
-  waiting_for_approval: 0,
-  waiting_for_answer: 0,
-  running: 1,
-  failed: 2,
-  completed: 3,
-  detached: 4,
-};
-
 /// Builder Panel 首屏应用。
 export const BuilderPanelApp = () => {
   const [mockUiState, setMockUiState] = useState<MockPanelUiState>(() =>
     createDefaultMockPanelUiState(),
   );
   const [sessions, setSessions] = useState<readonly PanelSessionListItem[]>([]);
+  const sessionsRef = useRef<readonly PanelSessionListItem[]>([]);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [settingsView, setSettingsView] = useState<SettingsViewModel>(() => ({
     settings: defaultSettings(),
@@ -158,6 +155,20 @@ export const BuilderPanelApp = () => {
   const timelineUpdateRefreshTimer = useRef<number | null>(null);
   const pendingPanelWindowUpdate = useRef<PanelWindowStateUpdate>({});
   const [timelineRefreshToken, setTimelineRefreshToken] = useState(0);
+
+  const applySessionRefresh = (
+    items: readonly PanelSessionListItem[],
+  ): void => {
+    const nextSessions = mergePanelSessionsByCaptureOrder(
+      sessionsRef.current,
+      items,
+    );
+    sessionsRef.current = nextSessions;
+    setSessions(nextSessions);
+    setMockUiState((current) =>
+      selectFirstSessionWhenMissing(current, nextSessions),
+    );
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -259,10 +270,7 @@ export const BuilderPanelApp = () => {
           if (disposed) {
             return;
           }
-          setSessions(items);
-          setMockUiState((current) =>
-            selectFirstSessionWhenMissing(current, items),
-          );
+          applySessionRefresh(items);
         })
         .catch((error: unknown) => {
           if (!disposed) {
@@ -308,10 +316,7 @@ export const BuilderPanelApp = () => {
             if (disposed) {
               return;
             }
-            setSessions(items);
-            setMockUiState((current) =>
-              selectFirstSessionWhenMissing(current, items),
-            );
+            applySessionRefresh(items);
           })
           .catch((error: unknown) => {
             if (!disposed) {
@@ -419,7 +424,7 @@ export const BuilderPanelApp = () => {
 
   const refreshSessions = async (): Promise<void> => {
     const nextSessions = await fetchAllSessions(settingsView.settings);
-    setSessions(nextSessions);
+    applySessionRefresh(nextSessions);
   };
 
   const updateSettings = async (
@@ -927,14 +932,14 @@ const fetchAllSessions = async (
     ),
   ]);
 
-  return sortPanelSessions([
+  return [
     ...codexAppSessions.map((session) =>
       withRuntimeSource(session, "codex_app"),
     ),
     ...codexCliSessions.map((session) =>
       withRuntimeSource(session, "codex_cli"),
     ),
-  ]);
+  ];
 };
 
 /// 读取单一来源 session，来源失败时不阻断其它来源。
@@ -953,25 +958,23 @@ export const fetchSessionsForSource = async (
   }
 };
 
-/// 排序合并后的 session 列表。
-export const sortPanelSessions = (
-  sessions: readonly PanelSessionListItem[],
+/// 按首次捕捉顺序合并 session，新的 session 放到列表顶部。
+export const mergePanelSessionsByCaptureOrder = (
+  previousSessions: readonly PanelSessionListItem[],
+  nextSessions: readonly PanelSessionListItem[],
 ): readonly PanelSessionListItem[] => {
-  return [...sessions].sort((left, right) => {
-    const leftStatusOrder = SESSION_STATUS_ORDER[left.status_kind];
-    const rightStatusOrder = SESSION_STATUS_ORDER[right.status_kind];
-    if (leftStatusOrder !== rightStatusOrder) {
-      return leftStatusOrder - rightStatusOrder;
-    }
+  const previousIds = new Set(previousSessions.map(panelSessionToId));
+  const nextById = new Map(
+    nextSessions.map((session) => [panelSessionToId(session), session]),
+  );
+  const newlyCaptured = nextSessions.filter(
+    (session) => !previousIds.has(panelSessionToId(session)),
+  );
+  const existingInCaptureOrder = previousSessions
+    .map((session) => nextById.get(panelSessionToId(session)) ?? null)
+    .filter((session) => session !== null);
 
-    const leftUpdatedAt = Number(left.updated_at_label);
-    const rightUpdatedAt = Number(right.updated_at_label);
-    if (Number.isFinite(leftUpdatedAt) && Number.isFinite(rightUpdatedAt)) {
-      return rightUpdatedAt - leftUpdatedAt;
-    }
-
-    return panelSessionToId(left).localeCompare(panelSessionToId(right));
-  });
+  return [...newlyCaptured, ...existingInCaptureOrder];
 };
 
 /// 统计等待和运行中的 session 数量。
@@ -1011,10 +1014,11 @@ export const isLatestSettingsSaveResponse = (
 };
 
 /// 创建默认 hook 安装状态。
-export const defaultHookAgentStatuses = (): readonly HookInstallAgentStatus[] => [
-  defaultHookAgentStatus("codex"),
-  defaultHookAgentStatus("claude"),
-];
+export const defaultHookAgentStatuses =
+  (): readonly HookInstallAgentStatus[] => [
+    defaultHookAgentStatus("codex"),
+    defaultHookAgentStatus("claude"),
+  ];
 
 /// 判断 hook 安装按钮是否应该禁用。
 export const isHookActionDisabled = (
@@ -1097,8 +1101,10 @@ export const shouldRefreshTimelineForUpdate = (
     return false;
   }
 
-  return sessionKeyToId(notification.session_key) ===
-    sessionKeyToId(session.session_key);
+  return (
+    sessionKeyToId(notification.session_key) ===
+    sessionKeyToId(session.session_key)
+  );
 };
 
 /// 选择合并后的前端 session。
@@ -1186,8 +1192,9 @@ export const canJumpOnSessionClick = (
 ): boolean => settings.terminal.jump_enabled && actions.includes("jump");
 
 /// 判断点击 session 行是否可选中。
-export const canSelectOnSessionClick = (actions: readonly UiAction[]): boolean =>
-  actions.includes("jump");
+export const canSelectOnSessionClick = (
+  actions: readonly UiAction[],
+): boolean => actions.includes("jump");
 
 /// 判断回复输入键盘事件是否应提交。
 export const shouldSubmitReplyOnKeyDown = (
@@ -1237,7 +1244,9 @@ export const actionLabel = (action: UiAction): string => {
 };
 
 /// Timeline 行 className。
-export const timelineRowClassName = (kind: ProcessTimelineItem["kind"]): string => {
+export const timelineRowClassName = (
+  kind: ProcessTimelineItem["kind"],
+): string => {
   return `timeline-row timeline-row-${kind}`;
 };
 
@@ -1558,6 +1567,10 @@ const SessionRow = ({
     interaction.can_create_followup_turn,
   );
   const shortcuts = sortedEnabledShortcuts(settings.replies.custom_shortcuts);
+  const summaryParagraph = textDisplayParagraph(session.summary);
+  const actionSummary = interaction.summary ?? summaryParagraph.visibleText;
+  const actionSummaryTooltip =
+    interaction.summary ?? summaryParagraph.tooltipText;
 
   return (
     <article
@@ -1575,10 +1588,16 @@ const SessionRow = ({
           {session.status_label}
         </span>
         <span className="session-source">{sourceTag(session)}</span>
-        <strong>{session.project_label}</strong>
-        <p title={session.summary.text}>
-          {lastParagraph(session.summary.text)}
-        </p>
+        <strong title={session.project_label}>{session.project_label}</strong>
+        <strong className="session-thread" title={session.thread_label}>
+          {session.thread_label}
+        </strong>
+        <MarkdownTooltip
+          className="session-summary-tooltip"
+          content={summaryParagraph.tooltipText}
+        >
+          {summaryParagraph.visibleText}
+        </MarkdownTooltip>
       </div>
       {expanded && (
         <div
@@ -1587,9 +1606,12 @@ const SessionRow = ({
             event.stopPropagation();
           }}
         >
-          <span>
-            {interaction.summary ?? lastParagraph(session.summary.text)}
-          </span>
+          <MarkdownTooltip
+            className="session-action-tooltip"
+            content={actionSummaryTooltip}
+          >
+            {actionSummary}
+          </MarkdownTooltip>
           {interaction.can_resolve_approval && interactionId !== null && (
             <div className="button-row">
               <button
@@ -1762,7 +1784,9 @@ const SessionRow = ({
                 }}
               />
               <button
-                disabled={isReplyDraftInvalid(draft, 1000) || followupSubmitting}
+                disabled={
+                  isReplyDraftInvalid(draft, 1000) || followupSubmitting
+                }
                 type="button"
                 onClick={() => {
                   onCreateFollowupTurn(session, draft);
@@ -1789,22 +1813,561 @@ const SessionRow = ({
 };
 
 /// 返回来源标签。
-const sourceTag = (session: PanelSessionListItem): string => {
+export const sourceTag = (session: PanelSessionListItem): string => {
   switch (session.runtimeSource) {
     case "codex_app":
-      return "codex";
+      return "Codex APP";
     case "codex_cli":
-      return "codex-cli";
+      return "Codex CLI";
   }
 };
 
 /// 返回最后一段文本。
 const lastParagraph = (text: string): string => {
   const paragraphs = text
-    .split(/\n\s*\n|\n/)
+    .split(/\n\s*\n/)
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
   return paragraphs.at(-1) ?? "";
+};
+
+/// 单段文本展示模型。
+export interface ParagraphDisplay {
+  /// 当前可见文本。
+  readonly visibleText: string;
+  /// 当前完整段落。
+  readonly fullParagraph: string;
+  /// 当前段落是否被截断。
+  readonly paragraphTruncated: boolean;
+  /// 当前完整段落 tooltip 文本。
+  readonly tooltipText: string | null;
+}
+
+/// 从 TextDisplay 中生成当前段落展示。
+export const textDisplayParagraph = (
+  display: TextDisplay,
+): ParagraphDisplay => {
+  const fullParagraph = lastParagraph(display.full_text);
+  const visibleText = truncateText(fullParagraph, display.max_chars);
+  const paragraphTruncated =
+    Array.from(fullParagraph).length > display.max_chars;
+
+  return {
+    visibleText,
+    fullParagraph,
+    paragraphTruncated,
+    tooltipText: fullParagraph.length > 0 ? fullParagraph : null,
+  };
+};
+
+/// 按字符数截断文本。
+const truncateText = (text: string, maxChars: number): string => {
+  const characters = Array.from(text);
+  if (characters.length <= maxChars) {
+    return text;
+  }
+
+  return characters.slice(0, maxChars).join("");
+};
+
+interface MarkdownTooltipProps {
+  readonly children: ReactNode;
+  readonly className?: string;
+  readonly content: string | null | undefined;
+}
+
+interface TooltipAnchorRect {
+  readonly bottom: number;
+  readonly left: number;
+  readonly top: number;
+}
+
+interface TooltipPanelSize {
+  readonly height: number;
+  readonly width: number;
+}
+
+interface TooltipViewportSize {
+  readonly height: number;
+  readonly width: number;
+}
+
+interface TooltipPanelPosition {
+  readonly left: number;
+  readonly maxWidth: number;
+  readonly placement: "bottom" | "top";
+  readonly top: number;
+}
+
+const TOOLTIP_EDGE_GAP = 8;
+const TOOLTIP_ANCHOR_GAP = 6;
+const TOOLTIP_MAX_WIDTH = 520;
+
+export const positionTooltipPanel = (
+  anchor: TooltipAnchorRect,
+  panel: TooltipPanelSize,
+  viewport: TooltipViewportSize,
+): TooltipPanelPosition => {
+  const maxWidth = tooltipMaxWidthForViewport(viewport.width);
+  const panelWidth = Math.min(panel.width, maxWidth);
+  const belowTop = anchor.bottom + TOOLTIP_ANCHOR_GAP;
+  const aboveTop = anchor.top - panel.height - TOOLTIP_ANCHOR_GAP;
+  const fitsBelow =
+    belowTop + panel.height + TOOLTIP_EDGE_GAP <= viewport.height;
+  const canFitAbove = aboveTop >= TOOLTIP_EDGE_GAP;
+  const placement = fitsBelow || !canFitAbove ? "bottom" : "top";
+  const unclampedTop = placement === "bottom" ? belowTop : aboveTop;
+  const top = clamp(
+    unclampedTop,
+    TOOLTIP_EDGE_GAP,
+    Math.max(
+      TOOLTIP_EDGE_GAP,
+      viewport.height - panel.height - TOOLTIP_EDGE_GAP,
+    ),
+  );
+  const left = clamp(
+    anchor.left,
+    TOOLTIP_EDGE_GAP,
+    Math.max(TOOLTIP_EDGE_GAP, viewport.width - panelWidth - TOOLTIP_EDGE_GAP),
+  );
+
+  return { left, maxWidth, placement, top };
+};
+
+const tooltipMaxWidthForViewport = (viewportWidth: number): number =>
+  Math.max(
+    0,
+    Math.min(TOOLTIP_MAX_WIDTH, viewportWidth - TOOLTIP_EDGE_GAP * 2),
+  );
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(Math.max(value, min), max);
+
+const tooltipPositionsEqual = (
+  left: TooltipPanelPosition | null,
+  right: TooltipPanelPosition,
+): boolean =>
+  left !== null &&
+  left.left === right.left &&
+  left.maxWidth === right.maxWidth &&
+  left.placement === right.placement &&
+  left.top === right.top;
+
+export const stopTooltipPortalEvent = (event: {
+  stopPropagation: () => void;
+}): void => {
+  event.stopPropagation();
+};
+
+const MarkdownTooltip = ({
+  children,
+  className,
+  content,
+}: MarkdownTooltipProps) => {
+  const hasTooltip =
+    content !== null && content !== undefined && content !== "";
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<TooltipPanelPosition | null>(null);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
+  const portalTarget =
+    typeof document === "undefined"
+      ? null
+      : (anchorRef.current?.closest(".app-surface") ?? document.body);
+
+  const updatePosition = (): void => {
+    if (!hasTooltip || anchorRef.current === null) {
+      return;
+    }
+
+    const anchorRect = anchorRef.current.getBoundingClientRect();
+    const panelRect = panelRef.current?.getBoundingClientRect();
+    const nextPosition = positionTooltipPanel(
+      {
+        bottom: anchorRect.bottom,
+        left: anchorRect.left,
+        top: anchorRect.top,
+      },
+      {
+        height: panelRect?.height ?? 0,
+        width:
+          panelRect?.width ?? tooltipMaxWidthForViewport(window.innerWidth),
+      },
+      {
+        height: window.innerHeight,
+        width: window.innerWidth,
+      },
+    );
+    setPosition((current) =>
+      tooltipPositionsEqual(current, nextPosition) ? current : nextPosition,
+    );
+  };
+
+  const initialMaxWidth =
+    typeof window === "undefined"
+      ? TOOLTIP_MAX_WIDTH
+      : tooltipMaxWidthForViewport(window.innerWidth);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    updatePosition();
+    const frame = window.requestAnimationFrame(() => {
+      updatePosition();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [open, content]);
+
+  useEffect(() => {
+    if (!open || panelRef.current === null) {
+      return;
+    }
+
+    const panel = panelRef.current;
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      updatePosition();
+    });
+    observer.observe(panel);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [open, content]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const handleViewportChange = (): void => {
+      updatePosition();
+    };
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("scroll", handleViewportChange, true);
+
+    return () => {
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("scroll", handleViewportChange, true);
+    };
+  }, [open, hasTooltip, content]);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current);
+      }
+    };
+  }, []);
+
+  const cancelClose = (): void => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+
+  const openTooltip = (): void => {
+    if (hasTooltip) {
+      cancelClose();
+      setOpen(true);
+    }
+  };
+
+  const scheduleCloseTooltip = (): void => {
+    cancelClose();
+    closeTimerRef.current = window.setTimeout(() => {
+      setOpen(false);
+      closeTimerRef.current = null;
+    }, 80);
+  };
+
+  return (
+    <div
+      ref={anchorRef}
+      className={[
+        "markdown-tooltip",
+        hasTooltip ? "markdown-tooltip-enabled" : "",
+        className ?? "",
+      ]
+        .filter((item) => item.length > 0)
+        .join(" ")}
+      tabIndex={hasTooltip ? 0 : undefined}
+      onBlur={scheduleCloseTooltip}
+      onFocus={openTooltip}
+      onMouseEnter={openTooltip}
+      onMouseLeave={scheduleCloseTooltip}
+    >
+      <span className="markdown-tooltip-label">{children}</span>
+      {hasTooltip &&
+        open &&
+        portalTarget !== null &&
+        createPortal(
+          <div
+            ref={panelRef}
+            className={`markdown-tooltip-panel markdown-tooltip-panel-${position?.placement ?? "bottom"}`}
+            role="tooltip"
+            style={{
+              left: position?.left ?? TOOLTIP_EDGE_GAP,
+              maxWidth: position?.maxWidth ?? initialMaxWidth,
+              top: position?.top ?? TOOLTIP_EDGE_GAP,
+            }}
+            onClick={stopTooltipPortalEvent}
+            onMouseEnter={cancelClose}
+            onMouseLeave={scheduleCloseTooltip}
+            onMouseDown={stopTooltipPortalEvent}
+            onPointerDown={stopTooltipPortalEvent}
+          >
+            {renderTooltipMarkdown(content)}
+          </div>,
+          portalTarget,
+        )}
+    </div>
+  );
+};
+
+type TooltipMarkdownBlock =
+  | {
+      readonly kind: "blockquote";
+      readonly lines: readonly string[];
+    }
+  | {
+      readonly kind: "code";
+      readonly text: string;
+    }
+  | {
+      readonly kind: "heading";
+      readonly level: number;
+      readonly text: string;
+    }
+  | {
+      readonly kind: "ordered-list" | "unordered-list";
+      readonly items: readonly string[];
+    }
+  | {
+      readonly kind: "paragraph";
+      readonly lines: readonly string[];
+    };
+
+export const parseTooltipMarkdown = (
+  markdown: string,
+): readonly TooltipMarkdownBlock[] => {
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: TooltipMarkdownBlock[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.trim().length === 0) {
+      index += 1;
+      continue;
+    }
+
+    const fenceMatch = line.match(/^\s*```/);
+    if (fenceMatch !== null) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !/^\s*```/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) {
+        index += 1;
+      }
+      blocks.push({ kind: "code", text: codeLines.join("\n") });
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch !== null) {
+      blocks.push({
+        kind: "heading",
+        level: headingMatch[1].length,
+        text: headingMatch[2].trim(),
+      });
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+      while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^\s*>\s?/, ""));
+        index += 1;
+      }
+      blocks.push({ kind: "blockquote", lines: quoteLines });
+      continue;
+    }
+
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*[-*+]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*[-*+]\s+/, ""));
+        index += 1;
+      }
+      blocks.push({ kind: "unordered-list", items });
+      continue;
+    }
+
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*\d+[.)]\s+/, ""));
+        index += 1;
+      }
+      blocks.push({ kind: "ordered-list", items });
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (
+      index < lines.length &&
+      lines[index].trim().length > 0 &&
+      !/^\s*```/.test(lines[index]) &&
+      !/^(#{1,6})\s+/.test(lines[index]) &&
+      !/^\s*>\s?/.test(lines[index]) &&
+      !/^\s*[-*+]\s+/.test(lines[index]) &&
+      !/^\s*\d+[.)]\s+/.test(lines[index])
+    ) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    blocks.push({ kind: "paragraph", lines: paragraphLines });
+  }
+
+  return blocks;
+};
+
+const renderTooltipMarkdown = (markdown: string): ReactNode => {
+  const blocks = parseTooltipMarkdown(markdown);
+  if (blocks.length === 0) {
+    return null;
+  }
+
+  return blocks.map((block, index) => {
+    const key = `block-${index}`;
+    switch (block.kind) {
+      case "blockquote":
+        return (
+          <blockquote key={key}>
+            {renderInlineLines(block.lines, `${key}-quote`)}
+          </blockquote>
+        );
+      case "code":
+        return (
+          <pre key={key}>
+            <code>{block.text}</code>
+          </pre>
+        );
+      case "heading": {
+        const HeadingTag = `h${Math.min(block.level, 6)}` as
+          | "h1"
+          | "h2"
+          | "h3"
+          | "h4"
+          | "h5"
+          | "h6";
+        return (
+          <HeadingTag key={key}>
+            {renderInlineMarkdown(block.text, `${key}-heading`)}
+          </HeadingTag>
+        );
+      }
+      case "ordered-list":
+        return (
+          <ol key={key}>
+            {block.items.map((item, itemIndex) => (
+              <li key={`${key}-${itemIndex}`}>
+                {renderInlineMarkdown(item, `${key}-${itemIndex}`)}
+              </li>
+            ))}
+          </ol>
+        );
+      case "paragraph":
+        return (
+          <p key={key}>{renderInlineLines(block.lines, `${key}-paragraph`)}</p>
+        );
+      case "unordered-list":
+        return (
+          <ul key={key}>
+            {block.items.map((item, itemIndex) => (
+              <li key={`${key}-${itemIndex}`}>
+                {renderInlineMarkdown(item, `${key}-${itemIndex}`)}
+              </li>
+            ))}
+          </ul>
+        );
+    }
+  });
+};
+
+const renderInlineLines = (
+  lines: readonly string[],
+  keyPrefix: string,
+): ReactNode => {
+  return lines.flatMap((line, index) => [
+    ...(index === 0 ? [] : [<br key={`${keyPrefix}-br-${index}`} />]),
+    ...renderInlineMarkdown(line, `${keyPrefix}-line-${index}`),
+  ]);
+};
+
+const renderInlineMarkdown = (text: string, keyPrefix: string): ReactNode[] => {
+  const nodes: ReactNode[] = [];
+  const tokenPattern =
+    /(`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenPattern.exec(text)) !== null) {
+    if (match.index > cursor) {
+      nodes.push(text.slice(cursor, match.index));
+    }
+
+    const key = `${keyPrefix}-${match.index}`;
+    if (match[2] !== undefined) {
+      nodes.push(<code key={key}>{match[2]}</code>);
+    } else if (match[3] !== undefined && match[4] !== undefined) {
+      const href = safeMarkdownHref(match[4]);
+      nodes.push(
+        href === null ? (
+          <span key={key}>{match[3]}</span>
+        ) : (
+          <a href={href} key={key} rel="noreferrer" target="_blank">
+            {match[3]}
+          </a>
+        ),
+      );
+    } else if (match[5] !== undefined || match[6] !== undefined) {
+      nodes.push(<strong key={key}>{match[5] ?? match[6]}</strong>);
+    } else {
+      nodes.push(<em key={key}>{match[7] ?? match[8]}</em>);
+    }
+
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+
+  return nodes;
+};
+
+const safeMarkdownHref = (href: string): string | null => {
+  if (/^(https?:|mailto:)/i.test(href) || href.startsWith("#")) {
+    return href;
+  }
+
+  return null;
 };
 
 /// 返回排序后的启用快捷输入。
@@ -1915,7 +2478,9 @@ export const SessionDetail = ({
           <span>{detail.execution_info}</span>
         </header>
         <div className="detail-summary-line">
-          <p className="detail-summary">{detail.summary.text}</p>
+          <p className="detail-summary" title={detail.summary.full_text}>
+            {detail.summary.full_text}
+          </p>
           <button
             type="button"
             onClick={() => {
@@ -2126,7 +2691,7 @@ const SessionDetailOverlay = ({
         <div>
           <strong>{detail.header}</strong>
           <p>
-            {selectedSession.agent_label} / {selectedSession.conversation_label}
+            {sourceTag(selectedSession)} / {selectedSession.thread_label}
           </p>
         </div>
         <button type="button" onClick={onClose}>
@@ -2144,7 +2709,7 @@ const SessionDetailOverlay = ({
         </div>
         <div>
           <dt>摘要</dt>
-          <dd>{detail.summary.text}</dd>
+          <dd>{detail.summary.full_text}</dd>
         </div>
       </dl>
     </section>
@@ -2343,8 +2908,7 @@ const TimelineOverlay = ({
           <div>
             <strong>Timeline</strong>
             <p>
-              {selectedSession.project_label} /{" "}
-              {selectedSession.conversation_label}
+              {selectedSession.project_label} / {selectedSession.thread_label}
             </p>
           </div>
           <button type="button" onClick={onClose}>

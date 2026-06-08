@@ -48,6 +48,8 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 `SessionStarted` 只有携带摘要时才更新 session 摘要；空摘要不得清空已有原始摘要。
 
+`SessionStarted` 只有携带标题时才更新 session 标题；空标题不得清空已有真实标题。
+
 没有 pending interaction 时，`SessionStarted` 将旧的完成、失败或失联状态恢复为运行中。
 
 非 `SessionStarted` 的实时事件可以创建占位 session，用于纳入 APP 启动后仍继续运行并发出事件的任务。
@@ -80,17 +82,23 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 `JumpTargetUpdated` 只更新跳回目标。
 
+## View Model
+
+Session 列表 view model 暴露项目标签、thread 标签、对话标签、状态、摘要、更新时间、用量、动作和行内交互。
+
+Thread 标签优先来自 `AgentSession.title`，最长展示 10 个字符。
+
+缺少标题时，Thread 标签、详情标题和 timeline 标题显示为未命名，不回退展示对话 ID。
+
 ## 排序规则
 
-等待用户处理的会话优先。
+Session 列表按首次捕捉顺序保持稳定。
 
-运行中会话排在等待状态之后。
+新捕捉到的 session 排在已捕捉 session 前面。
 
-失败状态高于完成状态。
+已捕捉 session 不因状态、摘要或更新时间变化重排。
 
-同优先级内按更新时间倒序。
-
-失联状态默认靠后。
+捕捉序号相同的异常情况按 `SessionKey` 稳定兜底排序。
 
 ## 相关测试
 

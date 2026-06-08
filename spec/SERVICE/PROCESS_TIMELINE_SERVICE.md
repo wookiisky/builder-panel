@@ -16,7 +16,9 @@ Codex CLI 和 Codex APP 已知 session 的 rollout 新增追加行可由 rollout
 
 timeline 不进入 `SessionState`。
 
-timeline 条目正文只保存已清洗后的可展示内容；用户输入、assistant 输出和工具 preview 不带来源前缀。
+timeline 条目正文只保存已清洗后的可展示内容；用户输入和 assistant 输出不带来源前缀。
+
+Codex CLI 和 Codex APP 工具调用、hook 工具事件和工具参数不作为最后消息 timeline 条目。
 
 timeline 支持 `activity`、`user`、`tool`、`approval`、`reply` 和 `system` 类型。
 

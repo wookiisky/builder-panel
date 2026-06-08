@@ -14,7 +14,9 @@ UI Runtime 不记录 React 组件内部私有状态细节，不替代外部行�
 
 Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
 
-前端合并 Codex CLI 和 Codex APP session 后再次排序，等待用户操作优先，同状态按更新时间倒序。
+前端合并 Codex CLI 和 Codex APP session 后按首次捕捉顺序保持稳定。
+
+刷新时新捕捉到的 session 插入列表顶部；已捕捉 session 的状态或更新时间变化不触发重排。
 
 前端读取 session 时按来源独立收敛失败；单一来源失败不会阻断其它来源展示。
 
@@ -34,7 +36,13 @@ Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
 
 前端主界面使用紧凑工作台布局，主体为单列 session 列表。
 
-每个 session 使用一行展示状态、来源、项目名和当前输出文本。
+每个 session 使用一行展示状态、运行时来源、项目名、thread 名和当前输出文本。
+
+当前输出文本 tooltip 由前端自绘，hover 或 focus 后立即展示，保留段内换行并按 Markdown 渲染。
+
+当前输出文本 tooltip 通过视口 fixed 浮层展示，并在下方空间不足时翻到触发文本上方，避免被 session 列表和 panel 容器裁剪。
+
+thread 名最长展示 10 个字符，缺少真实名称时在 session 行、详情标题和 timeline 标题显示为未命名。
 
 完成、失败或等待用户回复的 session 可展开为两行，第二行展示行内回复区。
 
@@ -98,7 +106,7 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 ## 代码入口
 
-`src/views/BuilderPanelApp.tsx` 是扩展模式工作台、session 合并排序、顶部状态区、行内交互、工具用量摘要、设置弹窗和跳回调用入口。
+`src/views/BuilderPanelApp.tsx` 是扩展模式工作台、session 合并捕捉顺序、顶部状态区、行内交互、工具用量摘要、设置弹窗和跳回调用入口。
 
 `src/components/SettingsPanel.tsx` 是设置页组件入口。
 
@@ -124,7 +132,7 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 ## 相关测试
 
-`src/views/BuilderPanelApp.test.ts` 覆盖合并 session 排序、统计、能力动作标签和工具用量聚合。
+`src/views/BuilderPanelApp.test.ts` 覆盖合并 session 捕捉顺序、统计、能力动作标签和工具用量聚合。
 
 `src/api/settingsApi.test.ts` 覆盖阶段 7 默认设置、收缩状态归一化和自定义快捷输入校验。
 

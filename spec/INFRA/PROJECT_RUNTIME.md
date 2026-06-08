@@ -16,6 +16,10 @@ Project Runtime 不记录业务状态，不替代 CI 配置。
 
 `src-tauri/Cargo.toml` 通过 `default-run` 指定 Tauri dev 默认启动 `builder-panel`。
 
+`pnpm dev` 启动 Tauri 开发环境。
+
+`pnpm dev:web` 只启动前端 Vite 开发服务，并作为 Tauri `beforeDevCommand` 使用。
+
 `.github/workflows/ci.yml` 定义 CI 验证入口。
 
 `scripts/check-spec-docs.mjs` 定义 spec 文档质量门禁入口。

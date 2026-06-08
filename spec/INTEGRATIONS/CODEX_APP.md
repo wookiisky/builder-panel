@@ -10,15 +10,15 @@
 
 Codex APP app-server schema 通过本机 `codex app-server generate-json-schema --experimental` 探针确认。
 
-当前探针验证 thread/turn request 与 response、thread/turn notification、agent message delta、token usage、status changed、审批 response、用户输入 response 和 MCP elicitation response 相关 schema 存在；具体文件清单以 `src-tauri/src/adapters/codex_app/mod.rs` 的 `REQUIRED_SCHEMA_FILES` 为准。
+当前探针验证 thread/turn request 与 response、thread/turn notification、thread name updated、agent message delta、token usage、status changed、审批 response、用户输入 response 和 MCP elicitation response 相关 schema 存在；具体文件清单以 `src-tauri/src/adapters/codex_app/mod.rs` 的 `REQUIRED_SCHEMA_FILES` 为准。
 
 Codex APP adapter 可编码 `initialize`、`initialized`、`thread/start`、`turn/start`、`thread/loaded/list` 和 `thread/list` JSON-RPC 消息。
 
-Codex APP adapter 可把 `thread/started`、`turn/started`、`item/agentMessage/delta`、`thread/status/changed`、`thread/tokenUsage/updated` 和 `turn/completed` notification 转换为归一事件。
+Codex APP adapter 可把 `thread/started`、`thread/name/updated`、`turn/started`、`item/agentMessage/delta`、`thread/status/changed`、`thread/tokenUsage/updated` 和 `turn/completed` notification 转换为归一事件。
 
 Codex APP `thread/status/changed` 的 `idle` 映射为完成态；`systemError` 映射为失败态；`notLoaded` 映射为失联态。
 
-Codex APP hook payload 由 Codex hook 入口接收；当 `terminal_app` 为 `Codex.app` 时，payload 被清洗为 `Codex APP` session。
+Codex APP hook payload 由 Codex hook 入口接收；当 `terminal_app` 归一化后等于 `codexapp` 时，payload 被清洗为 `Codex APP` session。
 
 Codex APP runtime 可处理 hook `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`PostToolUse` 和 `Stop` 事件。
 
@@ -58,9 +58,23 @@ Codex APP app-server 实时事件缺少可信 cwd 时，会创建待识别项目
 
 Codex APP 待识别 session 在后续获取可信 cwd 后，会按 thread ID 迁移到真实 session key，并保留 pending interaction、摘要、错误、用量和 timeline。
 
-Codex APP session 列表和详情读取会尝试通过 app-server `thread/loaded/list` 创建或补齐当前已加载 thread 的 cwd、标题、预览、状态和跳回目标；需要补齐待识别 session 时，可通过 `thread/list` 读取有限数量 thread 历史。
+Codex APP 使用可信 cwd 派生项目展示名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
+
+Codex APP session 列表和详情读取会尝试通过 app-server `thread/loaded/list` 创建或补齐当前已加载 thread 的 cwd、预览、状态和跳回目标；需要补齐待识别 session 或已知但缺标题的 session 时，可通过 `thread/list` 读取有限数量 thread 历史。
+
+Codex APP thread 标题可来自 `~/.codex/session_index.jsonl` 中同 ID 的 `thread_name`，app-server `thread/started.thread.name`、thread metadata，或 app-server `thread/name/updated` 实时通知。
+
+Codex APP session index 标题可直接补齐当前 runtime 中已知但缺标题或标题形似模型名的 session，不依赖 app-server 历史列表返回该 thread。
+
+Codex APP `session_index.thread_name`、app-server `thread.name` 或 `thread/name/updated` 中形似 Codex 模型名的值不作为真实 thread 标题展示。
+
+Codex APP thread 元数据中的空白名称在 adapter 边界归一为缺失名称，后续真实名称仍可补齐 session 标题。
 
 Codex APP thread metadata 状态只用于创建新的已加载 session；已有实时 session 只补齐缺失信息，不用后台 metadata 覆盖运行状态或最新摘要。
+
+Codex APP path-only thread metadata 不创建新 session；runtime 已有该 thread 可信 cwd 时，path-only metadata 可补齐标题和 rollout path。
+
+Codex APP thread metadata 或 rollout 历史补齐已有 session 的标题、项目、跳回目标、能力或摘要时，会发布轻量 `session_updated` 事件。
 
 Codex APP thread 列表 response 会逐条清洗；单条 thread 无效不会丢弃同批其它有效 thread。
 
@@ -74,7 +88,7 @@ Codex APP thread 元数据或候选快照携带 rollout path 后，可作为已�
 
 Codex APP rollout tail 只读取已知 session 的新增追加行，不回放历史行。
 
-Codex APP rollout tail 可将新增追加行清洗为用户输入、活动更新或 turn 完成事件，用于展示实时输出和工具 preview。
+Codex APP rollout tail 可将新增追加行清洗为用户输入、Agent 文本活动更新或 turn 完成事件。
 
 Codex rollout path 必须位于 `~/.codex/sessions` root 内，文件名必须匹配 `rollout-*.jsonl`，且必须通过普通文件和大小上限校验。
 
@@ -82,23 +96,27 @@ Codex rollout 读取只在 adapter 边界清洗 `session_meta`、`event_msg` 和
 
 Codex rollout 中 `event_msg.agent_message`、`task_complete.last_agent_message`、`turn_complete.last_agent_message` 和 assistant `response_item` 的 `output_text` 可作为最新 Agent 输出摘要。
 
-Codex rollout 中的用户输入、Agent 输出和工具 preview 只展示原文，不拼接 `用户输入`、`Codex 回复` 或工具动作前缀。
+Codex APP 最终 Agent 输出按 65535 字符上限保留多段内容。
 
-Codex rollout 中没有 preview 的工具开始、计划更新和 turn 开始事件不写摘要或 timeline。
+Codex rollout 中的用户输入和 Agent 输出只展示原文，不拼接 `用户输入` 或 `Codex 回复` 前缀。
 
-Codex rollout 中未知工具或动态工具的 JSON arguments 不作为 preview 展示。
+Codex rollout 中的工具开始、工具调用、计划更新和 turn 开始事件不写摘要或 timeline。
 
-Codex rollout 中的工具输出结束事件可写入唯一状态文案 `正在思考`。
+Codex rollout 中未知工具、动态工具和已知工具的 JSON arguments 不作为最后消息展示。
+
+Codex rollout 中的工具输出结束事件不写摘要或 timeline 条目。
 
 Codex rollout 中的工具事件不得在完成后覆盖最终 Agent 输出。
 
-Codex APP 当前 turn 的 `item/agentMessage/delta` 会在 runtime 内按 thread 累积有界输出；`turn/started` 或 follow-up 成功提交会清空该 thread 的当前 turn 输出。
+Codex APP 当前 turn 的 `item/agentMessage/delta` 会在 runtime 内按 thread 累积最多 65535 字符的有界输出；`turn/started` 或 follow-up 成功提交会清空该 thread 的当前 turn 输出。
 
 Codex APP `turn/completed` 和 `thread/status/changed` 的 `idle` 优先保留当前 turn 最新 Agent 输出；没有当前输出时不写固定完成或空闲文案。
 
-Codex APP hook、app-server delta 和 app-server approval request 的可展示摘要只使用用户输入原文、assistant 输出原文或工具 preview。
+Codex APP session 最后消息只使用用户输入原文、assistant 输出原文或完成时的最后 assistant 输出。
 
-Codex APP hook 和 app-server 权限请求没有 preview 时仍创建 pending interaction，但不写包装正文或 timeline 条目。
+Codex APP hook 工具事件和 app-server 权限请求仍可创建 pending interaction，但不写工具调用正文作为最后消息。
+
+Codex APP hook 权限请求可在 pending approval 摘要中保留清洗后的审批上下文。
 
 Codex APP app-server 实时事件可以为当前进程创建 session，即使对应 thread 早于 Builder Panel APP 启动。
 

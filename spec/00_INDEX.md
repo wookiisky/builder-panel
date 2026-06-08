@@ -308,7 +308,7 @@
 
 `src/api/settingsApi.test.ts` 包含前端设置默认值和自定义快捷输入清洗测试。
 
-`src/views/BuilderPanelApp.test.ts` 包含阶段 7 session 排序、统计、动作标签和工具用量聚合测试。
+`src/views/BuilderPanelApp.test.ts` 包含阶段 7 session 捕捉顺序、统计、动作标签和工具用量聚合测试。
 
 `scripts/check-architecture.mjs` 包含跨层依赖静态检查。
 

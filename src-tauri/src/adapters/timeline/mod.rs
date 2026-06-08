@@ -350,6 +350,7 @@ pub fn timeline_item_from_agent_event(event: &AgentEvent) -> Option<ProcessTimel
         )),
         AgentEvent::CapabilitiesUpdated(_)
         | AgentEvent::UsageUpdated(_)
+        | AgentEvent::TitleUpdated(_)
         | AgentEvent::JumpTargetUpdated(_) => None,
     }
 }

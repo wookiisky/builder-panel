@@ -64,13 +64,13 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 当前 Codex CLI hook 事件可写入进程内 timeline 缓存。
 
-当前 Codex CLI 已知 rollout path 后，可 tail 该已知 session 的新增 JSONL 追加行，并将清洗后的实时输出和工具 preview 写入 session 摘要与进程内 timeline。
+当前 Codex CLI 已知 rollout path 后，可 tail 该已知 session 的新增 JSONL 追加行，并将清洗后的用户文本和 assistant 输出写入 session 摘要与进程内 timeline。
 
 当前 Codex APP 已接入 Codex hook 分流、app-server stdio 子进程、session 展示、审批、回复、follow-up turn、跳回和进程内 timeline。
 
 当前 Codex APP hook 与 app-server 事件通过 thread ID 和 cwd 映射统一为同一个 session。
 
-当前 Codex APP 已知 thread rollout path 后，可 tail 该已知 session 的新增 JSONL 追加行，并将清洗后的实时输出和工具 preview 写入 session 摘要与进程内 timeline。
+当前 Codex APP 已知 thread rollout path 后，可 tail 该已知 session 的新增 JSONL 追加行，并将清洗后的用户文本和 assistant 输出写入 session 摘要与进程内 timeline。
 
 当前产品运行时只读取 Codex CLI 和 Codex APP session。
 
@@ -218,7 +218,7 @@ Builder Panel 不持久化 session、pending interaction 或 timeline。
 
 `src/stores/mockPanelStore.test.ts` 验证前端草稿、提交和 timeline 缓存状态。
 
-`src/views/BuilderPanelApp.test.ts` 验证阶段 7 session 排序、统计、动作标签和工具用量聚合。
+`src/views/BuilderPanelApp.test.ts` 验证阶段 7 session 捕捉顺序、统计、动作标签和工具用量聚合。
 
 `src-tauri/src/services/settings_service.rs` 验证设置服务默认化和保存。
 

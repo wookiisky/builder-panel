@@ -14,6 +14,9 @@ use crate::domain::usage::UnixMillis;
 pub struct SessionState {
     /// 按唯一键存储的会话。
     pub sessions: BTreeMap<SessionKey, AgentSession>,
+    /// 下一个首次捕捉序号。
+    #[serde(default)]
+    next_capture_sequence: u64,
 }
 
 impl SessionState {
@@ -21,6 +24,7 @@ impl SessionState {
     pub fn empty() -> Self {
         Self {
             sessions: BTreeMap::new(),
+            next_capture_sequence: 0,
         }
     }
 
@@ -31,11 +35,11 @@ impl SessionState {
         next_state
     }
 
-    /// 返回排序后的 session key。
+    /// 按首次捕捉顺序返回 session key，新捕捉到的 session 在前。
     pub fn sorted_session_keys(&self) -> Vec<SessionKey> {
         let mut sessions = self.sessions.values().collect::<Vec<_>>();
 
-        sessions.sort_by(|left, right| compare_sessions(left, right));
+        sessions.sort_by(|left, right| compare_sessions_by_capture_order(left, right));
         sessions
             .into_iter()
             .map(|session| session.session_key.clone())
@@ -46,18 +50,21 @@ impl SessionState {
     fn apply_event_in_place(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::SessionStarted(event) => {
-                let mut session = self.sessions.remove(&event.session_key).unwrap_or_else(|| {
-                    AgentSession::new_running(
+                let mut session = match self.sessions.remove(&event.session_key) {
+                    Some(session) => session,
+                    None => self.new_running_session(
                         event.session_key.clone(),
                         event.project_label.clone(),
                         event.conversation_label.clone(),
                         event.updated_at,
-                    )
-                });
+                    ),
+                };
                 let pending_interaction = session.pending_interaction.take();
                 session.project_label = event.project_label;
                 session.conversation_label = event.conversation_label;
-                session.title = event.title;
+                if event.title.is_some() {
+                    session.title = event.title;
+                }
                 if let Some(summary) = event.summary {
                     session.summary = Some(summary);
                 }
@@ -82,6 +89,11 @@ impl SessionState {
                 if session.pending_interaction.is_none() {
                     session.status = SessionStatus::Running;
                 }
+                session.updated_at = event.updated_at;
+            }
+            AgentEvent::TitleUpdated(event) => {
+                let session = self.ensure_session(event.session_key, event.updated_at);
+                session.title = Some(event.title);
                 session.updated_at = event.updated_at;
             }
             AgentEvent::ApprovalRequested(event) => {
@@ -159,9 +171,30 @@ impl SessionState {
         session_key: SessionKey,
         updated_at: UnixMillis,
     ) -> &mut AgentSession {
-        self.sessions.entry(session_key.clone()).or_insert_with(|| {
-            AgentSession::new_running(session_key, "未知项目", "未知对话", updated_at)
-        })
+        if !self.sessions.contains_key(&session_key) {
+            let session =
+                self.new_running_session(session_key.clone(), "未知项目", "未知对话", updated_at);
+            self.sessions.insert(session_key.clone(), session);
+        }
+
+        self.sessions
+            .get_mut(&session_key)
+            .expect("session should exist after insertion")
+    }
+
+    /// 创建带当前捕捉序号的运行中 session。
+    fn new_running_session(
+        &mut self,
+        session_key: SessionKey,
+        project_label: impl Into<String>,
+        conversation_label: impl Into<String>,
+        updated_at: UnixMillis,
+    ) -> AgentSession {
+        let mut session =
+            AgentSession::new_running(session_key, project_label, conversation_label, updated_at);
+        session.capture_sequence = self.next_capture_sequence;
+        self.next_capture_sequence = self.next_capture_sequence.saturating_add(1);
+        session
     }
 }
 
@@ -176,12 +209,14 @@ fn preserve_waiting_status(pending_interaction: Option<&AgentInteraction>) -> Se
     }
 }
 
-/// 比较两个 session 的展示顺序。
-fn compare_sessions(left: &AgentSession, right: &AgentSession) -> std::cmp::Ordering {
-    left.status
-        .sort_priority()
-        .cmp(&right.status.sort_priority())
-        .then_with(|| right.updated_at.cmp(&left.updated_at))
+/// 比较两个 session 的捕捉展示顺序。
+fn compare_sessions_by_capture_order(
+    left: &AgentSession,
+    right: &AgentSession,
+) -> std::cmp::Ordering {
+    right
+        .capture_sequence
+        .cmp(&left.capture_sequence)
         .then_with(|| left.session_key.cmp(&right.session_key))
 }
 
@@ -213,6 +248,26 @@ mod tests {
 
         assert_eq!(session.status, SessionStatus::Running);
         assert_eq!(session.project_label, "project-a");
+    }
+
+    #[test]
+    fn session_started_without_title_preserves_existing_title() {
+        let key = session_key("project-a", "conversation-a");
+        let state = SessionState::empty()
+            .apply_event(AgentEvent::SessionStarted(SessionStartedEvent {
+                project_label: "project-a".to_string(),
+                conversation_label: "conversation-a".to_string(),
+                session_key: key.clone(),
+                title: Some("真实 thread 名".to_string()),
+                summary: None,
+                capabilities: SessionCapabilities::none(),
+                usage: UsageSnapshot::unavailable(),
+                updated_at: UnixMillis::new(1),
+            }))
+            .apply_event(started_event(key.clone(), 2));
+        let session = state.sessions.get(&key).expect("session should exist");
+
+        assert_eq!(session.title.as_deref(), Some("真实 thread 名"));
     }
 
     #[test]
@@ -511,45 +566,17 @@ mod tests {
     }
 
     #[test]
-    fn sorted_sessions_prioritize_waiting_then_running_then_failed_completed_detached() {
-        let waiting = session_key("project-a", "waiting");
-        let running = session_key("project-a", "running");
-        let failed = session_key("project-a", "failed");
-        let completed = session_key("project-a", "completed");
-        let detached = session_key("project-a", "detached");
+    fn sorted_sessions_keep_capture_order_and_put_new_captures_first() {
+        let first = session_key("project-a", "first");
+        let second = session_key("project-a", "second");
+        let third = session_key("project-a", "third");
         let state = SessionState::empty()
-            .apply_event(started_event(completed.clone(), 10))
-            .apply_event(AgentEvent::TurnCompleted(TurnCompletedEvent {
-                session_key: completed.clone(),
-                summary: None,
-                updated_at: UnixMillis::new(10),
-            }))
-            .apply_event(started_event(detached.clone(), 50))
-            .apply_event(AgentEvent::Detached(DetachedEvent {
-                session_key: detached.clone(),
-                reason: None,
-                updated_at: UnixMillis::new(50),
-            }))
-            .apply_event(started_event(running.clone(), 20))
-            .apply_event(started_event(failed.clone(), 30))
-            .apply_event(AgentEvent::Failed(FailedEvent {
-                session_key: failed.clone(),
-                error: AppError::new(
-                    AppErrorCode::BridgeUnavailable,
-                    "bridge 不可用",
-                    None,
-                    false,
-                    None,
-                ),
-                updated_at: UnixMillis::new(30),
-            }))
-            .apply_event(started_event(waiting.clone(), 1))
-            .apply_event(approval_event(waiting.clone(), 1));
+            .apply_event(started_event(first.clone(), 100))
+            .apply_event(started_event(second.clone(), 1))
+            .apply_event(approval_event(first.clone(), 999))
+            .apply_event(started_event(third.clone(), 50));
 
-        assert_eq!(
-            state.sorted_session_keys(),
-            vec![waiting, running, failed, completed, detached]
-        );
+        assert_eq!(state.sorted_session_keys(), vec![third, second, first],);
     }
 
     fn session_key(project: &str, conversation: &str) -> SessionKey {

@@ -14,12 +14,13 @@ use crate::adapters::bridge::codec::{
 };
 use crate::adapters::bridge::transport::default_bridge_location;
 use crate::adapters::codex_app::{
-    handle_codex_app_bridge_request, CodexAppRuntime, CodexRolloutWatchTarget,
+    clean_thread_title, handle_codex_app_bridge_request, should_replace_session_title,
+    CodexAppRuntime, CodexRolloutWatchTarget,
 };
 use crate::adapters::timeline::InMemoryProcessTimelineCache;
 use crate::domain::agent_event::{
-    ActivityUpdatedEvent, AgentEvent, ApprovalRequestedEvent, FailedEvent, SessionStartedEvent,
-    TurnCompletedEvent, UserMessageUpdatedEvent,
+    AgentEvent, ApprovalRequestedEvent, FailedEvent, SessionStartedEvent, TurnCompletedEvent,
+    UserMessageUpdatedEvent,
 };
 use crate::domain::agent_interaction::{
     AgentInteraction, ApprovalInteraction, HookDirectiveTarget, InteractionId, InteractionStatus,
@@ -45,6 +46,7 @@ use crate::ports::session_update_port::{
 };
 
 const APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const MAX_FINAL_OUTPUT_CHARS: usize = 65_535;
 
 /// Codex CLI hook adapter。
 pub struct CodexCliHookAdapter;
@@ -75,16 +77,7 @@ impl CodexCliHookAdapter {
                     updated_at,
                 })
             }
-            BridgeHookEventName::PreToolUse => {
-                let Some(summary) = tool_preview(payload) else {
-                    return Ok(Vec::new());
-                };
-                AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
-                    session_key,
-                    summary,
-                    updated_at,
-                })
-            }
+            BridgeHookEventName::PreToolUse => return Ok(Vec::new()),
             BridgeHookEventName::PermissionRequest => {
                 let request_summary = tool_preview(payload).unwrap_or_default();
                 return Ok(vec![
@@ -110,11 +103,7 @@ impl CodexCliHookAdapter {
                     }),
                 ]);
             }
-            BridgeHookEventName::PostToolUse => AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
-                session_key,
-                summary: "正在思考".to_string(),
-                updated_at,
-            }),
+            BridgeHookEventName::PostToolUse => return Ok(Vec::new()),
             BridgeHookEventName::Stop => AgentEvent::TurnCompleted(TurnCompletedEvent {
                 session_key,
                 summary: stop_summary(payload),
@@ -172,6 +161,50 @@ impl CodexCliHookRuntime {
     /// 返回 session 列表 view model。
     pub fn session_list(&self) -> Vec<SessionListItemViewModel> {
         session_list_view_models(&self.session_state)
+    }
+
+    /// 用 Codex session index 标题补齐当前已知 CLI session。
+    pub fn apply_session_index_titles_to_known_sessions(
+        &mut self,
+        titles: &BTreeMap<String, String>,
+        updated_at: UnixMillis,
+    ) {
+        let updates = self
+            .session_state
+            .sessions
+            .iter()
+            .filter_map(|(session_key, session)| {
+                if session_key.agent_kind != AgentKind::CodexCli {
+                    return None;
+                }
+                let title = titles
+                    .get(&session_key.conversation_id.value)
+                    .and_then(|value| clean_thread_title(value))?;
+                let candidate = Some(title.clone());
+                if !should_replace_session_title(&session.title, &candidate) {
+                    return None;
+                }
+
+                Some((session_key.clone(), title))
+            })
+            .collect::<Vec<_>>();
+
+        for (session_key, title) in updates {
+            if let Some(session) = self.session_state.sessions.get_mut(&session_key) {
+                if session.title.as_deref() == Some(title.as_str()) {
+                    continue;
+                }
+                session.title = Some(title);
+                session.updated_at = updated_at;
+                let notification = SessionUpdateNotification {
+                    runtime_source: SessionRuntimeSource::CodexCli,
+                    session_key: session_key.clone(),
+                    changed_area: SessionUpdateArea::Session,
+                    updated_at,
+                };
+                self.update_sink.publish_session_update(notification);
+            }
+        }
     }
 
     /// 返回 session 详情 view model。
@@ -306,9 +339,35 @@ impl CodexCliHookRuntime {
 
     /// 应用归一事件并发布轻量更新。
     pub fn apply_event(&mut self, event: AgentEvent) -> Result<(), AppError> {
+        self.ensure_codex_cli_session(&event)?;
         self.timeline_cache.record_agent_event(&event)?;
         let notification = session_update_notification(&event);
         self.session_state = self.session_state.apply_event(event);
+        if let Some(notification) = notification {
+            self.update_sink.publish_session_update(notification);
+        }
+
+        Ok(())
+    }
+
+    fn ensure_codex_cli_session(&mut self, event: &AgentEvent) -> Result<(), AppError> {
+        let session_key = event.session_key();
+        if session_key.agent_kind != AgentKind::CodexCli {
+            return Ok(());
+        }
+        if matches!(event, AgentEvent::SessionStarted(_)) {
+            return Ok(());
+        }
+        if self.session_state.sessions.contains_key(session_key) {
+            return Ok(());
+        }
+
+        let started = AgentEvent::SessionStarted(realtime_started_event(
+            session_key.clone(),
+            event_updated_at(event),
+        ));
+        let notification = session_update_notification(&started);
+        self.session_state = self.session_state.apply_event(started);
         if let Some(notification) = notification {
             self.update_sink.publish_session_update(notification);
         }
@@ -396,6 +455,7 @@ fn event_updated_at(event: &AgentEvent) -> UnixMillis {
         AgentEvent::SessionStarted(event) => event.updated_at,
         AgentEvent::ActivityUpdated(event) => event.updated_at,
         AgentEvent::UserMessageUpdated(event) => event.updated_at,
+        AgentEvent::TitleUpdated(event) => event.updated_at,
         AgentEvent::ApprovalRequested(event) => event.updated_at,
         AgentEvent::AnswerRequested(event) => event.updated_at,
         AgentEvent::InteractionCompleted(event) => event.updated_at,
@@ -643,7 +703,7 @@ fn started_event(
         session_key,
         project_label: project_label(&payload.cwd),
         conversation_label: payload.session_id.clone(),
-        title: payload.model.clone(),
+        title: None,
         summary: None,
         capabilities: codex_cli_capabilities(),
         usage: UsageSnapshot::unavailable(),
@@ -674,11 +734,36 @@ fn codex_cli_capabilities() -> SessionCapabilities {
 }
 
 fn project_label(cwd: &str) -> String {
+    let cwd = cwd.trim_end_matches('/');
+    for marker in ["/.claude/worktrees/", "/.git/worktrees/"] {
+        if let Some((project_path, _)) = cwd.split_once(marker) {
+            if let Some(project_name) = project_path
+                .rsplit('/')
+                .find(|value| !value.trim().is_empty())
+            {
+                return project_name.to_string();
+            }
+        }
+    }
+
     cwd.rsplit('/')
         .next()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(cwd)
         .to_string()
+}
+
+fn realtime_started_event(session_key: SessionKey, updated_at: UnixMillis) -> SessionStartedEvent {
+    SessionStartedEvent {
+        project_label: project_label(&session_key.project_id.value),
+        conversation_label: session_key.conversation_id.value.clone(),
+        title: None,
+        summary: None,
+        capabilities: codex_cli_capabilities(),
+        usage: UsageSnapshot::unavailable(),
+        session_key,
+        updated_at,
+    }
 }
 
 fn prompt_summary(payload: &ValidatedHookPayload) -> Option<String> {
@@ -693,7 +778,7 @@ fn stop_summary(payload: &ValidatedHookPayload) -> Option<String> {
     payload
         .last_assistant_message
         .as_ref()
-        .map(|message| truncate(message, 120))
+        .map(|message| truncate_strict(message, MAX_FINAL_OUTPUT_CHARS))
 }
 
 fn summarize_tool_input(value: &Value) -> Option<String> {
@@ -722,6 +807,10 @@ fn truncate(value: &str, max_chars: usize) -> String {
     }
 
     output
+}
+
+fn truncate_strict(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
 }
 
 fn unix_now() -> UnixMillis {
@@ -768,10 +857,13 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use std::collections::BTreeMap;
+
     use serde_json::json;
 
     use super::{
         handle_bridge_request, CodexCliHookAdapter, CodexCliHookRuntime, PendingHookApprovalWaiter,
+        MAX_FINAL_OUTPUT_CHARS,
     };
     use crate::adapters::bridge::codec::{
         BridgeHookEventName, BridgeRequestEnvelope, BridgeResultType, ValidatedHookPayload,
@@ -780,7 +872,6 @@ mod tests {
     use crate::domain::agent_session::{AgentKind, SessionStatus};
     use crate::domain::usage::UnixMillis;
     use crate::ports::agent_adapter_port::ApprovalDecision;
-    use crate::ports::process_timeline_port::ProcessTimelineEventKind;
 
     #[test]
     fn session_start_maps_to_started_event_without_raw_payload() {
@@ -795,6 +886,7 @@ mod tests {
         };
         assert_eq!(event.session_key.agent_kind, AgentKind::CodexCli);
         assert_eq!(event.project_label, "builder-panel");
+        assert_eq!(event.title, None);
         assert!(event.capabilities.can_resolve_approval);
         assert!(!event.capabilities.can_send_reply);
         assert!(event.capabilities.can_view_process_timeline);
@@ -814,6 +906,10 @@ mod tests {
                 .expect("payload should map");
 
         assert_eq!(events.len(), 2);
+        let AgentEvent::SessionStarted(started) = &events[0] else {
+            panic!("first event should start session");
+        };
+        assert_eq!(started.title, None);
         let AgentEvent::ApprovalRequested(event) = &events[1] else {
             panic!("event should be approval");
         };
@@ -822,6 +918,48 @@ mod tests {
             event.interaction.interaction_id.value,
             "codex-hook-request-1"
         );
+    }
+
+    #[test]
+    fn post_tool_use_does_not_write_thinking_step() {
+        let payload = payload(BridgeHookEventName::PostToolUse);
+
+        let events =
+            CodexCliHookAdapter::events_from_payload("request-1", &payload, UnixMillis::new(1))
+                .expect("payload should map");
+
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn stop_keeps_multiline_final_output() {
+        let mut payload = payload(BridgeHookEventName::Stop);
+        payload.last_assistant_message = Some("第一段\n\n第二段".to_string());
+
+        let events =
+            CodexCliHookAdapter::events_from_payload("request-1", &payload, UnixMillis::new(1))
+                .expect("payload should map");
+
+        let AgentEvent::TurnCompleted(event) = &events[0] else {
+            panic!("event should complete");
+        };
+        assert_eq!(event.summary.as_deref(), Some("第一段\n\n第二段"));
+    }
+
+    #[test]
+    fn stop_final_output_respects_strict_limit() {
+        let mut payload = payload(BridgeHookEventName::Stop);
+        payload.last_assistant_message = Some("甲".repeat(MAX_FINAL_OUTPUT_CHARS + 1));
+
+        let events =
+            CodexCliHookAdapter::events_from_payload("request-1", &payload, UnixMillis::new(1))
+                .expect("payload should map");
+
+        let AgentEvent::TurnCompleted(event) = &events[0] else {
+            panic!("event should complete");
+        };
+        let summary = event.summary.as_ref().expect("summary should exist");
+        assert_eq!(summary.chars().count(), MAX_FINAL_OUTPUT_CHARS);
     }
 
     #[test]
@@ -834,10 +972,53 @@ mod tests {
         assert_eq!(response.result_type, BridgeResultType::Ack);
         let runtime = runtime.lock().expect("runtime should lock");
         assert_eq!(runtime.session_state().sessions.len(), 1);
+        assert_eq!(runtime.session_list()[0].thread_label, "未命名",);
     }
 
     #[test]
-    fn runtime_records_managed_hook_events_to_timeline() {
+    fn session_index_titles_fill_cli_thread_labels() {
+        let mut runtime = CodexCliHookRuntime::empty();
+        let request = request(BridgeHookEventName::SessionStart, "request-1");
+        runtime
+            .apply_hook_request(&request, UnixMillis::new(1))
+            .expect("request should apply");
+
+        assert_eq!(runtime.session_list()[0].thread_label, "未命名");
+
+        let mut titles = BTreeMap::new();
+        titles.insert("session-1".to_string(), "修改输入区导出格式".to_string());
+
+        runtime.apply_session_index_titles_to_known_sessions(&titles, UnixMillis::new(2));
+
+        let label = &runtime.session_list()[0].thread_label;
+        assert!(
+            label.starts_with("修改输入区"),
+            "thread_label should reflect cleaned title, got {label:?}"
+        );
+    }
+
+    #[test]
+    fn non_start_event_initializes_cli_session_project_label() {
+        let mut runtime = CodexCliHookRuntime::empty();
+        let mut request = request(BridgeHookEventName::UserPromptSubmit, "request-1");
+        request.payload.validated_payload.cwd =
+            "/Users/test/project/.git/worktrees/feature".to_string();
+
+        runtime
+            .apply_hook_request(&request, UnixMillis::new(1))
+            .expect("request should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .values()
+            .next()
+            .expect("session should exist");
+        assert_eq!(session.project_label, "project");
+    }
+
+    #[test]
+    fn pre_tool_use_does_not_write_tool_preview_to_last_message() {
         let mut runtime = CodexCliHookRuntime::empty();
         let mut request = request(BridgeHookEventName::PreToolUse, "request-1");
         request.payload.validated_payload.tool_input = Some(json!({"command": "cargo test"}));
@@ -846,20 +1027,7 @@ mod tests {
             .apply_hook_request(&request, UnixMillis::new(1))
             .expect("request should apply");
 
-        let session_key = runtime
-            .session_state()
-            .sessions
-            .keys()
-            .next()
-            .expect("session should exist")
-            .clone();
-        let items = runtime
-            .read_timeline(&session_key)
-            .expect("timeline should read");
-
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].kind, ProcessTimelineEventKind::Activity);
-        assert_eq!(items[0].body, "cargo test");
+        assert!(runtime.session_state().sessions.is_empty());
     }
 
     #[test]

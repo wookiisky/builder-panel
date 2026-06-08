@@ -20,6 +20,8 @@ Tauri 事件发送失败不写 session 失败状态。
 
 `session_updated` 表示某个 Codex CLI 或 Codex APP session 的 session 摘要、状态、动作或 timeline 发生变化。
 
+Codex APP 后台 thread metadata、session index 或 rollout 历史补齐已有 session 的标题、项目、跳回目标、能力或摘要时，也会发送 `session_updated`。
+
 事件 payload 包含运行时来源、session key、变更区域和更新时间。
 
 运行时来源当前只包含 Codex CLI 和 Codex APP。

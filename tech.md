@@ -80,17 +80,17 @@ Builder Panel 首版采用 Tauri + Rust + TypeScript + React 构建跨平台常�
 
 ### 3.4 映射关系
 
-| `open-vibe-island` 概念 | Builder Panel 概念 | 处理方式 |
-|---|---|---|
-| `OpenIslandCore.AgentEvent` | `domain::AgentEvent` | 借鉴事件归一思想，Rust 重新定义 |
-| `SessionState.apply` | `domain::SessionState::apply_event` | 纯 reducer，无 IO |
-| `OpenIslandHooks` | `builder-panel-hook` | Rust CLI，跨平台 |
-| Unix socket bridge | `LocalBridgePort` | Mac UDS，Windows Named Pipe |
-| pending approval / question | `AgentInteraction` | 统一审批、选项、文本回复 |
-| terminal jump | `JumpTargetPort` | 只负责聚焦或跳回 |
-| text sender | `ReplySenderPort` | 只负责可靠回写或复制降级 |
-| `CodexAppServer` | `CodexAppAdapter` | schema 重验后接入 |
-| event timeline | `ProcessTimelineService` | 只接收托管会话过程事件，内存保存 |
+| `open-vibe-island` 概念     | Builder Panel 概念                  | 处理方式                         |
+| --------------------------- | ----------------------------------- | -------------------------------- |
+| `OpenIslandCore.AgentEvent` | `domain::AgentEvent`                | 借鉴事件归一思想，Rust 重新定义  |
+| `SessionState.apply`        | `domain::SessionState::apply_event` | 纯 reducer，无 IO                |
+| `OpenIslandHooks`           | `builder-panel-hook`                | Rust CLI，跨平台                 |
+| Unix socket bridge          | `LocalBridgePort`                   | Mac UDS，Windows Named Pipe      |
+| pending approval / question | `AgentInteraction`                  | 统一审批、选项、文本回复         |
+| terminal jump               | `JumpTargetPort`                    | 只负责聚焦或跳回                 |
+| text sender                 | `ReplySenderPort`                   | 只负责可靠回写或复制降级         |
+| `CodexAppServer`            | `CodexAppAdapter`                   | schema 重验后接入                |
+| event timeline              | `ProcessTimelineService`            | 只接收托管会话过程事件，内存保存 |
 
 ## 4. 总体架构
 
@@ -431,11 +431,11 @@ pub struct SessionState {
 
 view model 层排序：
 
-1. `WaitingForApproval`、`WaitingForAnswer` 优先。
-2. `Running` 其次。
-3. `Failed` 高于 `Completed`。
-4. 同状态内按 `updated_at` 倒序。
-5. `Detached` 默认靠后，但仍可展示最近状态和跳回降级。
+1. 列表按首次捕捉顺序保持稳定。
+2. 新捕捉到的 session 排在已捕捉 session 前面。
+3. 已捕捉 session 不因状态、摘要或 `updated_at` 变化重排。
+4. 捕捉序号相同的异常情况按 `SessionKey` 稳定兜底排序。
+5. `Detached` 仍可展示最近状态和跳回降级，但不改变捕捉顺序。
 
 排序规则写在 domain 或 app-service 的纯函数中，并有单元测试。
 
@@ -927,7 +927,7 @@ pub enum ProcessTimelineKind {
 
 1. agent 名称。
 2. 项目名或工作目录。
-3. 对话标题或 ID。
+3. 对话标题；缺少真实标题时显示未命名，不展示 ID。
 4. 状态标签。
 5. 摘要。
 6. 更新时间。
@@ -948,7 +948,7 @@ pub enum ProcessTimelineKind {
 详情区包含：
 
 1. 标题区：agent、项目、对话标题、状态。
-2. 标识区：项目 ID、工作目录、对话 ID。
+2. 标识区：项目名、thread 标签。
 3. 用量区：5H、周用量、来源。
 4. 摘要区：最近状态或当前问题。
 5. 执行信息区：运行信息和轻量状态动画。
@@ -1199,17 +1199,20 @@ Domain 显式建模：
 1. `session_key`
 2. `agent_label`
 3. `project_label`
-4. `conversation_label`
-5. `status_label`
-6. `status_kind`
-7. `summary`
-8. `updated_at_label`
-9. `usage_5h_label`
-10. `usage_weekly_label`
-11. `usage_source_label`
-12. `actions`
+4. `thread_label`
+5. `conversation_label`
+6. `status_label`
+7. `status_kind`
+8. `summary`
+9. `updated_at_label`
+10. `usage_5h_label`
+11. `usage_weekly_label`
+12. `usage_source_label`
+13. `actions`
 
 `actions` 由 capabilities 转换，不由组件自行判断。
+
+`thread_label` 优先来自 session title，最长展示 10 个字符；缺少 title 时不回退展示 conversation id。
 
 ### 20.2 SessionDetailViewModel
 
@@ -1250,7 +1253,7 @@ Domain 显式建模：
 4. answer request 进入等待回复。
 5. completed 清理 pending interaction。
 6. detached 不删除历史状态。
-7. 多 session 排序。
+7. 多 session 捕捉顺序。
 8. 不同项目会话不合并。
 9. 同项目不同对话不合并。
 10. usage unavailable 不生成虚假数字。

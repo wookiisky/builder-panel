@@ -72,6 +72,8 @@ export interface InteractionId {
 export interface TextDisplay {
   /// 截断后的展示文本。
   readonly text: string;
+  /// 当前 view model 可用的完整清洗文本。
+  readonly full_text: string;
   /// 是否已经截断。
   readonly truncated: boolean;
   /// 截断上限。
@@ -104,6 +106,8 @@ export interface SessionListItemViewModel {
   readonly agent_label: string;
   /// 项目展示标签。
   readonly project_label: string;
+  /// Thread 展示标签。
+  readonly thread_label: string;
   /// 对话展示标签。
   readonly conversation_label: string;
   /// 状态展示标签。

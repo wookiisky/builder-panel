@@ -82,11 +82,19 @@ Codex APP runtime 在缺少可信 cwd 时使用待识别项目占位 session，�
 
 Codex APP runtime 获取可信 cwd 后必须按 thread ID 迁移占位 session，并保留 pending interaction、摘要、错误、用量和 timeline。
 
-Codex APP runtime 维护有界的当前 turn Agent 输出缓冲；新 turn 开始或 follow-up 成功提交时必须清空对应 thread 的当前输出。
+Codex APP runtime 维护最多 65535 字符的当前 turn Agent 输出缓冲；新 turn 开始或 follow-up 成功提交时必须清空对应 thread 的当前输出。
 
 Codex APP runtime 在完成或 idle 事件中优先保留当前 turn 最新 Agent 输出。
 
-Codex CLI 和 Codex APP adapter 写入 session 摘要时，只能使用用户输入原文、assistant 输出原文、工具 preview 或 `正在思考` 状态。
+Codex APP runtime 接收 `thread/name/updated` 时只更新 thread 标题，不重置 session 状态、pending interaction 或最后消息。
+
+Codex CLI adapter 写入 session 摘要时，只能使用用户输入原文、assistant 输出原文或完成时最后 assistant 输出。
+
+Codex APP adapter 写入最后消息时，只能使用用户输入原文、assistant 输出原文或完成时最后 assistant 输出。
+
+Codex CLI 和 Codex APP adapter 不为工具 hook 事件、工具参数或工具结束事件写活动摘要。
+
+Codex CLI 和 Codex APP adapter 使用可信 cwd 派生项目展示名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
 
 Codex rollout adapter 不得把未知工具 JSON arguments 作为 preview 写入 Domain。
 
@@ -94,17 +102,21 @@ Codex rollout adapter 不得把未知工具 JSON arguments 作为 preview 写入
 
 Codex APP app-server `thread/loaded/list` 元数据可为当前已加载 thread 创建 session；metadata 状态只应用于新建 session，若 session 已存在，只能补齐缺失信息，不得用后台 metadata 折叠实时运行状态。
 
+Codex APP session index 标题可直接补齐当前已知 session；只允许替换缺失标题或形似模型名的标题，不得覆盖已有真实标题，不得创建新 session。
+
+Codex APP thread metadata 补齐已有 session 的标题、项目、跳回目标或能力时，必须发布 `session_updated` 事件。
+
 Codex APP app-server thread 列表边界清洗必须跳过单条无效 thread，保留同批有效 thread 继续补齐。
 
-Codex APP app-server thread 列表中缺少 cwd 但带 path 的 thread 只能作为 rollout 候选，不得直接创建或迁移 session。
+Codex APP app-server thread 列表中缺少 cwd 但带 path 的 thread 不得直接创建或迁移 session；runtime 已有该 thread 可信 cwd 时，可用该 metadata 补齐标题和 rollout path。
 
 Codex APP app-server thread 列表中 `status.type` 类型错误属于单条脏数据，必须跳过该 thread，不得默认成 idle。
 
 Codex APP rollout 历史只能应用到已有或可迁移的候选 session，不得单独创建当前 session。
 
-Codex APP recent rollout 扫描只能应用到已知候选 thread，包括已加载 thread、thread 历史返回的待识别 thread 和当前待识别 thread；不得把无关历史 rollout 拉入当前 session 列表。
+Codex APP recent rollout 扫描只能应用到已知候选 thread，包括已加载 thread、thread 历史返回的待识别或缺标题 thread、当前待识别 thread 和当前已知但缺标题的 thread；不得把无关历史 rollout 拉入当前 session 列表。
 
-Codex APP thread 历史元数据只能应用到当前待识别 thread；thread 元数据携带的 rollout path 必须与该 thread ID 匹配后才能补齐 runtime。
+Codex APP thread 历史元数据只能应用到当前待识别 thread 或当前已知但缺标题的 thread；thread 元数据携带的 rollout path 必须与该 thread ID 匹配后才能补齐 runtime。
 
 Codex APP rollout path 必须限制在 Codex sessions root 内，并在读取前校验文件名、普通文件类型和文件大小。
 
@@ -242,6 +254,8 @@ Tauri command 使用进程内 Codex APP runtime 锁收口 Codex APP 状态访问
 
 前端订阅 `session_updated` 事件以降低 session 摘要和 timeline 的可见延迟。
 
+Codex APP 后台 metadata、session index 或 rollout 历史补齐已有 session 的可见字段时，后端必须发布 `session_updated` 事件。
+
 前端收到实时更新后必须节流刷新 session 列表。
 
 前端只在当前打开 timeline 与事件 session 匹配时刷新 timeline。
@@ -252,7 +266,7 @@ Codex CLI session 只能由 APP 进程启动后的实时 hook 写入。
 
 Codex CLI session 也可由已知 session rollout 追加行写入实时活动或完成事件。
 
-Codex APP session 可由 APP 进程启动后的实时 hook、notification、server request、app-server thread 元数据或 Codex rollout 历史补齐。
+Codex APP session 可由 APP 进程启动后的实时 hook、notification、server request、session index、app-server thread 元数据或 Codex rollout 历史补齐。
 
 Codex APP session 也可由已知 session rollout 追加行写入实时活动或完成事件。
 
@@ -264,7 +278,9 @@ APP 启动后仍在运行的任务如果继续发出实时事件，可以创建�
 
 前端合并 Codex CLI 和 Codex APP session 后，UI session 选中身份必须包含 runtime source。
 
-前端合并 Codex CLI 和 Codex APP session 后，必须重新按 UI 排序规则排序。
+前端合并 Codex CLI 和 Codex APP session 后，必须按首次捕捉顺序保持稳定。
+
+刷新时新捕捉到的 session 插入顶部，已捕捉 session 不因状态或更新时间变化重排。
 
 阶段 7 前端设置状态不进入 Domain。
 
@@ -482,7 +498,7 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 若前端选中态不包含 runtime source，同一个 `SessionKey` 的 Codex CLI 和 Codex APP session 可能互相误选。
 
-若合并后不重新排序，不同 runtime 来源的 session 拼接顺序会破坏等待优先规则。
+若后端和前端未共同保持捕捉顺序，刷新后 session 可能因 runtime 拼接、状态或更新时间变化发生跳位。
 
 若设置 fallback 不校验本地缓存结构，脏数据可能让 UI 展示与能力不一致。
 
@@ -590,7 +606,7 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 `src/stores/mockPanelStore.test.ts` 验证前端草稿隔离、选项选择隔离和 timeline 缓存释放。
 
-`src/views/BuilderPanelApp.test.ts` 验证阶段 7 合并排序、统计、动作标签和工具用量聚合。
+`src/views/BuilderPanelApp.test.ts` 验证阶段 7 合并捕捉顺序、统计、动作标签和工具用量聚合。
 
 `src-tauri/src/services/settings_service.rs` 验证配置缺失、损坏和保存。
 

@@ -36,13 +36,17 @@ Codex CLI bridge server 对每个连接启动独立处理线程。
 
 Codex CLI `SessionStart` 会生成运行中的 Codex CLI session，但不写启动包装摘要。
 
+Codex CLI hook payload 的 `model` 字段不作为 thread 标题；缺少真实标题时显示为未命名。
+
 Codex CLI `UserPromptSubmit` 会以用户原始输入更新 session 摘要和 timeline。
 
-Codex CLI `PreToolUse` 只有提取到工具 preview 时才更新活动摘要。
+Codex CLI `PreToolUse` 不写活动摘要。
 
-Codex CLI `PostToolUse` 会写入唯一状态文案 `正在思考`。
+Codex CLI `PostToolUse` 不写活动摘要。
 
-Codex CLI `PermissionRequest` 会生成 pending approval；有工具 preview 时使用 preview 作为请求摘要，没有 preview 时不写包装正文。
+Codex CLI `Stop` 的最终 assistant 输出按 65535 字符上限保留多段内容。
+
+Codex CLI `PermissionRequest` 会生成 pending approval；有工具 preview 时使用 preview 作为审批请求摘要，但不更新 session 最后消息。
 
 用户在 panel 中允许或拒绝 pending approval 后，bridge 返回 Codex stdout directive。
 

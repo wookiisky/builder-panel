@@ -56,12 +56,12 @@ describe("SettingsPanel hook install list", () => {
     expect((codexButtons?.[1] as HTMLButtonElement | undefined)?.disabled).toBe(
       false,
     );
-    expect((claudeButtons?.[0] as HTMLButtonElement | undefined)?.disabled).toBe(
-      false,
-    );
-    expect((claudeButtons?.[1] as HTMLButtonElement | undefined)?.disabled).toBe(
-      true,
-    );
+    expect(
+      (claudeButtons?.[0] as HTMLButtonElement | undefined)?.disabled,
+    ).toBe(false);
+    expect(
+      (claudeButtons?.[1] as HTMLButtonElement | undefined)?.disabled,
+    ).toBe(true);
 
     await act(async () => {
       claudeButtons?.[0]?.click();

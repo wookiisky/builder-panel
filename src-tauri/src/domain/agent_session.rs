@@ -109,18 +109,6 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
-    /// 返回排序优先级，数值越小越靠前。
-    pub fn sort_priority(&self) -> u8 {
-        match self {
-            Self::WaitingForApproval => 0,
-            Self::WaitingForAnswer => 0,
-            Self::Running => 1,
-            Self::Failed => 2,
-            Self::Completed => 3,
-            Self::Detached => 4,
-        }
-    }
-
     /// 返回 UI 可读的状态标签。
     pub fn label(&self) -> &'static str {
         match self {
@@ -196,6 +184,9 @@ pub struct AgentSession {
     pub last_error: Option<AppError>,
     /// 可选跳回目标。
     pub jump_target: Option<JumpTarget>,
+    /// 首次被当前状态捕捉到的稳定顺序。
+    #[serde(default)]
+    pub capture_sequence: u64,
     /// 最近更新时间。
     pub updated_at: UnixMillis,
 }
@@ -220,6 +211,7 @@ impl AgentSession {
             pending_interaction: None,
             last_error: None,
             jump_target: None,
+            capture_sequence: 0,
             updated_at,
         }
     }

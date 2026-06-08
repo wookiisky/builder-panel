@@ -50,6 +50,17 @@ pub struct UserMessageUpdatedEvent {
     pub updated_at: UnixMillis,
 }
 
+/// 会话标题更新事件。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TitleUpdatedEvent {
+    /// 会话唯一键。
+    pub session_key: SessionKey,
+    /// 已清洗会话标题。
+    pub title: String,
+    /// 事件更新时间。
+    pub updated_at: UnixMillis,
+}
+
 /// 审批请求事件。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ApprovalRequestedEvent {
@@ -159,6 +170,8 @@ pub enum AgentEvent {
     ActivityUpdated(ActivityUpdatedEvent),
     /// 用户原始输入更新。
     UserMessageUpdated(UserMessageUpdatedEvent),
+    /// 会话标题更新。
+    TitleUpdated(TitleUpdatedEvent),
     /// 审批请求。
     ApprovalRequested(ApprovalRequestedEvent),
     /// 问题或选项请求。
@@ -186,6 +199,7 @@ impl AgentEvent {
             Self::SessionStarted(event) => &event.session_key,
             Self::ActivityUpdated(event) => &event.session_key,
             Self::UserMessageUpdated(event) => &event.session_key,
+            Self::TitleUpdated(event) => &event.session_key,
             Self::ApprovalRequested(event) => &event.session_key,
             Self::AnswerRequested(event) => &event.session_key,
             Self::InteractionCompleted(event) => &event.session_key,

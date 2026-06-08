@@ -170,11 +170,11 @@
 
 约束：Codex APP 可通过 app-server thread 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；该补齐不得覆盖实时 pending、失败、完成状态。
 
-代码影响：`src-tauri/src/adapters/bridge/hook_payload.rs` 将 `terminal_app` 为 `Codex.app` 的 Codex hook payload 分流为 Codex APP；`src-tauri/src/adapters/codex_app/mod.rs` 保存 Codex APP runtime 和 app-server stdio 客户端；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 Codex rollout 历史；`src/views/BuilderPanelApp.tsx` 按 runtime source 路由 Codex APP session。
+代码影响：`src-tauri/src/adapters/bridge/hook_payload.rs` 将 `terminal_app` 归一化后等于 `codexapp` 的 Codex hook payload 分流为 Codex APP；`src-tauri/src/adapters/codex_app/mod.rs` 保存 Codex APP runtime 和 app-server stdio 客户端；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 Codex rollout 历史；`src/views/BuilderPanelApp.tsx` 按 runtime source 路由 Codex APP session。
 
 测试影响：Rust 测试覆盖 Codex APP hook 分流、stdout directive、schema 探针、可信 cwd、rollout 输出清洗和完整能力 capability；前端测试覆盖 Codex APP runtime source 路由。
 
-排障影响：若 Codex APP session 不出现，先检查 Codex hook 是否启用、`terminal_app` 是否为 `Codex.app`、app-server 是否可启动，再检查前端设置开关。
+排障影响：若 Codex APP session 不出现，先检查 Codex hook 是否启用、`terminal_app` 归一化后是否等于 `codexapp`、app-server 是否可启动，再检查前端设置开关。
 
 状态：生效。
 
@@ -286,7 +286,7 @@
 
 代码影响：`src/views/BuilderPanelApp.tsx` 负责顶部状态区、工具用量聚合、session 行、行内交互和设置弹窗；`src/components/PanelShell.tsx` 不再提供收缩按钮；设置保存边界将 `collapsed` 归一化为 `false`。
 
-测试影响：前端测试覆盖 session 排序、统计、工具用量聚合和自定义快捷输入清洗；Rust 测试覆盖 view model 只在存在跳回目标时生成跳回动作。
+测试影响：前端测试覆盖 session 捕捉顺序、统计、工具用量聚合和自定义快捷输入清洗；Rust 测试覆盖 view model 只在存在跳回目标时生成跳回动作。
 
 排障影响：若 UI 出现收缩入口，应视为旧交互残留；若点击 session 没有跳转，应先检查该 session 是否同时具备跳回能力和跳回目标。
 
@@ -308,7 +308,7 @@
 
 ## 决策 21
 
-决策：Codex CLI 和未接入 agent session 只来自当前 Builder Panel 进程启动后的实时事件；Codex APP 可通过 app-server thread 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；已知 Codex CLI 和 Codex APP session 可 tail rollout 新增追加行展示实时输出；Builder Panel 不持久化 session。
+决策：Codex CLI 和未接入 agent session 只来自当前 Builder Panel 进程启动后的实时事件；Codex APP 可通过 app-server thread 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；已知 Codex CLI 和 Codex APP session 可 tail rollout 新增追加行展示用户文本和 assistant 文本；Builder Panel 不持久化 session。
 
 原因：用户打开面板时需要一个干净的当前观察窗口，不能把普通历史记录误当成本次 APP 状态；但 Codex APP app-server 和 rollout 已提供 thread 级项目与最新输出事实，读取这些事实可以修正待识别项目和输出摘要缺失，同时不恢复历史 timeline。
 

@@ -28,6 +28,8 @@ pub enum UiAction {
 pub struct TextDisplay {
     /// 截断后的展示文本。
     pub text: String,
+    /// 当前 view model 可用的完整清洗文本。
+    pub full_text: String,
     /// 是否已经截断。
     pub truncated: bool,
     /// 截断上限。
@@ -62,6 +64,8 @@ pub struct SessionListItemViewModel {
     pub agent_label: String,
     /// 项目展示标签。
     pub project_label: String,
+    /// Thread 展示标签。
+    pub thread_label: String,
     /// 对话展示标签。
     pub conversation_label: String,
     /// 状态展示标签。
@@ -214,6 +218,7 @@ pub fn session_list_item_view_model(session: &AgentSession) -> SessionListItemVi
         session_key: session.session_key.clone(),
         agent_label: session.session_key.agent_kind.label().to_string(),
         project_label: session.project_label.clone(),
+        thread_label: thread_label(session),
         conversation_label: session.conversation_label.clone(),
         status_label: session.status.label().to_string(),
         status_kind: session.status,
@@ -243,13 +248,11 @@ pub fn session_detail_view_model(session: &AgentSession) -> SessionDetailViewMod
     let actions = actions_for_session(session);
     let reply_enabled = actions.contains(&UiAction::SendReply);
     let choice_box = choice_box_view_model(session, &actions);
+    let thread_label = thread_label(session);
 
     SessionDetailViewModel {
-        header: session
-            .title
-            .clone()
-            .unwrap_or_else(|| session.conversation_label.clone()),
-        identity: format!("{} / {}", session.project_label, session.conversation_label),
+        header: thread_label.clone(),
+        identity: format!("{} / {}", session.project_label, thread_label),
         usage: format!(
             "5H {}，本周 {}",
             session.usage.usage_5h.display_label(),
@@ -280,10 +283,7 @@ pub fn timeline_view_model(
     receive_error: Option<String>,
 ) -> TimelineViewModel {
     TimelineViewModel {
-        session_header: session
-            .title
-            .clone()
-            .unwrap_or_else(|| session.conversation_label.clone()),
+        session_header: thread_label(session),
         filter_count: 0,
         item_count,
         loading_state: "idle".to_string(),
@@ -367,6 +367,17 @@ pub fn actions_for_session(session: &AgentSession) -> Vec<UiAction> {
     actions
 }
 
+/// 创建 thread 展示标签。
+fn thread_label(session: &AgentSession) -> String {
+    session
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| truncate(value, 10))
+        .unwrap_or_else(|| "未命名".to_string())
+}
+
 /// 创建用量 view model。
 fn usage_value_view_model(value: &UsageValue) -> UsageValueViewModel {
     UsageValueViewModel {
@@ -414,6 +425,7 @@ pub fn text_display(value: &str, max_chars: usize) -> TextDisplay {
     if char_count <= max_chars {
         return TextDisplay {
             text: value.to_string(),
+            full_text: value.to_string(),
             truncated: false,
             max_chars,
         };
@@ -421,9 +433,21 @@ pub fn text_display(value: &str, max_chars: usize) -> TextDisplay {
 
     TextDisplay {
         text: value.chars().take(max_chars).collect(),
+        full_text: value.to_string(),
         truncated: true,
         max_chars,
     }
+}
+
+/// 按字符数截断文本。
+fn truncate(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_none() {
+        return value.to_string();
+    }
+
+    truncated
 }
 
 /// 返回 pending interaction 标签。
@@ -566,6 +590,28 @@ mod tests {
     }
 
     #[test]
+    fn list_view_model_exposes_truncated_thread_label_from_session_title() {
+        let mut session = base_session(SessionCapabilities::none(), UsageSnapshot::unavailable());
+        session.title = Some("一二三四五六七八九十十一".to_string());
+        let view_model = session_list_item_view_model(&session);
+
+        assert_eq!(view_model.thread_label, "一二三四五六七八九十");
+    }
+
+    #[test]
+    fn list_view_model_hides_conversation_id_when_thread_title_is_missing() {
+        let session = base_session(SessionCapabilities::none(), UsageSnapshot::unavailable());
+        let list_view_model = session_list_item_view_model(&session);
+        let detail_view_model = session_detail_view_model(&session);
+        let timeline_view_model = timeline_view_model(&session, 0, None);
+
+        assert_eq!(list_view_model.thread_label, "未命名");
+        assert_eq!(detail_view_model.header, "未命名");
+        assert_eq!(detail_view_model.identity, "project / 未命名");
+        assert_eq!(timeline_view_model.session_header, "未命名");
+    }
+
+    #[test]
     fn list_view_model_filters_stale_reply_action_after_completion() {
         let mut session = base_session(
             SessionCapabilities {
@@ -674,6 +720,7 @@ mod tests {
         let display = text_display("abcdefghijklmnopqrstuvwxyz", 8);
 
         assert_eq!(display.text, "abcdefgh");
+        assert_eq!(display.full_text, "abcdefghijklmnopqrstuvwxyz");
         assert!(display.truncated);
         assert_eq!(display.max_chars, 8);
     }

@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::adapters::codex_app::{
-    CodexAppAdapter, CodexAppRuntime, CodexAppSchemaProbe, CodexAppServerClient,
-    CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget,
+    apply_session_index_thread_titles, default_codex_session_index_path,
+    load_codex_session_index_titles, CodexAppAdapter, CodexAppRuntime, CodexAppSchemaProbe,
+    CodexAppServerClient, CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget,
 };
 use crate::adapters::codex_cli_hook::{start_codex_cli_bridge_server, CodexCliHookRuntime};
 use crate::adapters::config_file::JsonSettingsStore;
@@ -175,6 +176,7 @@ pub fn uninstall_hooks(request: HookInstallRequest) -> Result<(), String> {
 #[tauri::command]
 pub fn get_codex_cli_sessions() -> Result<Vec<SessionListItemViewModel>, String> {
     ensure_codex_cli_bridge_started()?;
+    schedule_codex_app_context_sync();
     let runtime = lock_codex_cli_runtime()?;
 
     Ok(runtime.session_list())
@@ -813,28 +815,48 @@ fn sync_codex_app_context_worker() {
         return;
     };
 
-    let loaded_threads = server.list_loaded_threads().unwrap_or_default();
-    let unresolved_thread_ids = {
+    let session_index_titles = load_codex_session_index_titles(&default_codex_session_index_path());
+    let mut loaded_threads = server.list_loaded_threads().unwrap_or_default();
+    apply_session_index_thread_titles(&mut loaded_threads, &session_index_titles);
+    let (unresolved_thread_ids, title_missing_thread_ids) = {
         let runtime = codex_app_runtime();
         let ids = match runtime.lock() {
             Ok(mut runtime) => {
                 for thread in loaded_threads.iter().cloned() {
                     let _ = runtime.apply_thread_metadata(thread, command_unix_now());
                 }
-                runtime.unresolved_thread_ids()
+                runtime.apply_session_index_titles_to_known_sessions(
+                    &session_index_titles,
+                    command_unix_now(),
+                );
+                (
+                    runtime.unresolved_thread_ids(),
+                    runtime.title_missing_thread_ids(),
+                )
             }
-            Err(_) => Vec::new(),
+            Err(_) => (Vec::new(), Vec::new()),
         };
         ids
     };
-    let needs_history = !unresolved_thread_ids.is_empty();
+    if let Ok(mut runtime) = codex_cli_runtime().lock() {
+        runtime.apply_session_index_titles_to_known_sessions(
+            &session_index_titles,
+            command_unix_now(),
+        );
+    }
+    let history_candidate_ids = history_candidate_thread_ids(
+        unresolved_thread_ids.iter(),
+        title_missing_thread_ids.iter(),
+    );
+    let needs_history = !history_candidate_ids.is_empty();
 
     let history_threads = if needs_history {
-        let unresolved_ids: BTreeSet<String> = unresolved_thread_ids.iter().cloned().collect();
-        filter_history_threads_for_unresolved(
+        let mut history_threads = filter_history_threads_for_candidates(
             server.list_threads(40).unwrap_or_default(),
-            &unresolved_ids,
-        )
+            &history_candidate_ids,
+        );
+        apply_session_index_thread_titles(&mut history_threads, &session_index_titles);
+        history_threads
     } else {
         Vec::new()
     };
@@ -849,8 +871,9 @@ fn sync_codex_app_context_worker() {
 
     let mut rollout_threads = loaded_threads;
     rollout_threads.extend(history_threads);
-    let candidate_thread_ids =
+    let mut candidate_thread_ids =
         rollout_candidate_thread_ids(&rollout_threads, &unresolved_thread_ids);
+    candidate_thread_ids.extend(history_candidate_ids.iter().cloned());
     sync_codex_rollout_history(&rollout_threads, &candidate_thread_ids, needs_history);
 }
 
@@ -901,14 +924,25 @@ fn sync_codex_rollout_history(
     };
 }
 
-/// 仅保留能补齐当前待识别 session 的历史 thread。
-fn filter_history_threads_for_unresolved(
+/// 汇总需要历史 metadata 辅助补齐的已知 thread ID。
+fn history_candidate_thread_ids<'a>(
+    unresolved_thread_ids: impl Iterator<Item = &'a String>,
+    title_missing_thread_ids: impl Iterator<Item = &'a String>,
+) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    ids.extend(unresolved_thread_ids.cloned());
+    ids.extend(title_missing_thread_ids.cloned());
+    ids
+}
+
+/// 仅保留能补齐当前已知 session 的历史 thread。
+fn filter_history_threads_for_candidates(
     threads: Vec<crate::adapters::codex_app::CodexAppThreadMetadata>,
-    unresolved_thread_ids: &BTreeSet<String>,
+    candidate_thread_ids: &BTreeSet<String>,
 ) -> Vec<crate::adapters::codex_app::CodexAppThreadMetadata> {
     threads
         .into_iter()
-        .filter(|thread| unresolved_thread_ids.contains(&thread.id))
+        .filter(|thread| candidate_thread_ids.contains(&thread.id))
         .collect()
 }
 
@@ -1137,12 +1171,24 @@ mod tests {
             thread_metadata("unresolved-thread", "/tmp/resolved"),
             thread_metadata("unrelated-history-thread", "/tmp/unrelated"),
         ];
-        let unresolved = BTreeSet::from(["unresolved-thread".to_string()]);
+        let candidates = BTreeSet::from(["unresolved-thread".to_string()]);
 
-        let filtered = filter_history_threads_for_unresolved(threads, &unresolved);
+        let filtered = filter_history_threads_for_candidates(threads, &candidates);
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "unresolved-thread");
+    }
+
+    #[test]
+    fn history_candidates_include_title_missing_known_threads() {
+        let unresolved = ["unresolved-thread".to_string()];
+        let title_missing = ["title-missing-thread".to_string()];
+
+        let candidates = history_candidate_thread_ids(unresolved.iter(), title_missing.iter());
+
+        assert!(candidates.contains("unresolved-thread"));
+        assert!(candidates.contains("title-missing-thread"));
+        assert!(!candidates.contains("unrelated-thread"));
     }
 
     #[test]
@@ -1156,9 +1202,9 @@ mod tests {
             status_type: "idle".to_string(),
             ephemeral: false,
         }];
-        let unresolved = BTreeSet::from(["unresolved-thread".to_string()]);
+        let candidates = BTreeSet::from(["unresolved-thread".to_string()]);
 
-        let filtered = filter_history_threads_for_unresolved(threads, &unresolved);
+        let filtered = filter_history_threads_for_candidates(threads, &candidates);
 
         assert_eq!(filtered.len(), 1);
         assert!(filtered[0].cwd.is_none());

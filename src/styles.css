@@ -374,15 +374,17 @@ button:disabled {
 
 .session-row-main {
   display: grid;
-  grid-template-columns: 94px 78px minmax(120px, 0.36fr) minmax(0, 1fr);
+  grid-template-columns:
+    max-content max-content minmax(0, auto) minmax(0, auto)
+    minmax(0, 1fr);
   align-items: center;
   gap: 7px;
   min-height: 30px;
 }
 
 .session-row-main > strong,
-.session-row-main > p,
-.session-row-action > span {
+.session-summary-tooltip,
+.session-action-tooltip {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -390,14 +392,132 @@ button:disabled {
 }
 
 .session-row-main > strong {
+  max-width: min(22ch, 24vw);
   color: var(--text);
   font-size: 12px;
 }
 
-.session-row-main > p {
-  margin: 0;
+.session-row-main > .session-thread {
+  max-width: min(26ch, 28vw);
   color: var(--muted);
   font-size: 11px;
+}
+
+.session-summary-tooltip {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-action-tooltip {
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.session-row-main > .markdown-tooltip,
+.session-row-action > .markdown-tooltip {
+  position: relative;
+  overflow: visible;
+  text-overflow: clip;
+  outline: none;
+  white-space: normal;
+}
+
+.markdown-tooltip-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-tooltip-panel {
+  position: fixed;
+  z-index: 80;
+  width: max-content;
+  max-width: min(520px, calc(100vw - 32px));
+  max-height: min(340px, calc(100vh - 16px));
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--panel-strong);
+  box-shadow: 0 10px 24px rgb(0 0 0 / 20%);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow: auto;
+  pointer-events: auto;
+  white-space: normal;
+}
+
+.markdown-tooltip-panel > :first-child {
+  margin-top: 0;
+}
+
+.markdown-tooltip-panel > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-tooltip-panel p,
+.markdown-tooltip-panel blockquote,
+.markdown-tooltip-panel pre,
+.markdown-tooltip-panel ul,
+.markdown-tooltip-panel ol {
+  margin: 0 0 7px;
+}
+
+.markdown-tooltip-panel h1,
+.markdown-tooltip-panel h2,
+.markdown-tooltip-panel h3,
+.markdown-tooltip-panel h4,
+.markdown-tooltip-panel h5,
+.markdown-tooltip-panel h6 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.markdown-tooltip-panel ul,
+.markdown-tooltip-panel ol {
+  padding-left: 18px;
+}
+
+.markdown-tooltip-panel li + li {
+  margin-top: 3px;
+}
+
+.markdown-tooltip-panel code {
+  padding: 1px 4px;
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  background: var(--panel-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.markdown-tooltip-panel pre {
+  padding: 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  background: var(--panel-soft);
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.markdown-tooltip-panel pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.markdown-tooltip-panel blockquote {
+  padding-left: 8px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+
+.markdown-tooltip-panel a {
+  color: var(--accent);
 }
 
 .session-status,
@@ -407,7 +527,7 @@ button:disabled {
   justify-content: center;
   min-width: 0;
   min-height: 24px;
-  padding: 0 6px;
+  padding: 0 5px;
   border: 1px solid var(--line);
   border-radius: 3px;
   font-size: 10px;
@@ -459,11 +579,6 @@ button:disabled {
   min-height: 32px;
   padding-top: 6px;
   border-top: 1px dashed var(--line-soft);
-}
-
-.session-row-action > span {
-  color: var(--faint);
-  font-size: 10px;
 }
 
 .inline-reply {
@@ -1026,7 +1141,7 @@ button:disabled {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .session-row-main > p {
+  .session-summary-tooltip {
     grid-column: 1 / -1;
   }
 

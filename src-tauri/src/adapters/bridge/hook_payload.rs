@@ -95,11 +95,21 @@ pub fn validate_hook_payload(
 }
 
 fn agent_kind_for_payload(source: HookSource, terminal_app: Option<&str>) -> AgentKind {
-    if source == HookSource::Codex && terminal_app == Some("Codex.app") {
+    if source == HookSource::Codex && terminal_app.map(is_codex_app_terminal).unwrap_or(false) {
         return AgentKind::CodexApp;
     }
 
     source.agent_kind()
+}
+
+fn is_codex_app_terminal(value: &str) -> bool {
+    let normalized = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+
+    normalized == "codexapp"
 }
 
 fn parse_event_name(
@@ -222,6 +232,21 @@ mod tests {
 
         assert_eq!(payload.agent_kind, AgentKind::CodexApp);
         assert_eq!(payload.terminal_app.as_deref(), Some("Codex.app"));
+    }
+
+    #[test]
+    fn codex_app_payload_accepts_spaced_terminal_label() {
+        let input = json!({
+            "cwd": "/tmp/project",
+            "hook_event_name": "PermissionRequest",
+            "session_id": "thread-1",
+            "terminal_app": "Codex App"
+        });
+
+        let payload = validate_hook_payload(HookSource::Codex, input.to_string().as_bytes())
+            .expect("payload should validate");
+
+        assert_eq!(payload.agent_kind, AgentKind::CodexApp);
     }
 
     #[test]

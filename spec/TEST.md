@@ -38,7 +38,7 @@
 
 阶段 6 当前不执行 Windows 本机人工验证。
 
-阶段 7 测试扩展模式 session 排序、统计、工具用量聚合、设置默认值、设置文件读写、通知合并、行内交互和自定义快捷输入。
+阶段 7 测试扩展模式 session 捕捉顺序、统计、工具用量聚合、设置默认值、设置文件读写、通知合并、行内交互和自定义快捷输入。
 
 阶段 7 当前未建立 Playwright 自动化截图验证。
 
@@ -60,6 +60,8 @@ Rust 单元测试验证 Domain 纯规则。
 
 前端单元测试验证 UI store 的纯状态转换。
 
+前端单元测试验证合并 session 的首次捕捉顺序稳定，且新捕捉 session 插入顶部。
+
 架构脚本验证跨层依赖边界。
 
 Rust adapter 测试验证 bridge 和 hook helper 边界行为。
@@ -73,6 +75,8 @@ Rust Codex CLI runtime 测试验证审批等待超时会清理 pending approval 
 Rust Codex CLI runtime 测试验证迟到 UI 决策早于 bridge 超时清理时仍会清理 session pending。
 
 Rust Codex CLI runtime 测试验证同一 session 新审批会让旧审批等待器过期。
+
+Rust Codex CLI adapter 测试验证 hook payload 的模型字段不作为 thread 标题展示。
 
 Rust Codex APP adapter 测试验证 app-server schema 探针、request 编码、notification 到归一事件转换、Codex APP hook 分流和完整能力 capability。
 
@@ -88,6 +92,12 @@ Rust Codex APP adapter 测试验证 app-server thread 元数据可迁移待识�
 
 Rust Codex APP adapter 测试验证 app-server 已加载 thread 元数据可创建当前 session。
 
+Rust Codex APP adapter 测试验证 `thread/name/updated` 可把模型名标题更新为真实 thread 标题，且不覆盖摘要或状态。
+
+Rust Codex APP runtime 测试验证 session index 可直接补齐当前已知但缺标题或标题形似模型名的 session，且不创建无关 session。
+
+Rust Codex APP runtime 测试验证 path-only thread metadata 只补齐已有可信 cwd 的 session，不创建无关历史 session。
+
 Rust Codex APP adapter 测试验证已有运行态 session 会忽略后台 `idle` thread 元数据状态，避免覆盖实时摘要或运行状态。
 
 Rust Codex APP adapter 测试验证当前 turn Agent message delta 会累积展示、缓存有界，完成后仍保留最新 Agent 输出。
@@ -100,13 +110,13 @@ Rust Codex APP rollout 测试验证 `session_meta`、`agent_message`、`task_com
 
 Rust Codex APP rollout 测试验证范围外 path 被忽略，超长 JSONL 行被跳过且后续有效行仍可读取。
 
-Rust Codex APP rollout 测试验证 tailer 只读取已知 session 的新增追加行，并验证用户输入事件、工具 preview、重复正文事件时间偏移、未知 JSON arguments 不展示、超长追加行后继续读取有效行和 `正在思考` 状态。
+Rust Codex APP rollout 测试验证 tailer 只读取已知 session 的新增追加行，并验证用户输入事件、工具 preview 不写最后消息、重复工具事件不生成摘要、未知 JSON arguments 不展示、工具结束不写摘要、超长追加行后继续读取有效行。
 
 Rust Codex APP adapter 测试验证孤立 rollout 快照不会单独创建当前 session。
 
-Rust Tauri command 测试验证 rollout recent scan 候选集合只包含已加载、历史返回和当前待识别 thread。
+Rust Tauri command 测试验证 rollout recent scan 候选集合只包含已加载、历史返回、当前待识别 thread 和当前已知但缺标题的 thread。
 
-Rust Tauri command 测试验证 thread 历史元数据只应用到当前待识别 thread，thread path 快照必须匹配 thread ID 和候选集合。
+Rust Tauri command 测试验证 thread 历史元数据只应用到当前待识别 thread 或当前已知但缺标题的 thread，thread path 快照必须匹配 thread ID 和候选集合。
 
 Rust Codex APP adapter 测试验证无 cwd app-server 实时事件后续可随 hook 真实 cwd 迁移，且不产生重复 session。
 
@@ -150,7 +160,7 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证同一个 `SessionKey` 的 Codex CLI 和 Codex APP session 拥有不同 UI 选中身份。
 
-前端 Builder Panel 测试验证合并后的 session 等待优先、同状态更新时间倒序、统计数量和动作标签。
+前端 Builder Panel 测试验证合并后的 session 首次捕捉顺序稳定、新 session 插入顶部、统计数量和动作标签。
 
 前端 Builder Panel 测试验证 session 行点击只有在存在 jump action 且跳回设置开启时才触发跳回。
 
@@ -260,7 +270,7 @@ Mock panel store 测试断言虚拟列表不会按一万条记录全量计算可
 
 Builder Panel 测试断言主界面不依赖收缩状态。
 
-Builder Panel 测试断言合并排序不会被 runtime 拼接顺序破坏。
+Builder Panel 测试断言合并后的首次捕捉顺序稳定，且新 session 插入顶部。
 
 Settings Service 测试断言配置损坏时核心 UI 使用默认设置。
 
@@ -404,7 +414,7 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 
 `src/views/BuilderPanelApp.test.ts` 是前端 Codex CLI session 刷新选择测试入口。
 
-`src/views/BuilderPanelApp.test.ts` 是阶段 7 session 排序、统计、动作标签和工具用量聚合测试入口。
+`src/views/BuilderPanelApp.test.ts` 是阶段 7 session 捕捉顺序、统计、动作标签和工具用量聚合测试入口。
 
 `src/api/settingsApi.test.ts` 是前端设置默认值和自定义快捷输入清洗测试入口。
 
@@ -436,6 +446,6 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 
 `cargo test --manifest-path src-tauri/Cargo.toml codex_app` 运行 Codex APP app-server adapter 测试。
 
-`pnpm tauri:dev` 启动人工验证空 panel。
+`pnpm dev` 启动人工验证空 panel。
 
 当用户级 Cargo mirror 缺少 lockfile 依赖时，可用命令级 Cargo mirror 配置运行 Rust 测试，不把 mirror 缺包记录为代码失败。

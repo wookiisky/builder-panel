@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   actionLabel,
@@ -15,14 +15,19 @@ import {
   isCodexAppRuntime,
   defaultHookAgentStatuses,
   isHookActionDisabled,
+  mergePanelSessionsByCaptureOrder,
   mergePanelWindowStateUpdate,
   panelSessionToId,
+  parseTooltipMarkdown,
+  positionTooltipPanel,
   selectPanelSession,
   selectFirstSessionWhenMissing,
   shouldRefreshTimelineForUpdate,
   shouldSubmitReplyOnKeyDown,
   shouldUseFollowupShortcut,
-  sortPanelSessions,
+  sourceTag,
+  stopTooltipPortalEvent,
+  textDisplayParagraph,
   timelineItemCopyText,
   timelineRowClassName,
   type PanelSessionListItem,
@@ -127,6 +132,15 @@ describe("BuilderPanelApp session refresh", () => {
     expect(isCodexCliRuntime(codexAppSession)).toBe(false);
   });
 
+  it("shows runtime source labels with Codex app branding", () => {
+    expect(sourceTag(sessionItem(codexSessionKey, "codex_app"))).toBe(
+      "Codex APP",
+    );
+    expect(sourceTag(sessionItem(codexSessionKey, "codex_cli"))).toBe(
+      "Codex CLI",
+    );
+  });
+
   it("keeps runtime source in selected session identity", () => {
     const codexAppRuntimeSession = sessionItem(codexSessionKey, "codex_app");
     const codexCliRuntimeSession = sessionItem(codexSessionKey, "codex_cli");
@@ -162,7 +176,9 @@ describe("BuilderPanelApp session refresh", () => {
       created_at: { value: 1 },
     };
 
-    expect(timelineRowClassName(item.kind)).toBe("timeline-row timeline-row-user");
+    expect(timelineRowClassName(item.kind)).toBe(
+      "timeline-row timeline-row-user",
+    );
     expect(timelineItemCopyText(item)).toBe("继续处理");
   });
 
@@ -237,7 +253,7 @@ describe("BuilderPanelApp session refresh", () => {
     expect(disabledSessions).toEqual([]);
   });
 
-  it("sorts waiting sessions before running sessions and then by updated time", () => {
+  it("keeps captured session order stable and prepends newly captured sessions", () => {
     const running = sessionItem(
       sessionKey("project-a", "running"),
       "codex_app",
@@ -260,12 +276,20 @@ describe("BuilderPanelApp session refresh", () => {
       2000,
     );
 
-    const sorted = sortPanelSessions([running, olderWaiting, newerWaiting]);
+    const initiallyCaptured = mergePanelSessionsByCaptureOrder(
+      [],
+      [running, olderWaiting],
+    );
+    const refreshed = mergePanelSessionsByCaptureOrder(initiallyCaptured, [
+      newerWaiting,
+      olderWaiting,
+      running,
+    ]);
 
-    expect(sorted.map((session) => session.conversation_label)).toEqual([
+    expect(refreshed.map((session) => session.conversation_label)).toEqual([
       "newer-waiting",
-      "older-waiting",
       "running",
+      "older-waiting",
     ]);
   });
 
@@ -361,6 +385,120 @@ describe("BuilderPanelApp session refresh", () => {
     expect(shouldSubmitReplyOnKeyDown(true, "A", false)).toBe(false);
   });
 
+  it("builds paragraph tooltip from the currently visible paragraph", () => {
+    const display = textDisplayParagraph({
+      text: "第一段",
+      full_text: "第一段\n\n第二段内容很长",
+      truncated: false,
+      max_chars: 4,
+    });
+
+    expect(display.visibleText).toBe("第二段内");
+    expect(display.fullParagraph).toBe("第二段内容很长");
+    expect(display.paragraphTruncated).toBe(true);
+    expect(display.tooltipText).toBe("第二段内容很长");
+  });
+
+  it("keeps line breaks inside the visible tooltip paragraph", () => {
+    const display = textDisplayParagraph({
+      text: "第一段",
+      full_text: "第一段\n\n- 第一项\n- **第二项**\n继续说明",
+      truncated: false,
+      max_chars: 8,
+    });
+
+    expect(display.visibleText).toBe("- 第一项\n- ");
+    expect(display.fullParagraph).toBe("- 第一项\n- **第二项**\n继续说明");
+    expect(display.tooltipText).toBe("- 第一项\n- **第二项**\n继续说明");
+  });
+
+  it("keeps tooltip text even when the paragraph is not max-char truncated", () => {
+    const display = textDisplayParagraph({
+      text: "短文本",
+      full_text: "短文本但可能被行宽省略",
+      truncated: false,
+      max_chars: 100,
+    });
+
+    expect(display.visibleText).toBe("短文本但可能被行宽省略");
+    expect(display.paragraphTruncated).toBe(false);
+    expect(display.tooltipText).toBe("短文本但可能被行宽省略");
+  });
+
+  it("parses tooltip markdown blocks for rendered session tooltips", () => {
+    expect(
+      parseTooltipMarkdown(
+        "## 标题\n\n- **允许**\n- `拒绝`\n\n> 保留\n> 换行\n\n```txt\nline 1\nline 2\n```",
+      ),
+    ).toEqual([
+      { kind: "heading", level: 2, text: "标题" },
+      { kind: "unordered-list", items: ["**允许**", "`拒绝`"] },
+      { kind: "blockquote", lines: ["保留", "换行"] },
+      { kind: "code", text: "line 1\nline 2" },
+    ]);
+  });
+
+  it("positions tooltip above the anchor when the bottom would be clipped", () => {
+    expect(
+      positionTooltipPanel(
+        { bottom: 290, left: 120, top: 260 },
+        { height: 90, width: 240 },
+        { height: 300, width: 500 },
+      ),
+    ).toMatchObject({
+      left: 120,
+      placement: "top",
+      top: 164,
+    });
+  });
+
+  it("keeps tooltip inside the right viewport edge", () => {
+    expect(
+      positionTooltipPanel(
+        { bottom: 40, left: 470, top: 20 },
+        { height: 90, width: 220 },
+        { height: 300, width: 500 },
+      ),
+    ).toMatchObject({
+      left: 272,
+      placement: "bottom",
+    });
+  });
+
+  it("limits tooltip width to the available viewport width", () => {
+    expect(
+      positionTooltipPanel(
+        { bottom: 40, left: 20, top: 20 },
+        { height: 90, width: 520 },
+        { height: 300, width: 300 },
+      ),
+    ).toMatchObject({
+      left: 8,
+      maxWidth: 284,
+    });
+  });
+
+  it("keeps an oversized tooltip inside the top viewport edge", () => {
+    expect(
+      positionTooltipPanel(
+        { bottom: 160, left: 20, top: 140 },
+        { height: 500, width: 240 },
+        { height: 180, width: 360 },
+      ),
+    ).toMatchObject({
+      left: 20,
+      top: 8,
+    });
+  });
+
+  it("stops tooltip portal events from bubbling to the session row", () => {
+    const stopPropagation = vi.fn();
+
+    stopTooltipPortalEvent({ stopPropagation });
+
+    expect(stopPropagation).toHaveBeenCalledTimes(1);
+  });
+
   it("expands failed sessions that can create follow-up turns", () => {
     expect(canExpandSessionRow("failed", true)).toBe(true);
     expect(canExpandSessionRow("completed", true)).toBe(true);
@@ -446,11 +584,13 @@ const sessionItem = (
   session_key: sessionKey,
   agent_label: sessionKey.agent_kind,
   project_label: sessionKey.project_id.value,
+  thread_label: `Thread ${sessionKey.conversation_id.value}`,
   conversation_label: sessionKey.conversation_id.value,
   status_label: statusLabel,
   status_kind: statusKind,
   summary: {
     text: "等待 Codex 审批",
+    full_text: "等待 Codex 审批",
     truncated: false,
     max_chars: 120,
   },
