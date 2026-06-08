@@ -635,6 +635,23 @@ impl CodexAppRuntime {
             .collect()
     }
 
+    /// 判断 hook payload 是否已被 Codex APP runtime 认领。
+    ///
+    /// 当 codex 客户端没有正确上报 `terminal_app` 时,bridge 层用这个判定把
+    /// hook payload 兜底归到 CodexApp:先按 session_id 精确匹配已知 thread,
+    /// 再按 cwd 匹配 codex_app 之前注册过的工作目录。两条都未命中才视为
+    /// CodexCli,避免把真正的 CLI session 误归到 APP。
+    pub fn claims_codex_app_thread(&self, session_id: &str, cwd: &str) -> bool {
+        if self.thread_cwds.contains_key(session_id) {
+            return true;
+        }
+        let app_session_key = session_key(cwd, session_id);
+        if self.session_state.sessions.contains_key(&app_session_key) {
+            return true;
+        }
+        self.thread_cwds.values().any(|known| known == cwd)
+    }
+
     /// 返回已知但仍缺真实标题的 Codex APP thread ID。
     pub fn title_missing_thread_ids(&self) -> Vec<String> {
         self.session_state
@@ -698,6 +715,11 @@ impl CodexAppRuntime {
         }
 
         let payload = &request.payload.validated_payload;
+        if payload.agent_kind != AgentKind::CodexApp {
+            return Err(protocol_error(
+                "Codex APP runtime 拒绝非 CodexApp hook payload",
+            ));
+        }
         self.thread_cwds
             .insert(payload.session_id.clone(), payload.cwd.clone());
         let _ = self.migrate_codex_app_thread_to_cwd(&payload.session_id, &payload.cwd)?;
@@ -1014,11 +1036,21 @@ impl CodexAppRuntime {
     }
 
     fn apply_event(&mut self, event: AgentEvent) -> Result<(), AppError> {
+        if event.session_key().agent_kind != AgentKind::CodexApp {
+            return Err(protocol_error(
+                "Codex APP runtime 拒绝非 CodexApp session 事件",
+            ));
+        }
         self.ensure_codex_app_realtime_session(&event)?;
         self.apply_event_direct(event)
     }
 
     fn apply_event_direct(&mut self, event: AgentEvent) -> Result<(), AppError> {
+        if event.session_key().agent_kind != AgentKind::CodexApp {
+            return Err(protocol_error(
+                "Codex APP runtime 拒绝非 CodexApp session 事件",
+            ));
+        }
         let codex_app_started = match &event {
             AgentEvent::SessionStarted(started)
                 if started.session_key.agent_kind == AgentKind::CodexApp =>
@@ -1054,9 +1086,7 @@ impl CodexAppRuntime {
 
     fn ensure_codex_app_realtime_session(&mut self, event: &AgentEvent) -> Result<(), AppError> {
         let session_key = event.session_key();
-        if session_key.agent_kind != AgentKind::CodexApp {
-            return Ok(());
-        }
+        debug_assert_eq!(session_key.agent_kind, AgentKind::CodexApp);
         if matches!(event, AgentEvent::SessionStarted(_)) {
             return Ok(());
         }
@@ -5744,5 +5774,82 @@ mod tests {
             last_assistant_message: None,
             permission_suggestions: None,
         }
+    }
+
+    #[test]
+    fn apply_hook_request_rejects_non_codex_app_payload() {
+        let mut runtime = CodexAppRuntime::empty();
+        let mut p = hook_payload(BridgeHookEventName::SessionStart);
+        p.agent_kind = AgentKind::CodexCli;
+        let request =
+            BridgeRequestEnvelope::process_agent_hook("request-foreign".to_string(), p);
+
+        let result = runtime.apply_hook_request(&request, UnixMillis::new(1));
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("non CodexApp hook payload should be rejected"),
+        };
+        assert!(error.user_message.contains("CodexApp"));
+        assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn apply_rollout_event_rejects_non_codex_app_session_event() {
+        use crate::domain::agent_session::{
+            ConversationId, ProjectId, SessionCapabilities, SessionKey,
+        };
+
+        let mut runtime = CodexAppRuntime::empty();
+        let foreign = SessionKey::new(
+            AgentKind::CodexCli,
+            ProjectId::new("/tmp/cli"),
+            ConversationId::new("cli-thread"),
+        );
+        let event = AgentEvent::SessionStarted(SessionStartedEvent {
+            session_key: foreign,
+            project_label: "cli".to_string(),
+            conversation_label: "cli-thread".to_string(),
+            title: None,
+            summary: None,
+            capabilities: SessionCapabilities {
+                can_jump: false,
+                can_send_reply: false,
+                can_resolve_approval: false,
+                can_create_followup_turn: false,
+                can_view_process_timeline: false,
+            },
+            usage: UsageSnapshot::unavailable(),
+            updated_at: UnixMillis::new(1),
+        });
+
+        let error = runtime
+            .apply_rollout_event(event)
+            .expect_err("non CodexApp rollout event should be rejected");
+        assert!(error.user_message.contains("CodexApp"));
+        assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn claims_codex_app_thread_matches_by_session_id_then_cwd() {
+        let mut runtime = CodexAppRuntime::empty();
+        let hook = hook_payload(BridgeHookEventName::SessionStart);
+        let request =
+            BridgeRequestEnvelope::process_agent_hook("request-1".to_string(), hook.clone());
+        runtime
+            .apply_hook_request(&request, UnixMillis::new(1))
+            .expect("hook should register");
+
+        assert!(
+            runtime.claims_codex_app_thread(&hook.session_id, &hook.cwd),
+            "原始 session_id+cwd 应命中"
+        );
+        assert!(
+            runtime.claims_codex_app_thread("unrelated-thread", &hook.cwd),
+            "陌生 session_id + 已知 cwd 也应命中(cwd 兜底)"
+        );
+        assert!(
+            !runtime.claims_codex_app_thread("unrelated-thread", "/tmp/other"),
+            "陌生 session_id + 陌生 cwd 不应命中"
+        );
     }
 }

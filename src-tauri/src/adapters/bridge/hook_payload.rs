@@ -102,14 +102,18 @@ fn agent_kind_for_payload(source: HookSource, terminal_app: Option<&str>) -> Age
     source.agent_kind()
 }
 
-fn is_codex_app_terminal(value: &str) -> bool {
+/// 判断给定终端/进程标识是否对应 Codex.app。
+///
+/// `bundle_id`/`TERM_PROGRAM` 之类的字段都用同一套归一化:剥掉非字母数字,
+/// 转小写,允许 "Codex.app"、"Codex App"、"com.openai.codex" 这类写法。
+pub fn is_codex_app_terminal(value: &str) -> bool {
     let normalized = value
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
         .collect::<String>()
         .to_ascii_lowercase();
 
-    normalized == "codexapp"
+    normalized == "codexapp" || normalized == "comopenaicodex"
 }
 
 fn parse_event_name(

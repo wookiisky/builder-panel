@@ -247,6 +247,11 @@ impl CodexCliHookRuntime {
         }
 
         let payload = &request.payload.validated_payload;
+        if payload.agent_kind != AgentKind::CodexCli {
+            return Err(protocol_error(
+                "Codex CLI runtime 拒绝非 CodexCli hook payload",
+            ));
+        }
         let session_key = session_key(payload);
         if let Some(path) = &payload.transcript_path {
             self.rollout_paths
@@ -339,6 +344,11 @@ impl CodexCliHookRuntime {
 
     /// 应用归一事件并发布轻量更新。
     pub fn apply_event(&mut self, event: AgentEvent) -> Result<(), AppError> {
+        if event.session_key().agent_kind != AgentKind::CodexCli {
+            return Err(protocol_error(
+                "Codex CLI runtime 拒绝非 CodexCli session 事件",
+            ));
+        }
         self.ensure_codex_cli_session(&event)?;
         self.timeline_cache.record_agent_event(&event)?;
         let notification = session_update_notification(&event);
@@ -352,9 +362,7 @@ impl CodexCliHookRuntime {
 
     fn ensure_codex_cli_session(&mut self, event: &AgentEvent) -> Result<(), AppError> {
         let session_key = event.session_key();
-        if session_key.agent_kind != AgentKind::CodexCli {
-            return Ok(());
-        }
+        debug_assert_eq!(session_key.agent_kind, AgentKind::CodexCli);
         if matches!(event, AgentEvent::SessionStarted(_)) {
             return Ok(());
         }
@@ -551,7 +559,8 @@ pub fn start_codex_cli_bridge_server(
         let runtime = Arc::clone(&runtime);
         let codex_app_runtime = Arc::clone(&codex_app_runtime);
         if server
-            .accept_one_on_thread(move |request| {
+            .accept_one_on_thread(move |mut request| {
+                reclassify_codex_hook_agent_kind(&mut request, &codex_app_runtime);
                 match request.payload.validated_payload.agent_kind {
                     AgentKind::CodexApp => {
                         handle_codex_app_bridge_request(codex_app_runtime, request)
@@ -829,6 +838,29 @@ fn protocol_error(message: &str) -> AppError {
         false,
         Some(FallbackAction::ViewReadOnly),
     )
+}
+
+/// 当 hook payload 缺少 terminal_app 时,根据 codex_app_runtime 已知 thread/cwd 兜底把
+/// agent_kind 改判为 CodexApp。仅在仍是 CodexCli 时尝试,避免覆盖已识别为
+/// CodexApp 的 payload,也不动 Claude payload。
+#[cfg(unix)]
+fn reclassify_codex_hook_agent_kind(
+    request: &mut BridgeRequestEnvelope,
+    codex_app_runtime: &Arc<Mutex<CodexAppRuntime>>,
+) {
+    let payload = &request.payload.validated_payload;
+    if payload.agent_kind != AgentKind::CodexCli {
+        return;
+    }
+    let session_id = payload.session_id.clone();
+    let cwd = payload.cwd.clone();
+    let claims = match codex_app_runtime.lock() {
+        Ok(runtime) => runtime.claims_codex_app_thread(&session_id, &cwd),
+        Err(_) => false,
+    };
+    if claims {
+        request.payload.validated_payload.agent_kind = AgentKind::CodexApp;
+    }
 }
 
 fn invalid_interaction(message: &str) -> AppError {
@@ -1182,6 +1214,129 @@ mod tests {
             .expect("session should exist");
         assert_eq!(session.status, SessionStatus::Completed);
         assert!(session.pending_interaction.is_none());
+    }
+
+    #[test]
+    fn apply_event_rejects_non_codex_cli_session_event() {
+        use crate::domain::agent_event::SessionStartedEvent;
+        use crate::domain::agent_session::{ConversationId, ProjectId, SessionCapabilities, SessionKey};
+        use crate::domain::usage::UsageSnapshot;
+
+        let mut runtime = CodexCliHookRuntime::empty();
+        let foreign_session_key = SessionKey::new(
+            AgentKind::CodexApp,
+            ProjectId::new("/tmp/foreign"),
+            ConversationId::new("foreign-thread"),
+        );
+        let event = AgentEvent::SessionStarted(SessionStartedEvent {
+            session_key: foreign_session_key,
+            project_label: "foreign".to_string(),
+            conversation_label: "foreign-thread".to_string(),
+            title: None,
+            summary: None,
+            capabilities: SessionCapabilities {
+                can_jump: false,
+                can_send_reply: false,
+                can_resolve_approval: false,
+                can_create_followup_turn: false,
+                can_view_process_timeline: false,
+            },
+            usage: UsageSnapshot::unavailable(),
+            updated_at: UnixMillis::new(1),
+        });
+
+        let error = runtime
+            .apply_event(event)
+            .expect_err("non CodexCli event should be rejected");
+        assert!(error.user_message.contains("CodexCli"));
+        assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn apply_hook_request_rejects_non_codex_cli_payload() {
+        let mut runtime = CodexCliHookRuntime::empty();
+        let mut p = payload(BridgeHookEventName::SessionStart);
+        p.agent_kind = AgentKind::CodexApp;
+        let request =
+            BridgeRequestEnvelope::process_agent_hook("request-foreign".to_string(), p);
+
+        let result = runtime.apply_hook_request(&request, UnixMillis::new(1));
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("non CodexCli hook payload should be rejected"),
+        };
+        assert!(error.user_message.contains("CodexCli"));
+        assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reclassify_promotes_codex_cli_to_codex_app_when_thread_known() {
+        use crate::adapters::codex_app::CodexAppRuntime;
+
+        let codex_app_runtime = Arc::new(Mutex::new(CodexAppRuntime::empty()));
+        // 让 codex_app_runtime 先知道一个 thread。
+        let hook = ValidatedHookPayload {
+            agent_kind: AgentKind::CodexApp,
+            hook_event_name: BridgeHookEventName::SessionStart,
+            cwd: "/tmp/builder-panel".to_string(),
+            session_id: "thread-known".to_string(),
+            model: None,
+            permission_mode: None,
+            transcript_path: None,
+            terminal_app: Some("Codex.app".to_string()),
+            terminal_session_id: None,
+            terminal_tty: None,
+            terminal_title: None,
+            turn_id: None,
+            tool_name: None,
+            tool_input: None,
+            prompt: None,
+            last_assistant_message: None,
+            permission_suggestions: None,
+        };
+        {
+            let mut runtime = codex_app_runtime.lock().expect("lock");
+            let request =
+                BridgeRequestEnvelope::process_agent_hook("request-known".to_string(), hook);
+            runtime
+                .apply_hook_request(&request, UnixMillis::new(1))
+                .expect("known thread registered");
+        }
+
+        // 现在伪造一个 CodexCli payload,但 session_id 已被 codex_app 收录。
+        let mut cli_payload = payload(BridgeHookEventName::PermissionRequest);
+        cli_payload.session_id = "thread-known".to_string();
+        cli_payload.cwd = "/tmp/builder-panel".to_string();
+        let mut request =
+            BridgeRequestEnvelope::process_agent_hook("request-foreign".to_string(), cli_payload);
+
+        super::reclassify_codex_hook_agent_kind(&mut request, &codex_app_runtime);
+
+        assert_eq!(
+            request.payload.validated_payload.agent_kind,
+            AgentKind::CodexApp,
+            "已知 thread 应被改判为 CodexApp"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reclassify_leaves_codex_cli_when_no_match() {
+        use crate::adapters::codex_app::CodexAppRuntime;
+
+        let codex_app_runtime = Arc::new(Mutex::new(CodexAppRuntime::empty()));
+        let cli_payload = payload(BridgeHookEventName::PermissionRequest);
+        let mut request =
+            BridgeRequestEnvelope::process_agent_hook("request-foreign".to_string(), cli_payload);
+
+        super::reclassify_codex_hook_agent_kind(&mut request, &codex_app_runtime);
+
+        assert_eq!(
+            request.payload.validated_payload.agent_kind,
+            AgentKind::CodexCli,
+            "无任何匹配应保持 CodexCli"
+        );
     }
 
     fn payload(event_name: BridgeHookEventName) -> ValidatedHookPayload {

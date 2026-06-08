@@ -4,8 +4,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::adapters::bridge::codec::{BridgeRequestEnvelope, BridgeResponseEnvelope};
 use crate::adapters::bridge::hook_output::{standard_output_for_response, HookOutputError};
-use crate::adapters::bridge::hook_payload::{validate_hook_payload, HookSource};
+use crate::adapters::bridge::hook_payload::{is_codex_app_terminal, validate_hook_payload, HookSource};
 use crate::adapters::bridge::transport::{send_bridge_request, BridgeTransportError};
+use crate::domain::agent_session::AgentKind;
 
 const NON_BLOCKING_HOOK_TIMEOUT: Duration = Duration::from_secs(45);
 const CODEX_PERMISSION_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -39,18 +40,38 @@ impl HookCliRun {
 
 /// 运行 hook CLI。
 pub fn run_hook_cli(arguments: &[String], stdin: &[u8]) -> HookCliRun {
-    run_hook_cli_with_sender(arguments, stdin, |request, timeout| {
-        send_bridge_request(request, timeout)
-    })
+    run_hook_cli_with_sender_and_env(
+        arguments,
+        stdin,
+        |request, timeout| send_bridge_request(request, timeout),
+        |key| std::env::var(key).ok(),
+    )
 }
 
-/// 使用注入 sender 运行 hook CLI，供测试覆盖 fail-open 和 directive。
-pub fn run_hook_cli_with_sender<F>(arguments: &[String], stdin: &[u8], mut sender: F) -> HookCliRun
+/// 使用注入 sender 运行 hook CLI,供测试覆盖 fail-open 和 directive。
+pub fn run_hook_cli_with_sender<F>(arguments: &[String], stdin: &[u8], sender: F) -> HookCliRun
 where
     F: FnMut(
         &BridgeRequestEnvelope,
         Duration,
     ) -> Result<Option<BridgeResponseEnvelope>, BridgeTransportError>,
+{
+    run_hook_cli_with_sender_and_env(arguments, stdin, sender, |key| std::env::var(key).ok())
+}
+
+/// 使用注入 sender + env reader 运行 hook CLI,供测试覆盖 terminal_app 兜底。
+pub fn run_hook_cli_with_sender_and_env<F, E>(
+    arguments: &[String],
+    stdin: &[u8],
+    mut sender: F,
+    mut env_reader: E,
+) -> HookCliRun
+where
+    F: FnMut(
+        &BridgeRequestEnvelope,
+        Duration,
+    ) -> Result<Option<BridgeResponseEnvelope>, BridgeTransportError>,
+    E: FnMut(&str) -> Option<String>,
 {
     if stdin.is_empty() {
         return HookCliRun::fail_open(None);
@@ -60,12 +81,13 @@ where
         return HookCliRun::fail_open(Some("缺少或不支持 --source 参数".to_string()));
     };
 
-    let payload = match validate_hook_payload(source, stdin) {
+    let mut payload = match validate_hook_payload(source, stdin) {
         Ok(payload) => payload,
         Err(error) => {
             return HookCliRun::fail_open(Some(format!("hook payload 校验失败：{error:?}")));
         }
     };
+    apply_codex_app_env_fallback(source, &mut payload, &mut env_reader);
     let timeout = timeout_for(source, &payload.hook_event_name);
     let request = BridgeRequestEnvelope::process_agent_hook(generate_request_id(), payload);
     let response = match sender(&request, timeout) {
@@ -93,6 +115,42 @@ where
         stderr: Vec::new(),
     }
 }
+
+/// codex 客户端未上报 `terminal_app` 时,用 env 兜底判定 Codex.app。
+///
+/// 仅在 source=Codex 且 payload 仍是 CodexCli 时尝试,逐个读取已知能标记
+/// Codex.app 的环境变量。命中则覆写 agent_kind + terminal_app。
+fn apply_codex_app_env_fallback<E>(
+    source: HookSource,
+    payload: &mut crate::adapters::bridge::codec::ValidatedHookPayload,
+    env_reader: &mut E,
+) where
+    E: FnMut(&str) -> Option<String>,
+{
+    if source != HookSource::Codex || payload.agent_kind != AgentKind::CodexCli {
+        return;
+    }
+
+    for key in CODEX_APP_ENV_HINTS {
+        let Some(value) = env_reader(key) else {
+            continue;
+        };
+        if is_codex_app_terminal(&value) {
+            payload.agent_kind = AgentKind::CodexApp;
+            if payload.terminal_app.is_none() {
+                payload.terminal_app = Some(value);
+            }
+            return;
+        }
+    }
+}
+
+/// 用于兜底识别 Codex.app 的环境变量,按优先级排列。
+const CODEX_APP_ENV_HINTS: &[&str] = &[
+    "BUILDER_PANEL_HOOK_TERMINAL_APP",
+    "__CFBundleIdentifier",
+    "TERM_PROGRAM",
+];
 
 fn parse_source(arguments: &[String]) -> Option<HookSource> {
     let mut index = 0;
@@ -291,5 +349,109 @@ mod tests {
         assert!(String::from_utf8(run.stderr)
             .expect("stderr should be utf8")
             .contains("AgentMismatch"));
+    }
+
+    #[test]
+    fn codex_app_env_hint_promotes_agent_kind_to_codex_app() {
+        let captured = std::cell::RefCell::new(None);
+        let run = super::run_hook_cli_with_sender_and_env(
+            &["--source".into(), "codex".into()],
+            &codex_permission_input(),
+            |request: &BridgeRequestEnvelope, _timeout: Duration| {
+                *captured.borrow_mut() = Some(request.payload.validated_payload.agent_kind.clone());
+                Ok(Some(BridgeResponseEnvelope::directive(
+                    request.request_id.clone(),
+                    BridgeDirectivePayload::allow(AgentKind::CodexApp),
+                )))
+            },
+            |key| match key {
+                "__CFBundleIdentifier" => Some("com.openai.codex".to_string()),
+                _ => None,
+            },
+        );
+
+        assert_eq!(run.exit_code, 0);
+        assert_eq!(
+            captured.into_inner(),
+            Some(AgentKind::CodexApp),
+            "bundle id 命中应把 agent_kind 改判为 CodexApp"
+        );
+    }
+
+    #[test]
+    fn codex_app_env_hint_via_term_program_promotes_agent_kind() {
+        let captured = std::cell::RefCell::new(None);
+        super::run_hook_cli_with_sender_and_env(
+            &["--source".into(), "codex".into()],
+            &codex_permission_input(),
+            |request: &BridgeRequestEnvelope, _timeout: Duration| {
+                *captured.borrow_mut() = Some(request.payload.validated_payload.agent_kind.clone());
+                Ok(Some(BridgeResponseEnvelope::directive(
+                    request.request_id.clone(),
+                    BridgeDirectivePayload::allow(AgentKind::CodexApp),
+                )))
+            },
+            |key| match key {
+                "TERM_PROGRAM" => Some("Codex.app".to_string()),
+                _ => None,
+            },
+        );
+
+        assert_eq!(captured.into_inner(), Some(AgentKind::CodexApp));
+    }
+
+    #[test]
+    fn codex_env_hint_unrelated_keeps_codex_cli() {
+        let captured = std::cell::RefCell::new(None);
+        super::run_hook_cli_with_sender_and_env(
+            &["--source".into(), "codex".into()],
+            &codex_permission_input(),
+            |request: &BridgeRequestEnvelope, _timeout: Duration| {
+                *captured.borrow_mut() = Some(request.payload.validated_payload.agent_kind.clone());
+                Ok(Some(BridgeResponseEnvelope::directive(
+                    request.request_id.clone(),
+                    BridgeDirectivePayload::allow(AgentKind::CodexCli),
+                )))
+            },
+            |key| match key {
+                "TERM_PROGRAM" => Some("iTerm.app".to_string()),
+                _ => None,
+            },
+        );
+
+        assert_eq!(captured.into_inner(), Some(AgentKind::CodexCli));
+    }
+
+    #[test]
+    fn claude_source_ignores_codex_app_env_hint() {
+        let captured = std::cell::RefCell::new(None);
+        let input = json!({
+            "cwd": "/tmp/project",
+            "hook_event_name": "PermissionRequest",
+            "session_id": "session-1",
+            "permission_mode": "default",
+            "tool_name": "Bash",
+            "tool_input": {"command": "cargo test"}
+        })
+        .to_string()
+        .into_bytes();
+
+        super::run_hook_cli_with_sender_and_env(
+            &["--source".into(), "claude".into()],
+            &input,
+            |request: &BridgeRequestEnvelope, _timeout: Duration| {
+                *captured.borrow_mut() = Some(request.payload.validated_payload.agent_kind.clone());
+                Ok(Some(BridgeResponseEnvelope::directive(
+                    request.request_id.clone(),
+                    BridgeDirectivePayload::allow(AgentKind::ClaudeCodeCli),
+                )))
+            },
+            |key| match key {
+                "TERM_PROGRAM" => Some("Codex.app".to_string()),
+                _ => None,
+            },
+        );
+
+        assert_eq!(captured.into_inner(), Some(AgentKind::ClaudeCodeCli));
     }
 }
