@@ -49,7 +49,7 @@ export const defaultSettings = (): BuilderPanelSettings => ({
     developer_diagnostics: false,
   },
   logging: {
-    enabled: false,
+    enabled: true,
   },
 });
 

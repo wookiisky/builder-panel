@@ -280,7 +280,7 @@ pub struct LoggingSettings {
 impl Default for LoggingSettings {
     /// 返回日志设置默认值。
     fn default() -> Self {
-        Self { enabled: false }
+        Self { enabled: true }
     }
 }
 
