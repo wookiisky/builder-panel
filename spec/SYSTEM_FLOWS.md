@@ -46,7 +46,7 @@ Tauri 环境监听窗口移动和尺寸变化。
 
 Codex CLI session 列表只来自当前 APP 进程内已经捕捉到的实时 hook 状态。
 
-Codex APP session 列表可来自当前 APP 进程内实时状态、app-server 已加载 thread 元数据和 Codex rollout 历史补齐。
+Codex APP session 列表可来自当前 APP 进程内实时状态、app-server 已加载 thread id 对应的 `thread/list` 元数据和 Codex rollout 历史补齐。
 
 APP 启动时首次读取仍可返回空列表，因为 Codex APP app-server 或历史补齐可能不可用。
 
@@ -66,9 +66,9 @@ APP 启动后仍在运行的任务如果继续发出 hook、notification 或 ser
 
 前端主体以单列列表展示所有 session。
 
-完成、失败或等待用户回复的 session 在行内展示最后一段输出和回复区。
+等待用户回复的 session 在行内展示最后一段输出和回复区。
 
-完成或失败且可 follow-up 的 Codex APP session 在行内展示自由输入区。
+完成或失败且可 follow-up 的 Codex APP session 默认保持单行，点击右侧展开按钮后展示自由输入区。
 
 有选项的回复区展示选项按钮。
 
@@ -78,13 +78,9 @@ APP 启动后仍在运行的任务如果继续发出 hook、notification 或 ser
 
 Codex CLI hook、Codex APP hook、Codex APP app-server 和 Codex rollout tailer 事件先在 adapter 边界清洗为归一事件。
 
-adapter 清洗 Codex CLI 可展示摘要时只保留用户输入原文、assistant 输出原文和完成时最后 assistant 输出；没有文本的过程事件不写摘要。
-
 adapter 清洗 Codex APP 最后消息时只保留用户输入原文、assistant 输出原文和完成时最后 assistant 输出；工具调用、hook 工具事件和工具参数不写最后消息。
 
 工具输出结束事件不写活动摘要。
-
-runtime 应用归一事件后同步写入 session state 和 timeline 缓存。
 
 runtime 通过 session 更新端口发布轻量通知。
 
@@ -93,8 +89,6 @@ Tauri 事件发布器按 session 合并更新，并在短节流窗口后向前�
 `session_updated` 事件只包含 runtime source、session key、变更区域和更新时间。
 
 前端订阅 `session_updated` 后节流刷新 session 列表。
-
-当前 timeline 弹层打开且事件 session 与当前 session 匹配时，前端节流刷新当前 timeline 查询页。
 
 前端仍保留定时刷新作为实时事件缺失时的兜底。
 
@@ -190,10 +184,6 @@ spec 文档门禁校验索引覆盖、职责说明、代码入口、测试或验
 
 spec 文档门禁拒绝代码块、流程图语法和 Markdown 表格。
 
-性能预算脚本生成 10 session、1000 event 和 1 万 timeline 静态场景。
-
-性能预算脚本校验虚拟列表范围、timeline 淘汰和大文本释放。
-
 性能预算脚本不声明 Mac 或 Windows 人工性能验收完成。
 
 ## 通知流程
@@ -205,8 +195,6 @@ Notification Service 接收已清洗的通知请求。
 同一 session 同一类型通知在合并窗口内重复出现时，Notification Service 增加合并数量。
 
 通知点击被转换为聚焦 panel、展开 panel 和定位 session。
-
-通知点击不打开过程时间线。
 
 ## 位置修正流程
 
@@ -320,15 +308,15 @@ schema 探针确认当前 client request、client response、notification 和回
 
 schema 探针覆盖所有当前 adapter 已消费的 app-server notification schema。
 
-adapter 编码 `initialize`、`initialized`、`thread/start`、`turn/start`、`thread/loaded/list` 和 `thread/list` JSON-RPC 消息。
+adapter 编码 `initialize`、`initialized`、`thread/start`、`thread/resume`、`turn/start`、`thread/loaded/list` 和 `thread/list` JSON-RPC 消息。
 
 Codex APP 开关开启后，后端尝试启动 `codex app-server --listen stdio://`。
 
 app-server 启动后，后端发送 `initialize` 并写入 `initialized` notification。
 
-session 列表和详情 command 先返回当前 runtime 状态；Codex APP app-server thread 元数据和 rollout 补齐通过后台同步线程执行。
+session 列表和详情 command 先返回当前 runtime 状态；Codex APP app-server loaded thread id、thread 元数据和 rollout 补齐通过后台同步线程执行。
 
-app-server 启动后，后台同步可按节流窗口调用 `thread/loaded/list` 创建或补齐当前已加载 thread 元数据。
+app-server 启动后，后台同步可按节流窗口调用 `thread/loaded/list` 获取当前已加载 thread id，再用有限数量 `thread/list` 元数据按 id 创建或补齐当前已加载 thread。
 
 后台 thread metadata 的状态只用于创建新的已加载 session；已有实时 session 只补齐缺失信息，不用 metadata 覆盖运行状态或最新摘要。
 
@@ -358,13 +346,9 @@ app-server response 唤醒对应 pending request。
 
 app-server notification 和 server request 在 adapter 边界清洗后写入 Codex APP runtime。
 
-Codex APP app-server 实时事件首次到达时，runtime 会为该 thread 初始化当前进程内 session 交互能力和 timeline 能力。
-
 Codex APP app-server 事件缺少可信 cwd 时会先建立待识别项目 session，且不生成跳回目标。
 
 Codex APP `thread/name/updated` notification 只更新 thread 标题；形似模型名的值会被忽略，不覆盖真实标题。
-
-后续 hook、thread 元数据或 rollout 历史携带真实 cwd 时，runtime 按 thread ID 合并 session、pending interaction 和 timeline，并补齐跳回目标。
 
 待识别 session 迁移到真实 cwd 后，runtime 会对真实 session key 发布 `session_updated` 通知。
 
@@ -388,15 +372,15 @@ app-server 启动或初始化失败时，后端尝试回收子进程，前端本
 
 Codex APP follow-up turn 通过 `turn/start` 写入 app-server。
 
+Codex APP follow-up turn 写入前，app-server client 先读取 loaded thread id 列表；目标 thread 未加载时先 `thread/resume`。
+
 Codex APP follow-up turn 创建前，runtime 校验 session 无 pending interaction 且处于完成或失败状态；`idle` 状态 notification 会先折叠为完成态。
 
 Codex APP follow-up turn 写入 app-server 成功后，runtime 才写入用户输入原文事件。
 
+Codex APP follow-up turn 在 app-server client 获取、thread 加载确认、thread resume 或 turn/start 任一阶段失败时，runtime 会释放 follow-up 提交占位。
+
 Codex APP session 跳回目标使用 `codex://threads/<thread_id>`。
-
-Codex APP hook 和 app-server 事件写入进程内 timeline 缓存。
-
-Codex APP 已知 rollout 追加行清洗后的用户文本和 assistant 输出写入进程内 timeline 缓存。
 
 ## mock 测试基线流程
 
@@ -407,8 +391,6 @@ Mock agent runtime 使用 Domain reducer 折叠事件。
 Session Service 的 mock 测试从 mock agent runtime 读取 session state。
 
 Session Service 调用 Domain view model 转换列表和详情。
-
-Tauri 产品运行时不注册 mock session、mock 审批、mock 回复、mock 选项或 mock timeline command。
 
 前端产品运行时不读取 mock session 列表。
 
@@ -423,8 +405,6 @@ Mock agent runtime 记录 allow、allow and remember、deny、choice 和 text re
 Mock agent runtime 写入 `TurnCompleted` 事件，用于验证 Domain reducer 清理 pending interaction。
 
 mock 回写失败测试断言 pending interaction 不被清理。
-
-前端 store 测试覆盖草稿、提交中、选项选择和 timeline 弹层状态，不依赖产品 mock session 来源。
 
 ## 快捷回复链路
 
@@ -478,42 +458,6 @@ Codex APP session 的 `codex://` 跳回目标在 macOS 上交给系统打开。
 
 跳回失败时返回复制降级，不触发文本回写补偿。
 
-## timeline 链路
-
-前端只在 session view model 生成 `ViewProcessTimeline` 动作时展示 timeline 入口。
-
-用户打开 timeline 后，前端请求第一页过程事件。
-
-Codex CLI session 的 timeline 条目来自 hook 事件内存缓存。
-
-Codex CLI hook adapter 生成归一事件后，runtime 同步写入 session state 和 timeline 缓存。
-
-Codex CLI 已知 rollout 追加行清洗后的用户文本和 assistant 输出写入进程内 timeline 缓存。
-
-Codex APP session 的 timeline 条目来自 hook、app-server 和已知 rollout 追加行的内存缓存。
-
-timeline 缓存按 session 分片，并用条目 ID 去重。
-
-timeline 缓存达到上限时优先淘汰最旧低优先级条目。
-
-Process Timeline Service 执行类型筛选、正文搜索和分页。
-
-前端展示当前页条目。
-
-前端可复制单条或当前筛选页的 timeline 正文文本。
-
-前端可将 timeline 弹层滚动到最新条目。
-
-用户关闭 timeline 后，前端清理当前页缓存，并请求后端释放该 session 的大文本正文缓存。
-
-timeline 不写文件或数据库。
-
-timeline 不从 transcript 或 JSONL 反向恢复历史。
-
-timeline 允许记录已知 session 的 rollout 新增追加行所产生的实时托管事件。
-
-timeline 不提供导出过程事件文件入口。
-
 ## 异常收敛流程
 
 前端调用 `get_panel_probe` 失败时，不写入错误事实。
@@ -525,10 +469,6 @@ hook helper fail-open 时不写业务状态。
 Codex APP app-server 回写失败时不清理 pending interaction。
 
 Codex APP 回复回写失败时前端不清理草稿。
-
-timeline 查询失败时不写 session 状态。
-
-timeline 释放失败时不阻塞关闭弹层。
 
 阶段 0 和阶段 2 均不展示错误通知。
 
@@ -545,8 +485,6 @@ timeline 释放失败时不阻塞关闭弹层。
 `src-tauri/src/adapters/bridge/codec.rs` 是 bridge codec 流程入口。
 
 `src-tauri/src/adapters/bridge/transport.rs` 是 bridge 传输流程入口。
-
-`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock 测试基线事件、directive 和 timeline 数据源入口。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook 流程入口。
 
@@ -567,10 +505,6 @@ timeline 释放失败时不阻塞关闭弹层。
 `src-tauri/src/services/shortcut_reply_service.rs` 是快捷回复链路入口。
 
 `src-tauri/src/services/preset_command_service.rs` 是预设命令计划入口。
-
-`src-tauri/src/services/process_timeline_service.rs` 是 timeline 查询链路入口。
-
-`src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存链路入口。
 
 `src-tauri/src/adapters/terminal/mod.rs` 是跳回降级链路入口。
 
@@ -615,5 +549,3 @@ timeline 释放失败时不阻塞关闭弹层。
 `src/views/BuilderPanelApp.test.ts` 覆盖工具用量聚合。
 
 `src-tauri/src/services/preset_command_service.rs` 覆盖预设命令计划生成。
-
-`src-tauri/src/services/process_timeline_service.rs` 覆盖 timeline 分页、搜索和类型筛选。

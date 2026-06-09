@@ -19,8 +19,6 @@ pub enum UiAction {
     ResolveApproval,
     /// 创建后续 turn。
     CreateFollowupTurn,
-    /// 查看过程时间线。
-    ViewProcessTimeline,
 }
 
 /// 文本截断策略。
@@ -103,8 +101,6 @@ pub struct InlineInteractionViewModel {
     pub can_resolve_approval: bool,
     /// 是否可创建后续 turn。
     pub can_create_followup_turn: bool,
-    /// 是否可查看过程时间线。
-    pub can_view_process_timeline: bool,
     /// 选项框状态。
     pub choice_box: ChoiceBoxViewModel,
 }
@@ -181,27 +177,6 @@ pub struct ChoiceBoxViewModel {
     pub disabled_reason: Option<String>,
 }
 
-/// 过程时间线轻量索引 view model。
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct TimelineViewModel {
-    /// 会话头部。
-    pub session_header: String,
-    /// 当前过滤器数量。
-    pub filter_count: usize,
-    /// 当前条目数量。
-    pub item_count: usize,
-    /// 加载状态。
-    pub loading_state: String,
-    /// 空状态。
-    pub empty_state: Option<String>,
-    /// 接收错误。
-    pub receive_error: Option<String>,
-    /// 是否可复制过滤结果。
-    pub can_copy_filtered_result: bool,
-    /// 是否可跳到最新。
-    pub can_jump_to_latest: bool,
-}
-
 /// 将 session state 转为列表 view model。
 pub fn session_list_view_models(state: &SessionState) -> Vec<SessionListItemViewModel> {
     state
@@ -276,28 +251,6 @@ pub fn session_detail_view_model(session: &AgentSession) -> SessionDetailViewMod
     }
 }
 
-/// 创建时间线轻量 view model。
-pub fn timeline_view_model(
-    session: &AgentSession,
-    item_count: usize,
-    receive_error: Option<String>,
-) -> TimelineViewModel {
-    TimelineViewModel {
-        session_header: thread_label(session),
-        filter_count: 0,
-        item_count,
-        loading_state: "idle".to_string(),
-        empty_state: if item_count == 0 {
-            Some("暂无过程事件".to_string())
-        } else {
-            None
-        },
-        receive_error,
-        can_copy_filtered_result: item_count > 0,
-        can_jump_to_latest: item_count > 0,
-    }
-}
-
 /// 将 capability 映射为 UI 动作。
 pub fn actions_from_capabilities(capabilities: &SessionCapabilities) -> Vec<UiAction> {
     let mut actions = Vec::new();
@@ -313,9 +266,6 @@ pub fn actions_from_capabilities(capabilities: &SessionCapabilities) -> Vec<UiAc
     }
     if capabilities.can_create_followup_turn {
         actions.push(UiAction::CreateFollowupTurn);
-    }
-    if capabilities.can_view_process_timeline {
-        actions.push(UiAction::ViewProcessTimeline);
     }
 
     actions
@@ -358,10 +308,6 @@ pub fn actions_for_session(session: &AgentSession) -> Vec<UiAction> {
         )
     {
         actions.push(UiAction::CreateFollowupTurn);
-    }
-
-    if session.capabilities.can_view_process_timeline {
-        actions.push(UiAction::ViewProcessTimeline);
     }
 
     actions
@@ -413,7 +359,6 @@ fn inline_interaction_view_model(session: &AgentSession) -> InlineInteractionVie
         can_send_reply: actions.contains(&UiAction::SendReply),
         can_resolve_approval: actions.contains(&UiAction::ResolveApproval),
         can_create_followup_turn: actions.contains(&UiAction::CreateFollowupTurn),
-        can_view_process_timeline: actions.contains(&UiAction::ViewProcessTimeline),
         choice_box,
     }
 }
@@ -514,7 +459,7 @@ fn choice_view_model(choice: &InteractionChoice) -> InteractionChoiceViewModel {
 mod tests {
     use super::{
         actions_from_capabilities, session_detail_view_model, session_list_item_view_model,
-        text_display, timeline_view_model, UiAction,
+        text_display, UiAction,
     };
     use crate::domain::agent_interaction::{
         AgentInteraction, ChoiceInteraction, ClipboardFallbackTarget, InteractionChoice,
@@ -551,7 +496,6 @@ mod tests {
             can_send_reply: true,
             can_resolve_approval: true,
             can_create_followup_turn: true,
-            can_view_process_timeline: true,
         });
 
         assert_eq!(
@@ -561,7 +505,6 @@ mod tests {
                 UiAction::SendReply,
                 UiAction::ResolveApproval,
                 UiAction::CreateFollowupTurn,
-                UiAction::ViewProcessTimeline,
             ]
         );
     }
@@ -603,12 +546,10 @@ mod tests {
         let session = base_session(SessionCapabilities::none(), UsageSnapshot::unavailable());
         let list_view_model = session_list_item_view_model(&session);
         let detail_view_model = session_detail_view_model(&session);
-        let timeline_view_model = timeline_view_model(&session, 0, None);
 
         assert_eq!(list_view_model.thread_label, "未命名");
         assert_eq!(detail_view_model.header, "未命名");
         assert_eq!(detail_view_model.identity, "project / 未命名");
-        assert_eq!(timeline_view_model.session_header, "未命名");
     }
 
     #[test]
@@ -619,7 +560,6 @@ mod tests {
                 can_send_reply: true,
                 can_resolve_approval: true,
                 can_create_followup_turn: true,
-                can_view_process_timeline: false,
             },
             UsageSnapshot::unavailable(),
         );
@@ -645,7 +585,6 @@ mod tests {
                 can_send_reply: false,
                 can_resolve_approval: false,
                 can_create_followup_turn: false,
-                can_view_process_timeline: false,
             },
             UsageSnapshot::unavailable(),
         );
@@ -671,7 +610,6 @@ mod tests {
                 can_send_reply: true,
                 can_resolve_approval: false,
                 can_create_followup_turn: false,
-                can_view_process_timeline: false,
             },
             UsageSnapshot::unavailable(),
         );
@@ -701,7 +639,6 @@ mod tests {
                 can_send_reply: true,
                 can_resolve_approval: false,
                 can_create_followup_turn: false,
-                can_view_process_timeline: false,
             },
             UsageSnapshot::unavailable(),
         );
@@ -745,7 +682,6 @@ mod tests {
                 can_send_reply: true,
                 can_resolve_approval: false,
                 can_create_followup_turn: false,
-                can_view_process_timeline: false,
             },
             UsageSnapshot::unavailable(),
         );
@@ -783,7 +719,6 @@ mod tests {
                 can_send_reply: true,
                 can_resolve_approval: false,
                 can_create_followup_turn: false,
-                can_view_process_timeline: false,
             },
             UsageSnapshot::unavailable(),
         );
@@ -806,16 +741,6 @@ mod tests {
             view_model.pending_interaction_kind,
             Some(super::PendingInteractionKind::Choice)
         );
-    }
-
-    #[test]
-    fn timeline_light_index_reflects_items() {
-        let session = base_session(SessionCapabilities::none(), UsageSnapshot::unavailable());
-        let view_model = timeline_view_model(&session, 2, None);
-
-        assert_eq!(view_model.item_count, 2);
-        assert!(view_model.can_copy_filtered_result);
-        assert!(view_model.can_jump_to_latest);
     }
 
     fn base_session(capabilities: SessionCapabilities, usage: UsageSnapshot) -> AgentSession {

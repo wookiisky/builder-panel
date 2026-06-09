@@ -6,8 +6,6 @@ import type {
   SessionDetailViewModel,
   SessionKey,
   SessionListItemViewModel,
-  TimelinePage,
-  TimelineQuery,
 } from "./mockPanelContract";
 
 /// Codex APP 审批提交请求。
@@ -123,39 +121,14 @@ export const createCodexAppFollowupTurn = async (
   }
 };
 
-/// 查询 Codex APP 时间线。
-export const fetchCodexAppTimeline = async (
-  query: TimelineQuery,
-): Promise<TimelinePage> => {
-  try {
-    return await invoke<TimelinePage>("query_codex_app_timeline", { query });
-  } catch (error) {
-    if (isTauriRuntime()) {
-      throw errorWithCause(error, "读取 Codex APP 时间线失败");
-    }
-    return {
-      items: [],
-      page: query.page,
-      page_size: query.page_size,
-      total: 0,
-      has_next: false,
-      filter_count:
-        (query.search === null || query.search.trim().length === 0 ? 0 : 1) +
-        (query.kind === null ? 0 : 1),
-    };
-  }
-};
-
-/// 释放 Codex APP 时间线大文本缓存。
-export const releaseCodexAppTimelineCache = async (
-  sessionKey: SessionKey,
+/// 注入 Codex APP follow-up 到 Codex.app GUI（方案 C：AX + 键盘事件）。
+export const injectCodexAppFollowup = async (
+  request: CodexAppFollowupRequest,
 ): Promise<void> => {
   try {
-    await invoke<number>("release_codex_app_timeline_cache", { sessionKey });
+    await invoke("inject_codex_app_followup", { request });
   } catch (error) {
-    if (isTauriRuntime()) {
-      throw errorWithCause(error, "释放 Codex APP 时间线缓存失败");
-    }
+    throw errorWithCause(error, "Codex APP 注入失败");
   }
 };
 

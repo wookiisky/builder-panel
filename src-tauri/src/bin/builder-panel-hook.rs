@@ -4,9 +4,7 @@ use std::io::{Read, Write};
 
 use builder_panel_lib::adapters::bridge::hook_cli::run_hook_cli;
 use builder_panel_lib::adapters::config_file::JsonSettingsStore;
-use builder_panel_lib::adapters::logging::{
-    default_log_path, event_logger, log_error, log_info,
-};
+use builder_panel_lib::adapters::logging::{default_log_path, event_logger, log_error, log_info};
 use builder_panel_lib::ports::config_store_port::SettingsStorePort;
 use serde_json::json;
 

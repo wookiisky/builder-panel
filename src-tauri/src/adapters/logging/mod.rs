@@ -239,9 +239,7 @@ fn current_timestamp_iso() -> String {
 /// 将 Unix 秒数格式化为 `YYYY-MM-DDTHH:MM:SS.mmmZ`（UTC，避免引入 chrono 依赖）。
 fn format_unix_millis(unix_secs: i64, millis: u32) -> String {
     let (year, month, day, hour, minute, second) = unix_to_utc(unix_secs);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
 fn unix_to_utc(unix_secs: i64) -> (i32, u32, u32, u32, u32, u32) {
@@ -330,7 +328,11 @@ mod tests {
         let logger = EventLogger::new();
         logger.configure(true, Some(path.clone()));
 
-        logger.log(LogLevel::Info, "设置保存", json!({"prompt": "secret-prompt"}));
+        logger.log(
+            LogLevel::Info,
+            "设置保存",
+            json!({"prompt": "secret-prompt"}),
+        );
         logger.log(LogLevel::Error, "hook 安装失败", json!({"code": 7}));
 
         let content = fs::read_to_string(&path).expect("log file should exist");

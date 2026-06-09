@@ -32,9 +32,7 @@ Errors 不负责日志写入、UI 弹窗、重试执行或资源回收。
 
 `AgentProtocolUnsupported` 表示 agent 协议未支持。
 
-`ProcessTimelineUnavailable` 表示过程时间线不可用。
 
-`ProcessTimelineReceiveFailed` 表示过程事件接收失败。
 
 `NotificationSendFailed` 表示通知发送失败。
 

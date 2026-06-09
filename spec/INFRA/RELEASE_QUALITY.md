@@ -14,11 +14,10 @@ Release Quality 记录阶段 8 发布质量、日志脱敏、性能预算和文�
 
 默认日志不得记录 transcript 全文。
 
-默认日志不得记录 timeline 全文。
+默认日志不得记录 token、secret、password 或 api_key 原文。
 
-敏感字段名包含 prompt、transcript、timeline、token、secret、password 或 api_key 时，日志载荷输出为脱敏占位。
 
-长字符串日志会被截断，避免把大文本过程事件写入默认日志。
+
 
 日志业务事件名使用中文。
 
@@ -26,7 +25,7 @@ Release Quality 记录阶段 8 发布质量、日志脱敏、性能预算和文�
 
 ## 性能预算
 
-性能预算脚本覆盖 10 session、1000 event、1 万 timeline、虚拟列表可见范围、单 session timeline 淘汰和大文本释放静态场景。
+性能预算静态场景覆盖 1000 个 session、1000 个事件、session 捕捉顺序合并、摘要截断和 follow-up 展开集合操作。
 
 性能预算脚本不替代 10 分钟空闲 CPU 人工采样。
 

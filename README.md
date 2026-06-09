@@ -1,6 +1,5 @@
 # Builder Panel
 
-Builder Panel 是一个本地优先的跨平台桌面控制面板，用于聚合 Coding Agent 会话状态、处理审批和回复，并查看托管会话的过程事件。
 
 项目使用 Tauri + Rust + React + TypeScript 构建。Rust 后端承载领域模型、状态转换、应用服务和系统边界适配；React 前端只负责面板展示和用户交互。
 
@@ -13,8 +12,7 @@ Builder Panel 首版面向日常使用 Codex、Claude Code 等 Coding Agent 的�
 1. 在始终置顶的浮动 panel 中查看会话状态。
 2. 在等待审批、等待选择或等待文本回复时快速处理。
 3. 通过快捷回复和预设命令减少重复输入。
-4. 在弹出层中查看托管会话的过程事件。
-5. 保持本地优先，不上传 prompt、transcript、日志或过程事件。
+4. 完成或失败的可 follow-up 会话默认保持单行，点击右侧展开按钮后再显示输入区。
 
 ## 当前能力
 
@@ -27,8 +25,6 @@ Builder Panel 首版面向日常使用 Codex、Claude Code 等 Coding Agent 的�
 3. 纯 reducer 管理 session 状态和排序规则。
 4. 本地 bridge codec、Mac Unix Domain Socket 传输和 Windows Named Pipe 代码入口。
 5. mock agent adapter 和 mock runtime 测试基线。
-6. Codex CLI hook 事件转换、审批 directive 等待和进程内 timeline 写入。
-7. Codex APP app-server schema 探针、消息编码、notification 转换、审批、回复和 timeline 查询闭环。
 8. 设置页、本地 JSON 设置文件读写、hook 状态查询、安装和卸载入口。
 9. 日志脱敏、spec 文档门禁和性能预算静态检查脚本。
 
@@ -39,7 +35,6 @@ Builder Panel 首版面向日常使用 Codex、Claude Code 等 Coding Agent 的�
 3. 真实 Mac 或 Windows 系统通知接入。
 4. Windows 本机人工验收。
 5. 任意已有终端的可靠输入注入。
-6. 从 transcript 或 JSONL 文件恢复 timeline。
 
 ## 技术栈
 
@@ -175,8 +170,7 @@ cargo test --manifest-path src-tauri/Cargo.toml log_sanitizer
 1. Domain 层保持纯粹，不依赖 Tauri、React、文件系统、网络、系统通知、终端或第三方裸 payload。
 2. 第三方 payload 必须在 adapter 边界完成校验和清洗。
 3. 关键状态必须使用强类型表达，禁止魔法字符串散落在 UI 或 adapter 中。
-4. 回写能力、跳回能力、过程能力和审批能力必须显式建模。
-5. bridge、hook helper、终端回写和过程事件接收必须 fail-open 或可降级，不影响 agent 本身运行。
+4. 回写能力、跳回能力和审批能力必须显式建模。
 6. 用量数字只展示已验证来源提供的数据，不可用时展示 `--` 或隐藏。
 
 详细约束以 `spec/00_INDEX.md` 及其登记的事实文档为准。

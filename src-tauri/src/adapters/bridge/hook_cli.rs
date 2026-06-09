@@ -4,7 +4,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::adapters::bridge::codec::{BridgeRequestEnvelope, BridgeResponseEnvelope};
 use crate::adapters::bridge::hook_output::{standard_output_for_response, HookOutputError};
-use crate::adapters::bridge::hook_payload::{is_codex_app_terminal, validate_hook_payload, HookSource};
+use crate::adapters::bridge::hook_payload::{
+    is_codex_app_terminal, validate_hook_payload, HookSource,
+};
 use crate::adapters::bridge::transport::{send_bridge_request, BridgeTransportError};
 use crate::domain::agent_session::AgentKind;
 

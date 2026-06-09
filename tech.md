@@ -16,15 +16,11 @@ Builder Panel 首版采用 Tauri + Rust + TypeScript + React 构建跨平台常�
 2. 第三方 payload 在 adapter 边界完成校验和清洗，核心逻辑不接收裸 JSON、`Any` 或未验证字段。
 3. 状态变更集中通过 reducer 和 app-service 用例完成，避免 UI 层直接拼装业务状态。
 4. 所有关键状态使用强类型表达，禁止魔法字符串散落在 UI 或 adapter 中。
-5. 回写能力、跳回能力、过程能力、审批能力都显式建模，UI 只展示当前 session 真实支持的动作。
-6. bridge、hook helper、终端回写和过程事件接收必须 fail-open 或可降级，不影响 agent 本身运行。
+5. 回写能力、跳回能力、审批能力和 follow-up 能力都显式建模，UI 只展示当前 session 真实支持的动作。
 
 ### 2.2 产品边界
 
-1. 本地优先，不依赖云端服务，不上传 prompt、transcript、日志或过程事件。
 2. 默认不持久化 transcript 全文。
-3. 过程事件只保存在内存中，不写入文件或数据库。
-4. 不从 transcript / JSONL 反向读取过程事件。
 5. Windows 首版不支持 WSL，不承诺向任意已有终端注入输入。
 6. Claude Code APP 在未验证公开本地协议前，只承诺只读状态、跳回和有限回写。
 7. 用量数字只展示已验证来源提供的数据，不可用时展示 `--` 或隐藏。
@@ -90,7 +86,6 @@ Builder Panel 首版采用 Tauri + Rust + TypeScript + React 构建跨平台常�
 | terminal jump               | `JumpTargetPort`                    | 只负责聚焦或跳回                 |
 | text sender                 | `ReplySenderPort`                   | 只负责可靠回写或复制降级         |
 | `CodexAppServer`            | `CodexAppAdapter`                   | schema 重验后接入                |
-| event timeline              | `ProcessTimelineService`            | 只接收托管会话过程事件，内存保存 |
 
 ## 4. 总体架构
 
@@ -102,16 +97,14 @@ Builder Panel 首版采用 Tauri + Rust + TypeScript + React 构建跨平台常�
    纯模型、事件、状态 reducer、排序规则、能力规则、错误类型。
 
 2. `ports`  
-   抽象接口，包括 bridge、agent adapter、reply sender、jump target、notification、config、timeline、clipboard、managed process。
 
 3. `adapters`  
    对接 Codex APP、Codex CLI、Claude Code APP、Claude Code CLI、终端、系统通知、配置文件、IPC、剪贴板、托管进程。
 
 4. `app-services`  
-   用例编排层，负责 session 更新、审批处理、选项提交、开放性回复、快捷回复、预设命令、通知合并、timeline 查询。
 
 5. `ui`  
-   React panel、session 列表、session detail、设置页、过程弹出层。UI 不直接处理 agent 协议。
+   React panel、session 列表、session detail、设置页和行内 follow-up 输入区。UI 不直接处理 agent 协议。
 
 ### 4.2 依赖方向
 
@@ -135,7 +128,6 @@ Builder Panel 首版采用 Tauri + Rust + TypeScript + React 构建跨平台常�
    被 Codex CLI / Claude Code CLI hooks 调用的轻量 CLI。
 
 3. 托管 agent 子进程  
-   由 Builder Panel 通过预设命令启动的 Codex / Claude Code 进程。只有托管进程进入可靠过程事件和可靠 stdin 回写范围。
 
 ## 5. Rust 工程模块
 
@@ -149,7 +141,6 @@ src-tauri/src/
     agent_interaction.rs
     session_state.rs
     usage.rs
-    process_timeline.rs
     app_error.rs
   ports/
     agent_adapter_port.rs
@@ -158,7 +149,6 @@ src-tauri/src/
     jump_target_port.rs
     notification_port.rs
     config_store_port.rs
-    process_timeline_port.rs
     managed_process_port.rs
   adapters/
     bridge/
@@ -169,7 +159,6 @@ src-tauri/src/
     terminal/
     notification/
     config_file/
-    timeline/
   services/
     session_service.rs
     interaction_service.rs
@@ -177,7 +166,6 @@ src-tauri/src/
     preset_command_service.rs
     shortcut_reply_service.rs
     notification_service.rs
-    process_timeline_service.rs
     settings_service.rs
   tauri_api/
     commands.rs
@@ -272,8 +260,6 @@ pub struct SessionCapabilities {
     pub can_resolve_approval: bool,
     /// 是否可创建后续 turn。
     pub can_create_followup_turn: bool,
-    /// 是否可查看过程时间线。
-    pub can_view_process_timeline: bool,
 }
 ```
 
@@ -477,15 +463,6 @@ view model 层排序：
 1. 聚焦 APP、终端窗口、tmux pane 或托管会话。
 2. 返回跳回结果。
 3. 不发送文本。
-
-### 7.5 ProcessTimelinePort
-
-职责：
-
-1. 接收托管会话 stdout / stderr / tool event / app-server event。
-2. 转换为 `ProcessTimelineItem`。
-3. 按 session 分页提供给 UI。
-4. 支持搜索、类型筛选、去重和增量追加。
 
 ### 7.6 ConfigStorePort
 
@@ -693,7 +670,6 @@ builder-panel-hook --source claude
 1. `can_jump` 按发现结果决定。
 2. `can_send_reply` 默认 false，除非托管进程或已验证协议支持。
 3. `can_resolve_approval` 默认 false。
-4. `can_view_process_timeline` 仅托管且接入事件流时为 true。
 
 ### 10.4 Claude Code CLI Adapter
 
@@ -762,73 +738,22 @@ UI 只对 `Verified` 展示数字。
 2. 或按设置隐藏。
 3. 不展示虚构数字。
 
-## 12. Process Timeline 方案
 
 ### 12.1 边界
 
-首版只支持 Builder Panel 托管启动且已接入事件流的会话。
+首版不提供独立历史详情能力。
 
-不支持：
-
-1. 非托管会话 timeline。
-2. 从 transcript / JSONL 反向读取 timeline。
-3. timeline 持久化。
-4. 用户手动导出 timeline 文件。
-
-### 12.2 Timeline 类型
-
-```rust
-/// 过程时间线事件类型。
-pub enum ProcessTimelineKind {
-    /// 用户输入。
-    UserInput,
-    /// Agent 输出。
-    AgentOutput,
-    /// 工具调用。
-    ToolCall,
-    /// 工具结果。
-    ToolResult,
-    /// 审批。
-    Approval,
-    /// 系统事件。
-    System,
-    /// 错误。
-    Error,
-}
-```
-
-`ProcessTimelineItem` 必须包含：
-
-1. `item_id`
-2. `session_key`
-3. `kind`
-4. `timestamp`
-5. `summary`
-6. `content`
-7. `source`
-8. `dedupe_key`
+不保留独立历史详情 service、port、adapter 缓存或 Tauri command。
 
 ### 12.3 内存管理
 
-1. 按 session 分片缓存。
-2. 每个 session 有最大条数。
-3. 全局有最大内存预算。
-4. 达到上限后淘汰最旧、非 pending、非错误优先级低的条目。
-5. 弹出层关闭后释放弹出层持有的大文本缓存。
-6. 全局 UI 状态只保存轻量索引，不保存长文本全文。
+1. 全局 UI 状态只保存轻量索引，不保存长文本全文。
+2. 完成或失败 session 的 follow-up 展开状态只保存在前端轻量集合中，提交成功后清理。
+3. follow-up 展开状态不进入后端能力模型。
 
 ### 12.4 查询能力
 
-过程弹出层通过 app-service 查询：
-
-1. 按 session 分页。
-2. 按关键词搜索。
-3. 按类型筛选。
-4. 跳到最新。
-5. 复制单条。
-6. 复制当前筛选结果。
-
-搜索策略必须一致：首版建议只筛选已加载页和内存缓存中的可用范围，不声明“全历史搜索”。
+当前不提供独立历史详情查询能力，也不提供对应浮层。
 
 ## 13. App Service 设计
 
@@ -892,7 +817,7 @@ pub enum ProcessTimelineKind {
 5. 长时间运行阈值通知。
 6. 同 session 短时间合并通知。
 7. 当前查看 session 时抑制重复通知。
-8. 点击通知后展开 panel 并定位 session，不直接打开过程弹出层。
+8. 点击通知后展开 panel 并定位 session。
 
 ## 14. UI 技术方案
 
@@ -903,10 +828,9 @@ pub enum ProcessTimelineKind {
 1. `sessionListStore`：轻量 session view model。
 2. `selectedSessionStore`：当前选中 session。
 3. `draftStore`：按 session 保存草稿。
-4. `timelinePanelStore`：弹出层筛选、搜索、滚动状态。
 5. `settingsStore`：设置页表单状态。
 
-长过程内容不得进入全局 store。
+长文本内容不得进入全局 store。
 
 ### 14.2 扩展模式 Panel
 
@@ -915,7 +839,7 @@ pub enum ProcessTimelineKind {
 1. 左侧或上方展示 session 列表。
 2. 详情区域展示当前 session。
 3. 操作区展示审批、选项、回复输入、快捷回复。
-4. 工具区展示跳回、复制、过程入口。
+4. 工具区展示跳回、复制等能力入口。
 5. 展示等待数量、运行数量、状态动画。
 6. 展示已验证 5H 和周用量。
 
@@ -953,7 +877,7 @@ pub enum ProcessTimelineKind {
 4. 摘要区：最近状态或当前问题。
 5. 执行信息区：运行信息和轻量状态动画。
 6. 操作区：审批、选项、输入框、快捷回复。
-7. 工具区：跳回、复制、过程入口。
+7. 工具区：跳回、复制。
 
 交互规则：
 
@@ -964,29 +888,23 @@ pub enum ProcessTimelineKind {
 5. 多选提交前必须至少选择一项。
 6. 长选项文本换行，不撑破按钮。
 
-### 14.5 过程弹出层
+### 14.5 Follow-up 行内输入
 
 包含：
 
-1. 标题栏。
-2. session 基本信息。
-3. 搜索框。
-4. 类型筛选。
-5. 虚拟时间线列表。
-6. 复制按钮。
-7. 跳到最新按钮。
-8. 加载状态。
-9. 空状态。
-10. 接收失败提示。
+1. 完成或失败 session 默认保持单行。
+2. 可 follow-up 的完成或失败 session 右侧展示展开按钮。
+3. 点击展开后展示第二行。
+4. 第二行只包含快捷输入和单行输入区。
+5. 提交成功后收起第二行并清理草稿。
+6. 发送中状态。
+7. 发送失败状态。
 
 规则：
 
-1. 非托管或不支持 timeline 的 session 不展示入口。
-2. 弹出层只读。
-3. 不提供导出入口。
-4. 用户在底部时新事件自动跟随。
-5. 用户查看历史时不强行跳动。
-6. 关闭后释放大文本缓存。
+1. 完成或失败 session 默认不自动展示第二行。
+2. 第二行不展示独立历史详情入口。
+3. follow-up 提交成功后清理对应草稿和展开状态。
 
 ### 14.6 设置页
 
@@ -998,7 +916,7 @@ pub enum ProcessTimelineKind {
 4. Replies：输入偏好、快捷回复组。
 5. Presets：预设命令。
 6. Terminal：终端 profile、托管启动策略。
-7. Advanced：bridge、hook 安装、日志、过程缓存。
+7. Advanced：bridge、hook 安装和日志。
 
 不提供 mini 模式切换入口。
 
@@ -1088,10 +1006,9 @@ hook-install-manifest.json
 6. 预设命令。
 7. 终端 profile。
 8. 输入框偏好。
-9. 过程弹出层偏好。
-10. 用量展示开关。
-11. agent 用量来源状态。
-12. 默认 UI 模式字段，首版固定 `expanded`。
+9. 用量展示开关。
+10. agent 用量来源状态。
+11. 默认 UI 模式字段，首版固定 `expanded`。
 
 ## 17. 错误处理与日志
 
@@ -1106,8 +1023,6 @@ Domain 显式建模：
 5. `ConfigLoadFailed`
 6. `ConfigSaveFailed`
 7. `AgentProtocolUnsupported`
-8. `ProcessTimelineUnavailable`
-9. `ProcessTimelineReceiveFailed`
 
 错误对象包含：
 
@@ -1133,7 +1048,6 @@ Domain 显式建模：
 3. `用户回复已发送`
 4. `终端回写失败`
 5. `配置保存失败`
-6. `过程事件接收失败`
 
 日志规则：
 
@@ -1146,8 +1060,6 @@ Domain 显式建模：
 
 ### 18.1 本地数据
 
-1. prompt、transcript、过程事件不上传。
-2. 过程事件不持久化。
 3. 复制动作必须由用户主动触发。
 4. 默认只保存 session 摘要、状态、配置和用户自定义项。
 
@@ -1178,17 +1090,15 @@ Domain 显式建模：
 
 ### 19.2 内存
 
-1. 过程事件按 session 分片缓存。
 2. 长文本不进入全局 UI 状态。
-3. 弹出层关闭后释放大文本缓存。
-4. timeline 有全局和单 session 上限。
+3. follow-up 展开状态不进入后端能力模型。
 
 ### 19.3 大列表
 
-1. 过程弹出层使用虚拟列表。
-2. 默认分页加载。
-3. 长内容默认折叠。
-4. 1 万条过程记录滚动仍应可用。
+1. session 列表保持稳定捕捉顺序。
+2. 默认只渲染当前列表视图需要的轻量状态。
+3. 长内容默认折叠或截断。
+4. 1000 个 session 更新和 follow-up 展开集合操作仍应可用。
 
 ## 20. View Model 设计
 
@@ -1228,7 +1138,6 @@ Domain 显式建模：
 8. `shortcut_replies`
 9. `toolbar_actions`
 
-### 20.3 TimelineViewModel
 
 字段：
 
@@ -1269,8 +1178,6 @@ Domain 显式建模：
 5. Unix socket / Named Pipe codec schema 一致。
 6. hook 事件转换为 `AgentEvent`。
 7. app-server 事件转换为 `AgentEvent`。
-8. 托管 stdout 事件转换为 `ProcessTimelineItem`。
-9. 重复过程事件去重。
 10. 用量可用时解析为 `Verified`。
 11. 用量不可用时输出 `Unavailable`。
 12. adapter 生成稳定 project id 和 conversation id。
@@ -1284,8 +1191,6 @@ Domain 显式建模：
 3. 快捷回复复用开放性回复路径。
 4. 新对话预设命令生成正确。
 5. 回写失败降级复制。
-6. 打开过程弹出层读取对应托管 session timeline。
-7. 过程事件接收失败不影响主 panel。
 8. 用量更新生成正确 view model。
 9. 多项目多对话 view model 独立。
 
@@ -1298,11 +1203,10 @@ Domain 显式建模：
 3. 小屏幕按钮不重叠。
 4. 不同状态展示正确动作。
 5. 输入框发送、失败保留草稿。
-6. 过程弹出层打开、关闭、搜索、筛选、复制。
-7. 长过程内容不撑破布局。
+6. 完成或失败 session 默认单行，点击展开后才展示 follow-up 输入区。
+7. 第二行快捷输入、输入框和发送按钮不撑破布局。
 8. 用量可用时展示 5H 与周用量。
 9. 不展示 mini 模式切换入口。
-10. 不展示过程事件导出入口。
 
 ### 21.5 E2E 测试
 
@@ -1316,7 +1220,6 @@ Domain 显式建模：
 6. APP 展示完成并触发通知。
 7. 用户输入开放性回复。
 8. mock agent 收到文本。
-9. 用户打开过程弹出层看到 timeline。
 
 ### 21.6 性能测试
 
@@ -1326,10 +1229,7 @@ Domain 显式建模：
 2. 10 个 session 同时存在时操作流畅。
 3. 连续 1000 条 mock agent 事件输入不丢失。
 4. panel 收缩后动画和刷新降级。
-5. 长过程事件不进入全局前端状态。
-6. 1 万条过程记录虚拟滚动可用。
-7. 弹出层关闭后大文本缓存释放。
-8. timeline 达到上限后淘汰策略生效。
+6. 1000 个 session 更新和 follow-up 展开集合操作可用。
 
 ## 22. 文档要求
 
@@ -1339,7 +1239,6 @@ Domain 显式建模：
 2. `docs/bridge-protocol.md`：bridge envelope、命令、响应、错误码。
 3. `docs/agent-adapters.md`：四类 adapter 能力矩阵和降级策略。
 4. `docs/hook-installation.md`：hook 安装、备份、卸载和 trust review。
-5. `docs/performance-budget.md`：CPU、内存、timeline 上限和测试方法。
 6. `docs/security.md`：本地数据、敏感内容、日志和命令安全。
 
 本次 `tech.md` 不包含实施计划和里程碑安排。

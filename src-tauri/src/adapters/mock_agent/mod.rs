@@ -23,10 +23,6 @@ use crate::domain::view_model::{
 use crate::ports::agent_adapter_port::{
     AgentEventSourcePort, AgentInteractionWriterPort, ApprovalDecision, ChoiceSubmission,
 };
-use crate::ports::process_timeline_port::{
-    ProcessTimelineEventKind, ProcessTimelineItem, ProcessTimelineReaderPort,
-    ProcessTimelineReleasePort,
-};
 use crate::ports::reply_sender_port::ReplySenderPort;
 
 /// Mock agent 记录的 directive 类型。
@@ -67,8 +63,6 @@ pub struct MockAgentRuntime {
     session_state: SessionState,
     /// Mock agent 已收到的 directive。
     recorded_directives: Vec<MockAgentRecordedDirective>,
-    /// Mock 时间线数据源。
-    timeline_items: Vec<ProcessTimelineItem>,
     /// 下一次审批回写是否失败。
     fail_next_approval: bool,
     /// 下一次文本回复回写是否失败。
@@ -93,7 +87,6 @@ impl MockAgentRuntime {
         Self {
             session_state,
             recorded_directives: Vec::new(),
-            timeline_items: adapter.timeline_items,
             fail_next_approval: false,
             fail_next_reply: false,
             fail_next_choice: false,
@@ -259,42 +252,10 @@ impl ReplySenderPort for MockAgentRuntime {
     }
 }
 
-impl ProcessTimelineReaderPort for MockAgentRuntime {
-    fn read_timeline(
-        &self,
-        session_key: &SessionKey,
-    ) -> Result<Vec<ProcessTimelineItem>, AppError> {
-        Ok(self
-            .timeline_items
-            .iter()
-            .filter(|item| &item.session_key == session_key)
-            .cloned()
-            .collect())
-    }
-}
-
-impl ProcessTimelineReleasePort for MockAgentRuntime {
-    fn release_large_texts(&mut self, session_key: &SessionKey) -> Result<usize, AppError> {
-        let mut released_count = 0;
-        for item in &mut self.timeline_items {
-            if &item.session_key != session_key || item.body.chars().count() <= 512 {
-                continue;
-            }
-
-            item.body = "长正文缓存已释放，重新打开后仅保留标题和类型。".to_string();
-            released_count += 1;
-        }
-
-        Ok(released_count)
-    }
-}
-
 /// 阶段 3 mock agent 场景 adapter。
 pub struct MockAgentScenarioAdapter {
     /// 初始事件。
     initial_events: Vec<AgentEvent>,
-    /// 时间线条目。
-    timeline_items: Vec<ProcessTimelineItem>,
 }
 
 impl MockAgentScenarioAdapter {
@@ -312,7 +273,7 @@ impl MockAgentScenarioAdapter {
                 conversation_label: "审批闭环".to_string(),
                 title: Some("检查文件写入权限".to_string()),
                 summary: Some("准备修改配置文件，需要用户审批".to_string()),
-                capabilities: capabilities(true, false, true, false, true),
+                capabilities: capabilities(true, false, true, false),
                 usage: verified_usage(41.0, 64.0),
                 updated_at: UnixMillis::new(1000),
             }),
@@ -337,7 +298,7 @@ impl MockAgentScenarioAdapter {
                 conversation_label: "回复闭环".to_string(),
                 title: Some("补充需求细节".to_string()),
                 summary: Some("等待用户补充执行边界".to_string()),
-                capabilities: capabilities(true, true, false, false, true),
+                capabilities: capabilities(true, true, false, false),
                 usage: UsageSnapshot::unavailable(),
                 updated_at: UnixMillis::new(1002),
             }),
@@ -363,7 +324,7 @@ impl MockAgentScenarioAdapter {
                 conversation_label: "选项闭环".to_string(),
                 title: Some("选择执行方案".to_string()),
                 summary: Some("等待用户选择一个执行方案".to_string()),
-                capabilities: capabilities(true, true, false, false, true),
+                capabilities: capabilities(true, true, false, false),
                 usage: UsageSnapshot::unavailable(),
                 updated_at: UnixMillis::new(1004),
             }),
@@ -401,7 +362,7 @@ impl MockAgentScenarioAdapter {
                 conversation_label: "完成闭环".to_string(),
                 title: Some("完成 mock 用量同步".to_string()),
                 summary: Some("mock 用量已同步".to_string()),
-                capabilities: capabilities(true, false, false, true, true),
+                capabilities: capabilities(true, false, false, true),
                 usage: verified_usage(18.0, 27.0),
                 updated_at: UnixMillis::new(1006),
             }),
@@ -426,7 +387,7 @@ impl MockAgentScenarioAdapter {
                 conversation_label: "失败闭环".to_string(),
                 title: Some("模拟 agent 失败".to_string()),
                 summary: Some("即将写入失败状态".to_string()),
-                capabilities: capabilities(false, false, false, false, false),
+                capabilities: capabilities(false, false, false, false),
                 usage: UsageSnapshot::unavailable(),
                 updated_at: UnixMillis::new(1010),
             }),
@@ -442,76 +403,8 @@ impl MockAgentScenarioAdapter {
                 updated_at: UnixMillis::new(1011),
             }),
         ];
-        let timeline_items = vec![
-            timeline_item(
-                &approval_key,
-                "a-1",
-                ProcessTimelineEventKind::Activity,
-                "读取任务",
-                "mock agent 读取阶段 3 任务",
-                2001,
-            ),
-            timeline_item(
-                &approval_key,
-                "a-2",
-                ProcessTimelineEventKind::Tool,
-                "准备写入",
-                "检测到需要写入配置样例",
-                2002,
-            ),
-            timeline_item(
-                &approval_key,
-                "a-3",
-                ProcessTimelineEventKind::Approval,
-                "等待审批",
-                "等待用户允许或拒绝",
-                2003,
-            ),
-            timeline_item(
-                &reply_key,
-                "r-1",
-                ProcessTimelineEventKind::Activity,
-                "分析输入",
-                "mock agent 等待补充说明",
-                2004,
-            ),
-            timeline_item(
-                &reply_key,
-                "r-2",
-                ProcessTimelineEventKind::Reply,
-                "请求回复",
-                "用户需要输入单行或多行回复",
-                2005,
-            ),
-            timeline_item(
-                &choice_key,
-                "ch-1",
-                ProcessTimelineEventKind::Reply,
-                "请求选择",
-                "mock agent 等待用户选择执行方案",
-                2006,
-            ),
-            timeline_item(
-                &completed_key,
-                "c-1",
-                ProcessTimelineEventKind::System,
-                "同步用量",
-                "用量数据已经清洗为可展示数字",
-                2007,
-            ),
-            timeline_item(
-                &completed_key,
-                "c-2",
-                ProcessTimelineEventKind::Activity,
-                "完成 turn",
-                "mock turn 已完成",
-                2008,
-            ),
-        ];
-
         Self {
             initial_events: events,
-            timeline_items,
         }
     }
 }
@@ -537,14 +430,12 @@ fn capabilities(
     can_send_reply: bool,
     can_resolve_approval: bool,
     can_create_followup_turn: bool,
-    can_view_process_timeline: bool,
 ) -> SessionCapabilities {
     SessionCapabilities {
         can_jump,
         can_send_reply,
         can_resolve_approval,
         can_create_followup_turn,
-        can_view_process_timeline,
     }
 }
 
@@ -567,25 +458,6 @@ fn verified_usage(usage_5h: f64, usage_weekly: f64) -> UsageSnapshot {
             scope: crate::domain::usage::UsageScope::Session,
             updated_at: Some(UnixMillis::new(1000)),
         }),
-    }
-}
-
-/// 创建 mock timeline 条目。
-fn timeline_item(
-    session_key: &SessionKey,
-    item_id: &str,
-    kind: ProcessTimelineEventKind,
-    title: &str,
-    body: &str,
-    created_at: u64,
-) -> ProcessTimelineItem {
-    ProcessTimelineItem {
-        item_id: item_id.to_string(),
-        session_key: session_key.clone(),
-        kind,
-        title: title.to_string(),
-        body: body.to_string(),
-        created_at: UnixMillis::new(created_at),
     }
 }
 

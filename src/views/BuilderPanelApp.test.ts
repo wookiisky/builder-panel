@@ -4,10 +4,9 @@ import {
   actionLabel,
   aggregateToolUsage,
   applyPanelWindowControlError,
-  canExpandSessionRow,
+  canToggleFollowupRow,
   canJumpOnSessionClick,
   canSelectOnSessionClick,
-  canShowTimelineEntry,
   countSessionsByStatus,
   fetchSessionsForSource,
   isLatestSettingsSaveResponse,
@@ -22,17 +21,17 @@ import {
   positionTooltipPanel,
   selectPanelSession,
   selectFirstSessionWhenMissing,
-  shouldRefreshTimelineForUpdate,
+  sessionActionRowClassName,
+  shouldAutoShowSessionActionRow,
+  shouldShowSessionActionRow,
   shouldSubmitReplyOnKeyDown,
   shouldUseFollowupShortcut,
   sourceTag,
   stopTooltipPortalEvent,
   textDisplayParagraph,
-  timelineItemCopyText,
-  timelineRowClassName,
   type PanelSessionListItem,
 } from "./BuilderPanelApp";
-import type { ProcessTimelineItem, SessionKey } from "../api/mockPanelContract";
+import type { SessionKey } from "../api/mockPanelContract";
 import { defaultSettings } from "../api/settingsApi";
 import { createDefaultMockPanelUiState } from "../stores/mockPanelStore";
 
@@ -134,7 +133,7 @@ describe("BuilderPanelApp session refresh", () => {
 
   it("shows runtime source labels with Codex app branding", () => {
     expect(sourceTag(sessionItem(codexSessionKey, "codex_app"))).toBe(
-      "Codex APP",
+      "Codex",
     );
     expect(sourceTag(sessionItem(codexSessionKey, "codex_cli"))).toBe(
       "Codex CLI",
@@ -159,65 +158,6 @@ describe("BuilderPanelApp session refresh", () => {
       panelSessionToId(codexCliRuntimeSession),
     );
     expect(selectedSession?.runtimeSource).toBe("codex_app");
-  });
-
-  it("only shows timeline entry when capability exists", () => {
-    expect(canShowTimelineEntry(["jump", "view_process_timeline"])).toBe(true);
-    expect(canShowTimelineEntry(["jump", "send_reply"])).toBe(false);
-  });
-
-  it("styles user timeline rows by kind and copies body only", () => {
-    const item: ProcessTimelineItem = {
-      item_id: "item-1",
-      session_key: codexSessionKey,
-      kind: "user",
-      title: "用户输入",
-      body: "继续处理",
-      created_at: { value: 1 },
-    };
-
-    expect(timelineRowClassName(item.kind)).toBe(
-      "timeline-row timeline-row-user",
-    );
-    expect(timelineItemCopyText(item)).toBe("继续处理");
-  });
-
-  it("refreshes timeline only for matching realtime updates", () => {
-    const session = sessionItem(codexAppSessionKey, "codex_app");
-
-    expect(
-      shouldRefreshTimelineForUpdate(
-        {
-          runtime_source: "codex_app",
-          session_key: codexAppSessionKey,
-          changed_area: "both",
-          updated_at: { value: 10 },
-        },
-        session,
-      ),
-    ).toBe(true);
-    expect(
-      shouldRefreshTimelineForUpdate(
-        {
-          runtime_source: "codex_cli",
-          session_key: codexAppSessionKey,
-          changed_area: "both",
-          updated_at: { value: 10 },
-        },
-        session,
-      ),
-    ).toBe(false);
-    expect(
-      shouldRefreshTimelineForUpdate(
-        {
-          runtime_source: "codex_app",
-          session_key: codexAppSessionKey,
-          changed_area: "session",
-          updated_at: { value: 10 },
-        },
-        session,
-      ),
-    ).toBe(false);
   });
 
   it("only jumps on row click when jump action exists", () => {
@@ -499,19 +439,42 @@ describe("BuilderPanelApp session refresh", () => {
     expect(stopPropagation).toHaveBeenCalledTimes(1);
   });
 
-  it("expands failed sessions that can create follow-up turns", () => {
-    expect(canExpandSessionRow("failed", true)).toBe(true);
-    expect(canExpandSessionRow("completed", true)).toBe(true);
+  it("only auto-shows action rows for waiting sessions", () => {
+    expect(shouldAutoShowSessionActionRow("waiting_for_approval")).toBe(true);
+    expect(shouldAutoShowSessionActionRow("waiting_for_answer")).toBe(true);
+    expect(shouldAutoShowSessionActionRow("completed")).toBe(false);
+    expect(shouldAutoShowSessionActionRow("failed")).toBe(false);
+  });
+
+  it("requires manual expansion for completed and failed follow-up rows", () => {
+    expect(canToggleFollowupRow("failed", true)).toBe(true);
+    expect(canToggleFollowupRow("completed", true)).toBe(true);
+    expect(canToggleFollowupRow("failed", false)).toBe(false);
+    expect(shouldShowSessionActionRow("completed", true, false)).toBe(false);
+    expect(shouldShowSessionActionRow("completed", true, true)).toBe(true);
+    expect(shouldShowSessionActionRow("failed", true, false)).toBe(false);
+    expect(shouldShowSessionActionRow("failed", true, true)).toBe(true);
     expect(shouldUseFollowupShortcut("failed", true)).toBe(true);
     expect(shouldUseFollowupShortcut("completed", true)).toBe(true);
-    expect(canExpandSessionRow("failed", false)).toBe(false);
     expect(shouldUseFollowupShortcut("running", true)).toBe(false);
+  });
+
+  it("uses the compact two-column action row for manual follow-up expansion", () => {
+    expect(sessionActionRowClassName("completed")).toContain(
+      "session-row-action-followup",
+    );
+    expect(sessionActionRowClassName("failed")).toContain(
+      "session-row-action-followup",
+    );
+    expect(sessionActionRowClassName("waiting_for_answer")).toBe(
+      "session-row-action",
+    );
   });
 
   it("uses stable labels for executable capability actions", () => {
     expect(actionLabel("resolve_approval")).toBe("审批");
     expect(actionLabel("send_reply")).toBe("回复");
-    expect(actionLabel("view_process_timeline")).toBe("过程");
+    expect(actionLabel("create_followup_turn")).toBe("新对话");
   });
 
   it("ignores stale settings save responses", () => {
@@ -622,7 +585,6 @@ const sessionItem = (
     can_send_reply: false,
     can_resolve_approval: true,
     can_create_followup_turn: false,
-    can_view_process_timeline: false,
     choice_box: {
       enabled: false,
       allows_multiple: false,

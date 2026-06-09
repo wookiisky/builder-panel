@@ -4,7 +4,7 @@
 
 Builder Panel 是本地优先的跨平台桌面控制面板。
 
-系统负责展示 coding agent 会话状态、承接用户交互、通过边界 adapter 回写能力，并提供托管会话过程入口。
+系统负责展示 coding agent 会话状态、承接用户交互，并通过边界 adapter 回写能力。
 
 系统不承担云同步、账号体系、代理模型 API 或完整聊天客户端职责。
 
@@ -34,13 +34,11 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 阶段 2 建立本地 bridge codec、Mac Unix Domain Socket 传输、Windows Named Pipe 传输代码、hook helper 读取 stdin 和 stdout directive 编码。
 
-阶段 3 曾建立 mock agent adapter、mock agent runtime、session 读取、审批回写、文本回复回写和过程事件时间线查询闭环。
 
 阶段 4 开始接入 Codex CLI 真实 hook 闭环和 Codex APP app-server schema 探针。
 
 阶段 5 建立选项处理、允许并记住审批、快捷回复过滤、预设命令计划和跳回端口边界。
 
-阶段 6 建立托管过程事件 timeline 内存缓存、分页查询、搜索筛选、去重淘汰和关闭释放边界。
 
 阶段 7 建立扩展模式工作台、设置页、设置文件读写、通知计划服务和记录型通知 adapter。
 
@@ -62,31 +60,24 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 当前 Codex CLI hook 可折叠为 session 状态，并可在 pending approval 上返回 allow 或 deny directive。
 
-当前 Codex CLI hook 事件可写入进程内 timeline 缓存。
 
-当前 Codex CLI 已知 rollout path 后，可 tail 该已知 session 的新增 JSONL 追加行，并将清洗后的用户文本和 assistant 输出写入 session 摘要与进程内 timeline。
 
-当前 Codex APP 已接入 Codex hook 分流、app-server stdio 子进程、session 展示、审批、回复、follow-up turn、跳回和进程内 timeline。
 
 当前 Codex APP hook 与 app-server 事件通过 thread ID 和 cwd 映射统一为同一个 session。
 
-当前 Codex APP 已知 thread rollout path 后，可 tail 该已知 session 的新增 JSONL 追加行，并将清洗后的用户文本和 assistant 输出写入 session 摘要与进程内 timeline。
 
 当前产品运行时只读取 Codex CLI 和 Codex APP session。
 
 Codex CLI session 读取只以当前 Builder Panel 进程启动后的实时 hook 为来源。
 
-Codex APP session 读取可通过 app-server 已加载 thread 列表创建或补齐当前 APP thread，并可通过 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出。
+Codex APP session 读取可通过 app-server 已加载 thread id 列表定位当前 APP thread，并通过 `thread/list` 元数据或 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出。
 
-Codex rollout 实时 tail 只处理当前 APP 已知 session 的新增追加行，不从任意历史 JSONL 恢复 timeline。
 
-除 Codex APP 的项目名、跳回目标和最新输出补齐外，Builder Panel APP 启动时不从 coding agent 的历史文件、transcript、JSONL、rollout、已加载 thread 列表或其它持久化记录恢复 session。
+除 Codex APP 的项目名、跳回目标和最新输出补齐外，Builder Panel APP 启动时不从 coding agent 的历史文件、transcript、JSONL、rollout、已加载 thread id 列表或其它持久化记录恢复 session。
 
 Builder Panel APP 启动后仍在运行并继续发出实时事件的任务可以进入当前 session 列表，即使该任务早于 APP 启动。
 
-Builder Panel 不持久化 session、pending interaction 或 timeline。
 
-当前 Tauri 产品 command 不注册 mock session、mock 审批、mock 回复、mock 选项或 mock timeline 入口。
 
 当前系统不声明 Claude Code 真实闭环已完成。
 
@@ -124,7 +115,6 @@ Builder Panel 不持久化 session、pending interaction 或 timeline。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook adapter、runtime 和 bridge server 入口。
 
-`src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存 adapter 入口。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server、runtime、schema 探针和 notification 转换入口。
 
@@ -144,7 +134,6 @@ Builder Panel 不持久化 session、pending interaction 或 timeline。
 
 `src-tauri/src/services/preset_command_service.rs` 是预设命令计划生成服务入口。
 
-`src-tauri/src/services/process_timeline_service.rs` 是过程事件时间线服务入口。
 
 `src-tauri/src/adapters/terminal/mod.rs` 是终端跳回 adapter 入口。
 
@@ -198,7 +187,6 @@ Builder Panel 不持久化 session、pending interaction 或 timeline。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 验证 Codex CLI hook 事件转换和审批 directive 等待。
 
-`src-tauri/src/adapters/timeline/mod.rs` 验证 timeline 去重、淘汰和释放。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 验证 Codex APP schema 探针、hook 分流、request 编码、notification 转换和完整能力 capability。
 
@@ -214,9 +202,7 @@ Builder Panel 不持久化 session、pending interaction 或 timeline。
 
 `src-tauri/src/services/preset_command_service.rs` 验证预设命令计划生成。
 
-`src-tauri/src/services/process_timeline_service.rs` 验证 timeline 查询。
 
-`src/stores/mockPanelStore.test.ts` 验证前端草稿、提交和 timeline 缓存状态。
 
 `src/views/BuilderPanelApp.test.ts` 验证阶段 7 session 捕捉顺序、统计、动作标签和工具用量聚合。
 

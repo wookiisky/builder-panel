@@ -24,7 +24,6 @@ hook helper 只在 payload 基础校验通过后发送 bridge command。
 
 Codex hook 只处理 Builder Panel APP 启动后送达 bridge 的实时 hook payload。
 
-Codex hook 事件进入 session 摘要或普通文本 timeline 时，只展示用户输入原文或 assistant 输出原文。
 
 Codex hook payload 的模型字段不作为 thread 标题展示。
 
@@ -60,7 +59,6 @@ stdout directive 格式必须由本项目测试固定。
 
 Codex APP app-server 当前事实见 `spec/INTEGRATIONS/CODEX_APP.md`。
 
-当前不从 Codex transcript 或 JSONL 反读过程事件或 session 状态。
 
 当前不承诺文件编辑审批一定通过 `PreToolUse` 覆盖。
 

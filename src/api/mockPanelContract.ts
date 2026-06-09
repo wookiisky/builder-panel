@@ -19,8 +19,7 @@ export type UiAction =
   | "jump"
   | "send_reply"
   | "resolve_approval"
-  | "create_followup_turn"
-  | "view_process_timeline";
+  | "create_followup_turn";
 
 /// Pending 交互类型。
 export type PendingInteractionKind = "approval" | "choice" | "text_reply";
@@ -30,15 +29,6 @@ export type UsageScope = "session" | "account_window";
 
 /// 审批决策。
 export type ApprovalDecision = "allow" | "allow_and_remember" | "deny";
-
-/// 时间线事件类型。
-export type TimelineEventKind =
-  | "activity"
-  | "user"
-  | "tool"
-  | "approval"
-  | "reply"
-  | "system";
 
 /// 项目稳定标识。
 export interface ProjectId {
@@ -144,8 +134,6 @@ export interface InlineInteractionViewModel {
   readonly can_resolve_approval: boolean;
   /// 是否可创建后续 turn。
   readonly can_create_followup_turn: boolean;
-  /// 是否可查看过程时间线。
-  readonly can_view_process_timeline: boolean;
   /// 选项框状态。
   readonly choice_box: ChoiceBoxViewModel;
 }
@@ -204,50 +192,4 @@ export interface SessionDetailViewModel {
   readonly choice_box: ChoiceBoxViewModel;
   /// 工具栏动作。
   readonly toolbar_actions: readonly UiAction[];
-}
-
-/// 时间线条目。
-export interface ProcessTimelineItem {
-  /// 条目唯一标识。
-  readonly item_id: string;
-  /// 所属会话。
-  readonly session_key: SessionKey;
-  /// 事件类型。
-  readonly kind: TimelineEventKind;
-  /// 条目标题。
-  readonly title: string;
-  /// 已清洗正文。
-  readonly body: string;
-  /// 创建时间。
-  readonly created_at: { readonly value: number };
-}
-
-/// 时间线查询请求。
-export interface TimelineQuery {
-  /// 所属会话。
-  readonly session_key: SessionKey;
-  /// 页码，从 0 开始。
-  readonly page: number;
-  /// 每页条目数。
-  readonly page_size: number;
-  /// 搜索关键词。
-  readonly search: string | null;
-  /// 类型筛选。
-  readonly kind: TimelineEventKind | null;
-}
-
-/// 时间线分页结果。
-export interface TimelinePage {
-  /// 当前页条目。
-  readonly items: readonly ProcessTimelineItem[];
-  /// 页码，从 0 开始。
-  readonly page: number;
-  /// 每页条目数。
-  readonly page_size: number;
-  /// 过滤后的总条目数。
-  readonly total: number;
-  /// 是否还有下一页。
-  readonly has_next: boolean;
-  /// 当前启用过滤器数量。
-  readonly filter_count: number;
 }

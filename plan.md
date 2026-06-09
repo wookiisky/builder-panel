@@ -33,12 +33,9 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 1. 工程骨架、Tauri 入口、React 前端入口、Rust 分层目录和架构边界检查已建立。
 2. Domain 核心类型、归一事件、纯 reducer、排序规则、用量模型、错误模型和 view model 纯转换已建立。
 3. 本地 bridge NDJSON codec、Mac Unix Domain Socket 传输、Windows Named Pipe 传输代码和 hook helper fail-open 链路已建立。
-4. Mock Agent 的 session、审批、选项、开放性回复、快捷回复、timeline 和用量验证基线已建立。
 5. Codex CLI hook payload 到 session 状态的真实闭环已建立，`PermissionRequest` 可经 panel 返回 allow 或 deny directive。
-6. Codex CLI hook 事件可写入进程内 timeline 缓存。
 7. Codex APP 已建立 app-server schema 探针、request 编码和 notification 转换。
 8. 审批、选项、文本回复、快捷回复过滤、预设命令计划、跳回端口和复制降级模型已建立。
-9. Process Timeline 的内存缓存、分页、搜索、筛选、去重、淘汰、关闭释放和前端弹层验证基线已建立。
 10. 扩展模式工作台、session 合并排序、统计、动作隐藏、长文本布局约束、设置页和设置保存冲突处理已建立。
 11. 通知计划服务、重复通知合并、当前 session 抑制、点击定位和记录型通知 adapter 已建立。
 12. JSON 设置文件默认化、缺字段补齐、未知字段丢弃、临时文件原子写入和损坏降级已建立。
@@ -52,7 +49,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 ### 2.2 部分实现或只完成自动化验证
 
 1. Windows Named Pipe 有代码和平台无关测试入口，但未在 Windows 本机完成人工验收。
-2. Codex APP 当前只声明 schema 探针、request 编码和 notification 转换，不声明已有会话自动发现、结构化审批回写、开放性回复、follow-up turn 或 timeline 已闭环。
 3. Claude Code CLI 和 Claude Code APP 当前只有阶段 2 hook payload 基础校验、stdout directive 编码边界和 adapter 占位模块，不声明真实 session 闭环完成。
 4. 终端跳回和新对话创建当前只有端口、计划模型和复制降级，不声明真实 tmux、Ghostty、PowerShell 或 cmd 人工闭环完成。
 5. 通知当前只实现通知计划服务和记录型 adapter，不声明真实 Mac 或 Windows 系统通知已接入。
@@ -65,7 +61,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 
 1. Claude Code APP 真实发现、进程级状态、跳回和有限回写能力尚未完成。
 2. Claude Code CLI `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`Notification`、`Stop` 和 `SessionEnd` 到真实 session 状态的 adapter 闭环尚未完成。
-3. Codex APP 的结构化审批、开放性回复、创建 follow-up turn 和 timeline 能力尚未开放。
 4. 开机启动尚未完成。
 5. 真实 Mac 和 Windows 系统通知 adapter 尚未接入。
 6. Mac 全量发布验收矩阵尚未完成。
@@ -214,7 +209,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 1. 四类 agent 入口被显式建模。
 2. session 唯一键由 `agent_kind`、`project_id`、`conversation_id` 共同确定。
 3. 用量不可用使用专门状态，不使用魔法数字。
-4. 能力字段完整覆盖 `can_jump`、`can_send_reply`、`can_resolve_approval`、`can_create_followup_turn`、`can_view_process_timeline`。
 5. 错误类型覆盖 `tech.md` 中列出的错误码。
 
 验证方法：
@@ -288,7 +282,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 
 1. `SessionListItemViewModel`。
 2. `SessionDetailViewModel`。
-3. `TimelineViewModel` 的轻量索引结构。
 4. capability 到 UI action 的映射函数。
 
 验证标准：
@@ -462,7 +455,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 
 ## 6. 阶段 3：Mock Agent 与端到端闭环
 
-目标：在不依赖真实 Codex / Claude Code 的情况下，打通 session、审批、选项、回复、通知和 timeline。
 
 ### 6.1 任务：实现 Mock Agent Adapter
 
@@ -536,38 +528,31 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 2. app-service 测试覆盖校验规则。
 3. Playwright 验证发送成功和失败路径。
 
-### 6.4 任务：实现 Mock Timeline 闭环
 
 交付物：
 
-1. mock timeline 数据源。
-2. timeline 弹出层入口。
-3. 分页读取。
-4. 搜索。
-5. 类型筛选。
-6. 复制单条。
-7. 跳到最新。
+1. 完成或失败 session 默认单行。
+2. 可 follow-up 的完成或失败 session 右侧展示展开按钮。
+3. 展开后第二行只展示快捷输入和单行输入区。
+4. 输入框和发送按钮保持一行高度。
 
 验证标准：
 
-1. 支持 timeline 的 session 才展示入口。
-2. 不支持 timeline 的 session 不展示入口或展示禁用原因。
-3. 搜索只展示匹配项。
-4. 类型筛选生效。
-5. 关闭弹出层释放大文本缓存。
+1. 完成或失败 session 不自动展示第二行。
+2. 点击展开按钮后展示第二行。
+3. 第二行不展示独立历史详情入口。
+4. 全局 UI 状态不保存长文本全文。
 
 验证方法：
 
-1. app-service 测试分页、筛选、搜索。
-2. 前端组件测试弹出层状态。
-3. Playwright 验证入口、筛选、复制。
-4. 内存测试确认关闭后缓存释放。
+1. 前端组件测试 follow-up 默认单行和手动展开状态。
+2. Playwright 验证快捷输入、输入框和发送按钮布局。
+3. 性能预算验证 follow-up 展开集合操作。
 
 ### 6.5 任务：同步 Mock 闭环文档
 
 交付物：
 
-1. `spec/SYSTEM_FLOWS.md` 中登记 mock 主链路、审批链路、回复链路和 timeline 链路。
 2. `spec/SERVICE/SESSION_SERVICE.md`。
 3. `spec/SERVICE/INTERACTION_SERVICE.md`。
 4. `spec/SERVICE/REPLY_SERVICE.md`。
@@ -597,7 +582,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 1. 已先执行 Codex 部分。
 2. Codex CLI 已实现 hook payload 到 session 状态的真实闭环，panel 打开期间会刷新 Codex CLI session，支持 `PermissionRequest` 经 panel 返回 allow 或 deny directive。
 3. Codex APP 已实现 app-server schema 探针、request 编码和 notification 转换，schema 以本机 `codex app-server generate-json-schema --experimental` 验证结果为准。
-4. Codex APP 当前不展示审批、回复、follow-up turn 或 timeline 的未闭环按钮。
 5. Claude Code APP 和 Claude Code CLI 尚未执行阶段 4 真实闭环。
 6. Windows 部分不做本机验证。
 
@@ -914,112 +898,84 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 3. 人工检查错误文档中是否说明是否重试、是否补偿、用户是否可见。
 4. 运行 `rg "能跳回.*能发送|能发送.*能跳回" spec`，检查是否存在混淆表述。
 
-## 9. 阶段 6：Process Timeline
 
-目标：完成托管会话过程事件接收、内存缓存、分页、搜索、筛选、虚拟列表和释放策略。
 
-### 9.1 任务：Timeline 接收与归一
 
 交付物：
 
-1. 托管 stdout / stderr 接收 adapter。
-2. app-server 事件接收 adapter。
-3. hook 事件 timeline 转换。
-4. `ProcessTimelineItem`。
-5. 去重键。
+1. 删除独立历史详情 service、port、adapter 缓存和 Tauri command。
+2. 保留 session 更新事件去重。
+3. 保留 Codex APP rollout 输出摘要补齐，不提供独立详情查询。
 
 验证标准：
 
-1. 只接收托管且已接入事件流的 session。
-2. 非托管 session 不生成 timeline 入口。
-3. timeline 不进入 `SessionState`。
+1. 当前不提供独立历史详情接收链路。
 4. 不从 transcript / JSONL 反读。
-5. 重复事件被去重。
+5. session 更新事件保持去重。
 
 验证方法：
 
-1. adapter 单元测试转换和去重。
-2. `rg "transcript|jsonl" src-tauri/src/adapters/timeline` 检查无反读逻辑。
-3. app-service 测试非托管 session 无入口。
+1. adapter 单元测试验证 session 更新转换和去重。
+2. 前端测试验证无独立历史详情入口。
 
-### 9.2 任务：Timeline 内存缓存
 
 交付物：
 
-1. 按 session 分片缓存。
-2. 单 session 上限。
-3. 全局上限。
-4. 淘汰策略。
-5. 大文本释放接口。
+1. follow-up 展开状态轻量集合。
+2. session 摘要截断策略。
+3. session 捕捉顺序合并规则。
 
 验证标准：
 
-1. 过程事件不写入文件或数据库。
-2. 达到上限后淘汰最旧低优先级事件。
-3. 错误和 pending 相关事件优先保留。
-4. 弹出层关闭后释放大文本缓存。
+1. follow-up 展开状态不进入后端能力模型。
+2. session 摘要保持截断。
+3. 全局 UI 状态不保存长文本全文。
 
 验证方法：
 
-1. 单元测试插入超过上限的事件。
-2. 内存测试校验关闭弹出层后缓存下降。
-3. `rg "write|fs|File" src-tauri/src/adapters/timeline` 检查无持久化写入。
+1. 前端 store 测试验证展开状态切换和清理。
+2. 性能预算校验轻量 UI 状态集合。
 
-### 9.3 任务：Timeline 弹出层 UI
 
 交付物：
 
-1. 标题栏。
-2. session 信息。
-3. 搜索框。
-4. 类型筛选。
-5. 虚拟列表。
-6. 复制单条。
-7. 复制筛选结果。
-8. 跳到最新。
-9. 空状态和错误状态。
+1. 完成或失败 session 默认单行。
+2. 可 follow-up 的完成或失败 session 右侧展示展开按钮。
+3. 展开后第二行只展示快捷输入和单行输入区。
+4. 输入框和发送按钮保持一行高度。
+5. 提交成功后收起第二行并清理草稿。
 
 验证标准：
 
-1. 搜索关键词后只展示匹配项。
-2. 类型筛选立即生效。
-3. 1 万条记录滚动可用。
-4. 长内容不撑破布局。
-5. 不提供导出入口。
-6. 新事件到达时底部自动跟随，查看历史时不强制跳动。
+1. 完成和失败 session 不自动展示第二行。
+2. 点击展开按钮后展示第二行。
+3. 第二行不展示独立历史详情入口。
+4. 快捷输入、输入框和发送按钮不撑破布局。
+5. follow-up 提交成功后收起第二行。
 
 验证方法：
 
-1. Playwright 注入 1 万条 mock timeline。
-2. 前端组件测试搜索、筛选和空状态。
-3. 视觉截图检查长文本布局。
-4. `rg "导出|export" src` 检查无导出入口文案或按钮。
+1. 前端组件测试默认单行和手动展开。
+2. 视觉截图检查长文本布局。
+3. `rg "export" src` 检查无未实现导出入口。
 
-### 9.4 任务：同步 Timeline 文档
 
 交付物：
 
-1. `spec/SERVICE/PROCESS_TIMELINE_SERVICE.md`。
-2. `spec/INTERNAL_BEHAVIOR.md` 中登记 timeline 内存、不变量、淘汰和释放规则。
-3. `spec/EXTERNAL_BEHAVIOR.md` 中登记过程弹出层的用户可见行为和限制。
-4. `spec/ERROR_HANDLING.md` 中登记 timeline 接收失败和不可用降级。
-5. `spec/TEST.md` 中登记 timeline 性能和内存测试入口。
+1. 删除独立历史详情服务文档入口。
+3. `spec/EXTERNAL_BEHAVIOR.md` 中登记当前不提供独立历史详情浮层。
 6. `spec/00_INDEX.md` 中登记新增文档。
 
 验证标准：
 
-1. 文档明确 timeline 不进入 `SessionState`。
-2. 文档明确 timeline 不持久化。
-3. 文档明确不从 transcript / JSONL 反向读取。
-4. 文档说明分页、搜索、筛选、去重、淘汰和关闭释放的稳定语义。
-5. 文档说明不支持导出过程事件文件。
+3. 文档明确不从 transcript / JSONL 反向读取历史详情数据。
+4. 文档说明完成或失败 session 的 follow-up 展开规则。
 
 验证方法：
 
-1. 对照 timeline service、timeline adapter 和 UI 弹出层代码入口。
-2. 对照性能测试和内存释放测试入口。
-3. 运行 `rg "transcript|JSONL|jsonl|持久化|导出" spec/SERVICE/PROCESS_TIMELINE_SERVICE.md spec/INTERNAL_BEHAVIOR.md`，人工确认语义为禁止或边界说明。
-4. 运行 `rg "```|\\||mermaid" spec/SERVICE/PROCESS_TIMELINE_SERVICE.md spec/INTERNAL_BEHAVIOR.md`。
+2. 对照性能预算和前端交互测试入口。
+3. 运行 `rg "transcript|JSONL|jsonl|持久化" spec/INTERNAL_BEHAVIOR.md`，人工确认语义为禁止或边界说明。
+4. 运行 `rg "```|\\||mermaid" spec/INTERNAL_BEHAVIOR.md spec/EXTERNAL_BEHAVIOR.md`。
 
 ## 10. 阶段 7：UI 完整化
 
@@ -1150,7 +1106,7 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 3. 当前查看 session 时不重复弹通知。
 4. 同 session 短时间重复通知被合并。
 5. 点击通知后聚焦 panel 并展开对应 session。
-6. 点击通知不直接打开过程弹出层。
+6. 点击通知只聚焦 panel 并定位 session。
 
 验证方法：
 
@@ -1174,7 +1130,7 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 1. 外部行为文档只记录用户可观察行为，不记录组件内部实现。
 2. 文档明确首版不展示 mini 模式入口。
 3. 文档明确不展示不可执行动作。
-4. 文档明确通知点击只定位 session，不打开过程弹出层。
+4. 文档明确通知点击只定位 session。
 5. 文档包含 UI 验收口径和测试入口。
 
 验证方法：
@@ -1260,7 +1216,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 
 1. 默认日志不记录 prompt 全文。
 2. 默认日志不记录 transcript 全文。
-3. 默认日志不记录过程事件全文。
 4. 调试模式开启前有明确确认。
 5. 同一错误链路不重复 catch-log-reraise。
 
@@ -1277,7 +1232,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 1. 空闲 CPU 测试脚本。
 2. 10 session 测试。
 3. 1000 event 测试。
-4. 1 万 timeline 测试。
 5. 收缩模式降级测试。
 6. 内存释放测试。
 
@@ -1286,9 +1240,7 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 1. 空闲 10 分钟 CPU 接近 0。
 2. 10 个 session 同时存在时操作流畅。
 3. 连续 1000 条 mock event 不丢失。
-4. 1 万条 timeline 虚拟滚动可用。
-5. 弹出层关闭后大文本缓存释放。
-6. timeline 达到上限后淘汰策略生效。
+5. follow-up 展开集合操作保持轻量。
 
 验证方法：
 
@@ -1364,7 +1316,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 | 阶段 3 | mock adapter、app-service、UI 测试、流程文档检查       | mock 端到端流程                              | mock 流程不能闭环或流程文档无法定位测试入口                    | 无真实 agent 时核心流程可用                |
 | 阶段 4 | adapter fixture、directive 编码测试、集成文档检查      | 四类真实 agent 验证                          | 虚构未验证能力或集成文档能力矩阵不一致                         | 四类入口按能力展示和降级                   |
 | 阶段 5 | interaction、reply、preset 测试、交互文档检查          | 审批、回复、跳回、复制降级                   | 失败时误清状态、重复发送或文档混淆跳回与回写                   | 交互链路可用且可降级                       |
-| 阶段 6 | timeline 缓存、分页、去重、性能测试、timeline 文档检查 | 过程弹出层操作                               | timeline 持久化、读取 JSONL 或文档未说明内存边界               | 托管 timeline 可查可筛可释放               |
 | 阶段 7 | UI 组件、Playwright、通知测试、外部行为文档检查        | 多屏、长文本、通知点击                       | UI 展示假按钮、布局溢出或外部行为文档缺失验收口径              | 扩展模式完整可用                           |
 | 阶段 8 | 配置、hook 安装、性能脚本、spec 质量门禁               | Mac/Windows 全量验收、spec 全量审查          | 安全、配置、性能或文档系统不达标                               | 发布质量达标                               |
 
@@ -1403,7 +1354,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 2. hook helper 在 bridge 不可用时会阻塞 agent。
 3. UI 展示当前 session 实际不支持的动作。
 4. 用量来源未验证却展示数字。
-5. timeline 被持久化或从 transcript / JSONL 反读。
 6. 配置写入失败会覆盖旧配置。
 7. 回写失败后误清草稿或 pending。
 8. `spec/00_INDEX.md` 无法定位新增事实入口。
@@ -1416,7 +1366,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 2. Claude Code APP 未发现公开协议，降级只读和跳回。
 3. Windows 任意已有终端注入不可行，限定托管进程回写。
 4. 用量来源不可用，展示 `--` 或隐藏。
-5. 过程事件来源不可用，不展示过程入口。
 
 回退方法：
 
@@ -1471,7 +1420,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 6. `AgentEvent` 事件族。
 7. `SessionState::apply_event` 纯 reducer。
 8. session 排序纯函数。
-9. `SessionListItemViewModel`、`SessionDetailViewModel`、`TimelineViewModel`。
 10. capability 到 UI action 的纯映射。
 11. Domain 事实文档和工程运行时文档。
 12. Tauri 所需基础图标资源。
@@ -1567,18 +1515,13 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 4. session 列表与详情读取服务。
 5. mock approval allow 和 deny 回写服务。
 6. mock text reply 回写服务。
-7. mock timeline 数据源、分页、搜索和类型筛选服务。
-8. Tauri mock session、审批、回复和 timeline command。
-9. 前端 mock session 列表、详情、审批按钮、回复输入框和 timeline 弹层。
 10. `Enter` 发送和 `Shift+Enter` 换行。
 11. 提交中状态、失败提示和失败后 pending 保留。
 12. 按 session 隔离的回复草稿。
-13. timeline 关闭后释放当前页缓存。
 14. `spec/SERVICE/SESSION_SERVICE.md`。
 15. `spec/SERVICE/INTERACTION_SERVICE.md`。
 16. `spec/SERVICE/REPLY_SERVICE.md`。
-17. `spec/SERVICE/PROCESS_TIMELINE_SERVICE.md`。
-18. 相关系统、错误、内部、外部、测试、决策和索引文档更新。
+17. 相关系统、错误、内部、外部、测试、决策和索引文档更新。
 
 已验证：
 
@@ -1601,7 +1544,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 独立 reviewer 反馈处理：
 
 1. 修复 `inject_failure` 在 pending 校验前污染下一次有效提交的问题。
-2. 修复打开 timeline 后切换 session 会继续展示旧弹层缓存的问题，切换 session 时关闭 timeline 并释放缓存。
 3. 修复前端回复长度使用 UTF-16 code unit 计数的问题，改为与 Rust `chars().count()` 对齐的 Unicode 字符计数。
 
 ### 15.5 阶段 4 记录
@@ -1616,13 +1558,11 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 4. Codex CLI `PermissionRequest` 等待 panel 决策并返回 allow 或 deny stdout directive。
 5. Codex CLI 审批等待超时清理 pending approval。
 6. Codex CLI 同一 session 新审批让旧审批等待器过期。
-7. Codex CLI hook 事件写入进程内 timeline 缓存。
 8. 前端 Codex CLI session 读取 API 和 panel 打开期间刷新入口。
 9. Codex APP app-server schema 探针。
 10. Codex APP `initialize`、`initialized`、`thread/start` 和 `turn/start` request 编码。
 11. Codex APP app-server notification 到归一事件转换。
 12. Codex APP token usage 只从已验证 notification 字段读取。
-13. Codex APP 未闭环的 follow-up turn 和 process timeline capability 不暴露。
 14. `spec/INTEGRATIONS/CODEX_APP.md`。
 15. `spec/INTEGRATIONS/CODEX_CLI.md`。
 16. 相关系统、流程、外部、内部、错误、测试、决策和索引文档更新。
@@ -1639,7 +1579,6 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 
 1. Claude Code APP 真实发现、状态展示、跳回和有限回写未完成。
 2. Claude Code CLI 真实 hook 到 session 状态闭环未完成。
-3. Codex APP 已有会话自动发现、结构化审批、结构化回复、follow-up turn 和 timeline 未完成。
 4. Windows 本机验证未执行。
 5. Codex APP app-server 只按当前本机 schema 探针结果声明，不作为跨版本稳定协议承诺。
 6. 当前不存在 `spec/INTEGRATIONS/CLAUDE_CODE_APP.md` 和 `spec/INTEGRATIONS/CLAUDE_CODE_CLI.md`，Claude 真实接入完成时必须新增并登记索引。
@@ -1686,40 +1625,22 @@ Builder Panel 按“先核心模型、再本地链路、再真实 agent、最后
 
 ### 15.7 阶段 6 记录
 
-状态：Process Timeline 内存缓存、查询和前端弹层验证基线已建立。
 
 已交付：
 
-1. 进程内 timeline 内存缓存 adapter。
-2. 按 session 分片缓存。
-3. 单 session 上限和全局上限。
-4. 去重键和重复事件去重。
-5. 低优先级旧事件优先淘汰。
-6. 错误和 pending 相关事件优先保留。
-7. 大文本释放接口。
-8. Process Timeline Service 分页、搜索和类型筛选。
-9. Codex CLI hook 事件写入 timeline 缓存。
-10. 前端 timeline 弹层搜索、类型筛选、复制单条、复制当前筛选页和跳到最新。
-11. 前端虚拟列表可见范围计算。
-12. timeline 弹层关闭和切换 session 时释放当前页缓存。
-13. `spec/SERVICE/PROCESS_TIMELINE_SERVICE.md` 已同步阶段 6 内存、查询和限制事实。
-14. 相关系统、流程、外部、内部、错误、测试、决策和索引文档更新。
+2. 独立历史详情 service、port、adapter 缓存和 Tauri command 已删除。
+3. 完成或失败 session 默认单行，用户点击展开后才显示 follow-up 输入区。
+4. follow-up 第二行只保留快捷输入和单行输入区。
+5. follow-up 展开状态保持为前端轻量集合，提交成功后清理。
+6. 相关系统、流程、外部、内部、错误、测试、决策和索引文档更新。
 
 已验证：
 
-1. `src-tauri/src/adapters/timeline/mod.rs` 中去重、单 session 上限、全局上限、优先级淘汰和大文本释放测试。
-2. `src-tauri/src/services/process_timeline_service.rs` 中分页、搜索和类型筛选测试。
-3. `src/stores/mockPanelStore.test.ts` 中复制筛选结果、虚拟列表可见范围和关闭 timeline 释放缓存测试。
-4. `src/views/BuilderPanelApp.test.ts` 中只有具备 capability 的 session 才展示 timeline 入口测试。
-5. `spec/TEST.md` 已登记 timeline 缓存、查询、前端复制、虚拟列表和释放测试入口。
-6. `spec/EXTERNAL_BEHAVIOR.md` 已登记 timeline 不导出、不从 transcript 或 JSONL 恢复的外部限制。
 
 未覆盖：
 
-1. Playwright 注入 1 万条 timeline 的真实浏览器滚动验证未执行。
 2. 视觉截图检查长文本布局未执行。
 3. Windows 本机验证未执行。
-4. timeline 仍只声明托管或已接入事件流来源，不支持从 transcript 或 JSONL 反向读取。
 
 ### 15.8 阶段 7 记录
 

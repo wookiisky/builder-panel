@@ -133,8 +133,6 @@ pub struct SessionCapabilities {
     pub can_resolve_approval: bool,
     /// 是否可创建后续 turn。
     pub can_create_followup_turn: bool,
-    /// 是否可查看过程时间线。
-    pub can_view_process_timeline: bool,
 }
 
 impl SessionCapabilities {
@@ -145,7 +143,6 @@ impl SessionCapabilities {
             can_send_reply: false,
             can_resolve_approval: false,
             can_create_followup_turn: false,
-            can_view_process_timeline: false,
         }
     }
 }
@@ -257,13 +254,11 @@ mod tests {
             can_send_reply: true,
             can_resolve_approval: true,
             can_create_followup_turn: true,
-            can_view_process_timeline: true,
         };
 
         assert!(capabilities.can_jump);
         assert!(capabilities.can_send_reply);
         assert!(capabilities.can_resolve_approval);
         assert!(capabilities.can_create_followup_turn);
-        assert!(capabilities.can_view_process_timeline);
     }
 }

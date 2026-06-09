@@ -6,7 +6,6 @@ Notification Service 负责把 session 状态变化转换为通知计划。
 
 Notification Service 负责当前查看 session 抑制、同 session 短时间重复通知合并和通知点击定位动作。
 
-Notification Service 不直接调用系统通知 API，不打开 timeline，不修改 session 状态。
 
 ## 代码入口
 
@@ -26,7 +25,6 @@ Notification Service 不直接调用系统通知 API，不打开 timeline，不�
 
 通知点击动作只要求聚焦 panel、展开 panel 和定位 session。
 
-通知点击动作不打开过程时间线。
 
 ## 状态与合并
 
@@ -48,6 +46,5 @@ Windows 系统通知本轮不做本机验证。
 
 ## 相关测试
 
-`src-tauri/src/services/notification_service.rs` 覆盖当前 session 抑制、重复通知合并和点击不打开 timeline。
 
 `src-tauri/src/adapters/notification/mod.rs` 提供记录型 adapter，供通知服务测试使用。

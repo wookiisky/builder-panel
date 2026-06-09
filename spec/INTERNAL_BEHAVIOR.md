@@ -52,8 +52,6 @@ session detail view model 显式暴露 pending interaction ID 和 pending intera
 
 session list item view model 显式暴露行内交互摘要。
 
-行内交互摘要必须包含 interaction ID、交互类型、可跳回、可回写、可审批、可 follow-up 和可查看 timeline 能力。
-
 跳回动作只在 session 具备跳回能力且存在跳回目标时生成。
 
 mock agent runtime 是本地内存测试基线，不是持久化事实来源，也不是产品运行时 session 来源。
@@ -61,6 +59,10 @@ mock agent runtime 是本地内存测试基线，不是持久化事实来源，�
 mock agent runtime 通过 Domain reducer 写入测试用 session 状态。
 
 Codex CLI runtime 是阶段 4 真实 hook 状态来源，当前仍为进程内内存状态。
+
+Codex CLI runtime 在事件入口拒绝 `agent_kind` 不是 Codex CLI 的归一事件和 hook payload。
+
+Codex CLI runtime 提供按 `(cwd, thread_id)` 删除孤儿 session 的入口；删除时同时清理对应 rollout path 和该 session 的 pending approval，并通过 session 更新端口发布通知。
 
 Codex CLI runtime 可记录已知 session 的 rollout path，用于实时 tail 该 session 的新增追加行。
 
@@ -72,15 +74,17 @@ Codex APP hook payload、app-server notification 和 app-server server request �
 
 Codex APP runtime 是 Codex APP hook 和 app-server 状态来源，当前仍为进程内内存状态。
 
+Codex APP runtime 在事件入口拒绝 `agent_kind` 不是 Codex APP 的归一事件和 hook payload。
+
+Codex APP runtime 收录新的 `thread_id` 后，必须通过注入式回调通知 Codex CLI runtime 清理同 `(cwd, thread_id)` 的孤儿 session；通知必须在更新 `thread_id -> cwd` 映射后立即触发。
+
 Codex APP runtime 必须用 `thread_id -> cwd` 映射统一 hook 通道和 app-server 通道的 `SessionKey`。
 
-Codex APP runtime 只能用可信 cwd 建立真实项目 session key；可信 cwd 来源包括 hook payload、app-server message、app-server thread 元数据和 Codex rollout `session_meta`。
+Codex APP runtime 只能用可信 cwd 建立真实项目 session key；可信 cwd 来源包括 hook payload、app-server message、app-server `thread/list` 元数据和 Codex rollout `session_meta`。
 
 Codex APP runtime 不得使用 Builder Panel 进程 cwd 代替 Codex thread cwd。
 
 Codex APP runtime 在缺少可信 cwd 时使用待识别项目占位 session，且占位 session 不生成跳回目标。
-
-Codex APP runtime 获取可信 cwd 后必须按 thread ID 迁移占位 session，并保留 pending interaction、摘要、错误、用量和 timeline。
 
 Codex APP runtime 维护最多 65535 字符的当前 turn Agent 输出缓冲；新 turn 开始或 follow-up 成功提交时必须清空对应 thread 的当前输出。
 
@@ -100,21 +104,21 @@ Codex rollout adapter 不得把未知工具 JSON arguments 作为 preview 写入
 
 没有原文或 preview 的 session start、turn start、turn complete、idle 和工具开始事件不得覆盖已有 session 摘要。
 
-Codex APP app-server `thread/loaded/list` 元数据可为当前已加载 thread 创建 session；metadata 状态只应用于新建 session，若 session 已存在，只能补齐缺失信息，不得用后台 metadata 折叠实时运行状态。
+Codex APP app-server `thread/loaded/list` 只提供当前已加载 thread id；当前已加载 thread 需要通过 `thread/list` 元数据补齐 cwd、标题、状态、预览和 rollout path。metadata 状态只应用于新建 session，若 session 已存在，只能补齐缺失信息，不得用后台 metadata 折叠实时运行状态。
 
 Codex APP session index 标题可直接补齐当前已知 session；只允许替换缺失标题或形似模型名的标题，不得覆盖已有真实标题，不得创建新 session。
 
 Codex APP thread metadata 补齐已有 session 的标题、项目、跳回目标或能力时，必须发布 `session_updated` 事件。
 
-Codex APP app-server thread 列表边界清洗必须跳过单条无效 thread，保留同批有效 thread 继续补齐。
+Codex APP app-server `thread/list` 边界清洗必须跳过单条无效 thread，保留同批有效 thread 继续补齐。
 
-Codex APP app-server thread 列表中缺少 cwd 但带 path 的 thread 不得直接创建或迁移 session；runtime 已有该 thread 可信 cwd 时，可用该 metadata 补齐标题和 rollout path。
+Codex APP app-server `thread/list` 中缺少 cwd 但带 path 的 thread 不得直接创建或迁移 session；runtime 已有该 thread 可信 cwd 时，可用该 metadata 补齐标题和 rollout path。
 
-Codex APP app-server thread 列表中 `status.type` 类型错误属于单条脏数据，必须跳过该 thread，不得默认成 idle。
+Codex APP app-server `thread/list` 中 `status.type` 类型错误属于单条脏数据，必须跳过该 thread，不得默认成 idle。
 
 Codex APP rollout 历史只能应用到已有或可迁移的候选 session，不得单独创建当前 session。
 
-Codex APP recent rollout 扫描只能应用到已知候选 thread，包括已加载 thread、thread 历史返回的待识别或缺标题 thread、当前待识别 thread 和当前已知但缺标题的 thread；不得把无关历史 rollout 拉入当前 session 列表。
+Codex APP recent rollout 扫描只能应用到已知候选 thread，包括已通过 `thread/list` 元数据补齐的当前已加载 thread、thread 历史返回的待识别或缺标题 thread、当前待识别 thread 和当前已知但缺标题的 thread；单独的 loaded thread id 不创建 session 或 rollout 候选，不得把无关历史 rollout 拉入当前 session 列表。
 
 Codex APP thread 历史元数据只能应用到当前待识别 thread 或当前已知但缺标题的 thread；thread 元数据携带的 rollout path 必须与该 thread ID 匹配后才能补齐 runtime。
 
@@ -123,8 +127,6 @@ Codex APP rollout path 必须限制在 Codex sessions root 内，并在读取前
 Codex rollout tailer 必须限制在 Codex sessions root 内，并在读取前校验文件名、普通文件类型和文件大小。
 
 Codex rollout tailer 只接收已知 session 的 watch target，不得从任意 rollout 文件创建 session。
-
-Codex rollout tailer 新增目标时从当前 EOF 后开始读取，不得把已有历史行回放成实时 timeline。
 
 Codex rollout tailer 按 canonical path 去重。
 
@@ -152,6 +154,10 @@ Codex APP app-server `notLoaded` 必须清理 session pending interaction 和对
 
 前端回复草稿按 session key 派生 ID 隔离保存。
 
+前端 follow-up 展开状态按 session key 派生 ID 隔离保存，只影响 UI 展示。
+
+完成或失败 session 的 follow-up 提交成功后，前端必须清理对应草稿和展开状态。
+
 前端选项选择按 interaction ID 隔离保存。
 
 快捷回复不得绕过 Reply Service 的能力校验和 pending 校验。
@@ -159,34 +165,6 @@ Codex APP app-server `notLoaded` 必须清理 session pending interaction 和对
 自定义快捷输入不得绕过当前 session 的回写或 follow-up 能力校验。
 
 跳回能力和文本回写能力必须分别建模。
-
-前端 timeline 当前页缓存只在弹层打开期间保存。
-
-后端 timeline 缓存只保存在进程内内存。
-
-后端 timeline 缓存按 `SessionKey` 分片。
-
-后端 timeline 缓存不写文件或数据库。
-
-后端 timeline 缓存不从 transcript 或 JSONL 反向恢复历史。
-
-后端 timeline 缓存允许记录已知 session 的 rollout 新增追加行清洗出的实时事件。
-
-timeline 条目不进入 `SessionState`。
-
-用户输入必须通过显式用户消息归一事件进入 session state，并在 timeline 中映射为 `user` 类型。
-
-没有正文的 session start、turn complete 或审批请求不得生成 timeline 条目。
-
-timeline 搜索只匹配正文，不匹配隐藏标题。
-
-timeline 条目使用 adapter 生成的条目 ID 去重。
-
-timeline 达到上限时，优先淘汰最旧的低优先级条目。
-
-审批、回复和失败相关 timeline 条目优先保留。
-
-关闭 timeline 弹层时，前端释放当前页缓存，并请求后端释放该 session 的大文本正文缓存。
 
 本地 bridge request 和 response 由显式 enum 表达 command 类型、结果类型、hook 事件名和 directive 类型。
 
@@ -210,7 +188,9 @@ Codex CLI bridge server 的 listener 不等待单个 hook request 完成。
 
 Codex CLI bridge server 每个连接由独立线程处理。
 
-Codex CLI hook 事件写入 session state 的同时写入 timeline 内存缓存。
+Codex CLI bridge server 在按 `agent_kind` 分流前，会按 hook payload 的 `terminal_app` 与 hook helper env 兜底改判 Codex APP；仍是 Codex CLI 时，会用 Codex APP runtime 已知 thread/cwd 再判一次。
+
+Codex CLI bridge 分流的同步刷新只允许调用一次注入式回调；回调内部只能使用已存在且仍存活的 app-server client，thread list 拉取必须有总时长上限，不得启动 app-server 或无限阻塞 hook 路径。
 
 Codex rollout watcher 是后台轮询线程。
 
@@ -252,13 +232,9 @@ Tauri command 使用进程内 Codex APP runtime 锁收口 Codex APP 状态访问
 
 前端在 panel 打开期间定时刷新 Codex CLI 和 Codex APP session，避免真实 hook 或 app-server 事件在首次加载后不可见。
 
-前端订阅 `session_updated` 事件以降低 session 摘要和 timeline 的可见延迟。
-
 Codex APP 后台 metadata、session index 或 rollout 历史补齐已有 session 的可见字段时，后端必须发布 `session_updated` 事件。
 
 前端收到实时更新后必须节流刷新 session 列表。
-
-前端只在当前打开 timeline 与事件 session 匹配时刷新 timeline。
 
 所有 coding agent session runtime 在 APP 进程启动时为空。
 
@@ -266,15 +242,13 @@ Codex CLI session 只能由 APP 进程启动后的实时 hook 写入。
 
 Codex CLI session 也可由已知 session rollout 追加行写入实时活动或完成事件。
 
-Codex APP session 可由 APP 进程启动后的实时 hook、notification、server request、session index、app-server thread 元数据或 Codex rollout 历史补齐。
+Codex APP session 可由 APP 进程启动后的实时 hook、notification、server request、session index、app-server `thread/list` 元数据或 Codex rollout 历史补齐。
 
 Codex APP session 也可由已知 session rollout 追加行写入实时活动或完成事件。
 
-除 Codex APP 的项目名、跳回目标和最新输出补齐外，其它 coding agent adapter 不得通过历史文件、transcript、JSONL、rollout、已加载 thread 列表或其它持久化记录恢复 session。
+除 Codex APP 的项目名、跳回目标和最新输出补齐外，其它 coding agent adapter 不得通过历史文件、transcript、JSONL、rollout、已加载 thread id 列表或其它持久化记录恢复 session。
 
 APP 启动后仍在运行的任务如果继续发出实时事件，可以创建当前进程内 session。
-
-前端合并 Codex CLI 和 Codex APP session 后，详情读取、审批提交、回复提交、follow-up 和 timeline 查询必须按显式 runtime source 路由。
 
 前端合并 Codex CLI 和 Codex APP session 后，UI session 选中身份必须包含 runtime source。
 
@@ -322,8 +296,6 @@ panel 窗口状态局部保存不得把收缩字段写成 `true`。
 
 通知合并状态只存在于 Notification Service 进程内状态。
 
-通知点击动作只定位 session，不打开 timeline。
-
 Codex CLI bridge 启动只有 bind 成功后才记录为已启动。
 
 Codex CLI bridge 首次 bind 失败后允许后续 command 重试启动。
@@ -348,6 +320,10 @@ Codex APP app-server request 或 response 写入不得在等待期间持有全�
 
 Codex APP app-server 启动不得在等待期间持有全局 app-server client slot 锁；slot 只表达空、启动中或已连接。
 
+Codex APP follow-up 写入前必须确保目标 thread 已加载；未加载 thread 必须先通过 app-server `thread/resume` 恢复。
+
+Codex APP follow-up 从 runtime 登记提交占位后，到成功写入用户输入原文前，任一失败路径都必须释放提交占位。
+
 Codex APP app-server response 必须保留 request 的原始 JSON-RPC `id` 类型。
 
 Codex APP app-server stdout 中带 `method` 的消息必须按 server request 或 notification 处理，不能仅因 id 命中 pending request 就当作 response。
@@ -355,8 +331,6 @@ Codex APP app-server stdout 中带 `method` 的消息必须按 server request �
 Codex APP 未识别或畸形 app-server server request 必须回写 JSON-RPC error；若消息包含 thread ID，runtime 必须写入失败状态。
 
 Codex APP legacy approval 与新版 item approval 的 response enum 不相同，必须按 server request method 分流编码。
-
-Codex APP follow-up 写入成功前不得更新 session activity 或 timeline。
 
 Codex APP follow-up 写入成功后只能写入用户输入原文事件，不写提交成功包装文案。
 
@@ -370,15 +344,9 @@ Codex APP app-server 启动失败必须设置退避，避免前端轮询造成�
 
 Codex APP hook runtime 读取和 hook approval 决策不得依赖 app-server 已连接。
 
-Codex APP session 列表和详情查询返回当前 runtime 状态，不等待 app-server thread 列表或 Codex rollout 历史补齐完成。
+Codex APP session 列表和详情查询返回当前 runtime 状态，不等待 app-server `thread/list` 或 Codex rollout 历史补齐完成。
 
-Codex APP app-server thread 列表读取必须节流，并使用短超时失败降级，避免前端轮询阻断其它 agent session 刷新。
-
-Codex APP timeline 查询不通过 transcript 或 rollout 历史补齐过程事件。
-
-Codex APP session 列表、详情和 timeline 查询必须在 app-server 失败时继续读取当前进程内已捕捉的 hook runtime 状态。
-
-Codex APP app-server 实时事件为某 thread 首次事件时，runtime 必须初始化当前 session 的交互能力和 timeline 能力；只有存在可信 cwd 时才初始化跳回目标。
+Codex APP app-server `thread/loaded/list` 与 `thread/list` 读取必须节流，并使用短超时失败降级，避免前端轮询阻断其它 agent session 刷新。
 
 Codex APP app-server 无 cwd 事件先创建的 session，必须在后续真实 cwd 到达时按 thread ID 合并到同一 session。
 
@@ -448,8 +416,6 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 日志脱敏属于 adapter 边界纯转换。
 
-默认日志不得保留 prompt、transcript 或 timeline 全文。
-
 记录型通知 adapter 只记录通知计划，不调用真实系统通知 API。
 
 ## 边界破坏风险
@@ -478,14 +444,6 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 若跳回动作在没有跳回目标时生成，用户点击 session 会得到无意义错误而不是无反应。
 
-若 timeline 关闭后仍保留当前页缓存，长文本过程事件会滞留在前端状态中。
-
-若后端 timeline 缓存从 transcript 或 JSONL 反读，托管事件入口会变成历史文件解析入口。
-
-若 timeline 写入 `SessionState`，主 session reducer 会被高频过程事件污染。
-
-若 timeline 淘汰不区分优先级，审批、回复或失败上下文可能早于普通活动被释放。
-
 若 Codex APP adapter 直接透传 app-server 原始 JSON 到 Domain，Domain 纯粹性会被外部协议污染。
 
 若 Codex CLI bridge server 在等待审批时不校验 interaction，旧 UI 决策可能返回给错误 hook request。
@@ -495,6 +453,12 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 若前端只在首屏读取一次 Codex CLI session，后续真实审批请求会不可见并最终超时 fail-open。
 
 若前端按 agent kind 而不是 runtime source 路由，Codex CLI 与 Codex APP 可能互相误走 command。
+
+若 Codex CLI runtime 接收非 Codex CLI 事件，Codex APP 任务可能被错放到 CLI session 列表并显示错误的来源徽章。
+
+若 Codex APP 收录新 thread 时不通知 Codex CLI runtime，hook 早到造成的 Codex APP 孤儿 session 无法被回收，前端会同时看到 Codex CLI 与 Codex APP 两条同 thread session。
+
+若 hook bridge 分流阶段的同步刷新没有总时长上限，长时间未响应的 app-server 会阻塞所有 Codex hook 路径。
 
 若前端选中态不包含 runtime source，同一个 `SessionKey` 的 Codex CLI 和 Codex APP session 可能互相误选。
 
@@ -513,10 +477,6 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 若 hook 卸载成功后保留 manifest，后续误触发卸载可能覆盖用户新配置。
 
 若 hook 安装绕过 Codex trust review，会破坏 Codex 自身安全边界。
-
-若默认日志记录 prompt、transcript 或 timeline 全文，敏感信息可能进入本地日志。
-
-若通知点击直接打开 timeline，用户可能从通知进入非预期过程弹层。
 
 若 Codex CLI 审批决策不校验当前 pending interaction，旧 UI 决策可能唤醒过期 hook request。
 
@@ -550,8 +510,6 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI runtime 和审批等待入口。
 
-`src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存、去重、淘汰和释放入口。
-
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP app-server adapter 入口。
 
 `src-tauri/src/services/interaction_service.rs` 是审批 pending 校验入口。
@@ -561,10 +519,6 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 `src-tauri/src/services/shortcut_reply_service.rs` 是快捷回复过滤入口。
 
 `src-tauri/src/services/preset_command_service.rs` 是预设命令计划入口。
-
-`src-tauri/src/services/process_timeline_service.rs` 是 timeline 查询入口。
-
-`src/stores/mockPanelStore.ts` 是前端草稿和 timeline 缓存状态入口。
 
 `src-tauri/src/adapters/terminal/mod.rs` 是跳回降级测试入口。
 
@@ -596,15 +550,9 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 `src-tauri/src/services/preset_command_service.rs` 验证预设命令计划生成。
 
-`src-tauri/src/services/process_timeline_service.rs` 验证 timeline 过滤和分页。
-
-`src-tauri/src/adapters/timeline/mod.rs` 验证 timeline 去重、淘汰和大文本释放。
-
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 验证 Codex CLI runtime pending approval 不变量。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 验证 Codex APP notification 清洗边界。
-
-`src/stores/mockPanelStore.test.ts` 验证前端草稿隔离、选项选择隔离和 timeline 缓存释放。
 
 `src/views/BuilderPanelApp.test.ts` 验证阶段 7 合并捕捉顺序、统计、动作标签和工具用量聚合。
 

@@ -20,10 +20,6 @@ pub enum AppErrorCode {
     ConfigSaveFailed,
     /// Agent 协议未支持。
     AgentProtocolUnsupported,
-    /// 过程时间线不可用。
-    ProcessTimelineUnavailable,
-    /// 过程时间线接收失败。
-    ProcessTimelineReceiveFailed,
     /// 系统通知发送失败。
     NotificationSendFailed,
     /// hook 安装失败。

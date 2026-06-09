@@ -1,29 +1,4 @@
-import type {
-  SessionKey,
-  TimelineEventKind,
-  TimelinePage,
-} from "../api/mockPanelContract";
-
-/// 时间线筛选类型。
-export type TimelineKindFilter = TimelineEventKind | "all";
-
-/// 时间线 UI 状态。
-export interface TimelineUiState {
-  /// 是否打开时间线弹层。
-  readonly open: boolean;
-  /// 当前时间线所属 session ID。
-  readonly sessionId: string | null;
-  /// 搜索关键词。
-  readonly search: string;
-  /// 类型筛选。
-  readonly kind: TimelineKindFilter;
-  /// 当前缓存页。
-  readonly page: TimelinePage | null;
-  /// 是否正在读取当前筛选页。
-  readonly loading: boolean;
-  /// 当前时间线错误消息。
-  readonly errorMessage: string | null;
-}
+import type { SessionKey } from "../api/mockPanelContract";
 
 /// Mock panel UI 状态。
 export interface MockPanelUiState {
@@ -39,8 +14,8 @@ export interface MockPanelUiState {
   >;
   /// 最近一次错误消息。
   readonly errorMessage: string | null;
-  /// 时间线 UI 状态。
-  readonly timeline: TimelineUiState;
+  /// 已手动展开 follow-up 输入区的 session。
+  readonly expandedFollowupSessionIds: Readonly<Record<string, true>>;
 }
 
 /// 创建默认 mock panel UI 状态。
@@ -50,15 +25,7 @@ export const createDefaultMockPanelUiState = (): MockPanelUiState => ({
   submittingInteractionId: null,
   selectedChoicesByInteractionId: {},
   errorMessage: null,
-  timeline: {
-    open: false,
-    sessionId: null,
-    search: "",
-    kind: "all",
-    page: null,
-    loading: false,
-    errorMessage: null,
-  },
+  expandedFollowupSessionIds: {},
 });
 
 /// 切换单选或多选选项。
@@ -114,15 +81,6 @@ export const selectSession = (
   ...state,
   selectedSessionId: sessionKeyToId(sessionKey),
   errorMessage: null,
-  timeline: {
-    open: false,
-    sessionId: null,
-    search: "",
-    kind: "all",
-    page: null,
-    loading: false,
-    errorMessage: null,
-  },
 });
 
 /// 更新指定 session 草稿。
@@ -152,6 +110,52 @@ export const clearDraft = (
   };
 };
 
+/// 切换 completed 或 failed session 的 follow-up 输入区。
+export const toggleFollowupSessionExpansion = (
+  state: MockPanelUiState,
+  sessionKey: SessionKey,
+): MockPanelUiState => {
+  const sessionId = sessionKeyToId(sessionKey);
+  const nextExpanded = { ...state.expandedFollowupSessionIds };
+  if (nextExpanded[sessionId]) {
+    delete nextExpanded[sessionId];
+  } else {
+    nextExpanded[sessionId] = true;
+  }
+
+  return {
+    ...state,
+    expandedFollowupSessionIds: nextExpanded,
+  };
+};
+
+/// 清理指定 session 的 follow-up 展开状态。
+export const clearFollowupSessionExpansion = (
+  state: MockPanelUiState,
+  sessionKey: SessionKey,
+): MockPanelUiState => {
+  const sessionId = sessionKeyToId(sessionKey);
+  if (!state.expandedFollowupSessionIds[sessionId]) {
+    return state;
+  }
+
+  const nextExpanded = { ...state.expandedFollowupSessionIds };
+  delete nextExpanded[sessionId];
+
+  return {
+    ...state,
+    expandedFollowupSessionIds: nextExpanded,
+  };
+};
+
+/// 判断指定 session 的 follow-up 输入区是否已展开。
+export const isFollowupSessionExpanded = (
+  state: MockPanelUiState,
+  sessionKey: SessionKey,
+): boolean => {
+  return state.expandedFollowupSessionIds[sessionKeyToId(sessionKey)] === true;
+};
+
 /// 标记交互提交开始。
 export const beginSubmit = (
   state: MockPanelUiState,
@@ -171,133 +175,6 @@ export const endSubmit = (
   submittingInteractionId: null,
   errorMessage,
 });
-
-/// 打开指定 session 的时间线。
-export const openTimeline = (
-  state: MockPanelUiState,
-  sessionKey: SessionKey,
-): MockPanelUiState => ({
-  ...state,
-  timeline: {
-    open: true,
-    sessionId: sessionKeyToId(sessionKey),
-    search: "",
-    kind: "all",
-    page: null,
-    loading: false,
-    errorMessage: null,
-  },
-});
-
-/// 关闭时间线并释放缓存页。
-export const closeTimeline = (state: MockPanelUiState): MockPanelUiState => ({
-  ...state,
-  timeline: {
-    open: false,
-    sessionId: null,
-    search: "",
-    kind: "all",
-    page: null,
-    loading: false,
-    errorMessage: null,
-  },
-});
-
-/// 更新时间线搜索关键词。
-export const updateTimelineSearch = (
-  state: MockPanelUiState,
-  search: string,
-): MockPanelUiState => ({
-  ...state,
-  timeline: {
-    ...state.timeline,
-    search,
-    page: null,
-    errorMessage: null,
-  },
-});
-
-/// 更新时间线类型筛选。
-export const updateTimelineKind = (
-  state: MockPanelUiState,
-  kind: TimelineKindFilter,
-): MockPanelUiState => ({
-  ...state,
-  timeline: {
-    ...state.timeline,
-    kind,
-    page: null,
-    errorMessage: null,
-  },
-});
-
-/// 标记时间线开始加载。
-export const beginTimelineLoad = (
-  state: MockPanelUiState,
-): MockPanelUiState => ({
-  ...state,
-  timeline: {
-    ...state.timeline,
-    loading: true,
-    errorMessage: null,
-  },
-});
-
-/// 标记时间线加载失败。
-export const failTimelineLoad = (
-  state: MockPanelUiState,
-  errorMessage: string,
-): MockPanelUiState => ({
-  ...state,
-  timeline: {
-    ...state.timeline,
-    loading: false,
-    errorMessage,
-  },
-});
-
-/// 写入时间线当前页缓存。
-export const setTimelinePage = (
-  state: MockPanelUiState,
-  page: TimelinePage,
-): MockPanelUiState => ({
-  ...state,
-  timeline: {
-    ...state.timeline,
-    page,
-    loading: false,
-    errorMessage: null,
-  },
-});
-
-/// 将当前筛选结果格式化为可复制文本。
-export const timelinePageToCopyText = (page: TimelinePage): string => {
-  return page.items.map((item) => item.body).join("\n\n");
-};
-
-/// 计算虚拟列表可见范围。
-export const timelineVisibleRange = (
-  itemCount: number,
-  scrollTop: number,
-  viewportHeight: number,
-  rowHeight: number,
-  overscan: number,
-): { readonly start: number; readonly end: number } => {
-  if (itemCount <= 0 || rowHeight <= 0 || viewportHeight <= 0) {
-    return { start: 0, end: 0 };
-  }
-
-  const visibleCount = Math.ceil(viewportHeight / rowHeight);
-  const maxFirstVisible = Math.max(0, itemCount - visibleCount);
-  const firstVisible = Math.min(
-    Math.floor(Math.max(0, scrollTop) / rowHeight),
-    maxFirstVisible,
-  );
-  const start = Math.max(0, firstVisible - overscan);
-  const end = Math.min(itemCount, firstVisible + visibleCount + overscan);
-
-  return { start, end };
-};
 
 /// 计算与 Rust chars().count() 对齐的前端字符数。
 export const countReplyChars = (value: string): number => {

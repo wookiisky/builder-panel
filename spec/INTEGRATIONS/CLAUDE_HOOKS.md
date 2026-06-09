@@ -62,7 +62,6 @@ stdout directive 格式必须由本项目测试固定。
 
 当前不承诺 Claude Code APP 结构化控制能力。
 
-当前不从 Claude transcript 或 JSONL 反读过程事件或 session 状态。
 
 当前不承诺 Windows Claude hook 已完成本机验收。
 

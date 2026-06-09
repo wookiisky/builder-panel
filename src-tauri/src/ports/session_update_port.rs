@@ -29,18 +29,6 @@ impl SessionRuntimeSource {
     }
 }
 
-/// Session 更新影响区域。
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionUpdateArea {
-    /// Session 摘要、状态或动作变化。
-    Session,
-    /// 过程时间线变化。
-    Timeline,
-    /// Session 和时间线均有变化。
-    Both,
-}
-
 /// 清洗后的 session 更新通知。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SessionUpdateNotification {
@@ -48,8 +36,6 @@ pub struct SessionUpdateNotification {
     pub runtime_source: SessionRuntimeSource,
     /// 所属 session。
     pub session_key: SessionKey,
-    /// 影响区域。
-    pub changed_area: SessionUpdateArea,
     /// 更新时间。
     pub updated_at: UnixMillis,
 }

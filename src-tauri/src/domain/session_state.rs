@@ -518,7 +518,6 @@ mod tests {
             can_send_reply: true,
             can_resolve_approval: true,
             can_create_followup_turn: true,
-            can_view_process_timeline: true,
         };
         let usage = UsageSnapshot {
             usage_5h: UsageValue::Verified(VerifiedUsageValue {

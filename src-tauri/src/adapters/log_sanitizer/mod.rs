@@ -61,7 +61,6 @@ fn is_sensitive_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     key.contains("prompt")
         || key.contains("transcript")
-        || key.contains("timeline")
         || key.contains("token")
         || key.contains("secret")
         || key.contains("password")

@@ -12,13 +12,21 @@ Codex APP app-server schema 通过本机 `codex app-server generate-json-schema 
 
 当前探针验证 thread/turn request 与 response、thread/turn notification、thread name updated、agent message delta、token usage、status changed、审批 response、用户输入 response 和 MCP elicitation response 相关 schema 存在；具体文件清单以 `src-tauri/src/adapters/codex_app/mod.rs` 的 `REQUIRED_SCHEMA_FILES` 为准。
 
-Codex APP adapter 可编码 `initialize`、`initialized`、`thread/start`、`turn/start`、`thread/loaded/list` 和 `thread/list` JSON-RPC 消息。
+Codex APP adapter 可编码 `initialize`、`initialized`、`thread/start`、`thread/resume`、`turn/start`、`thread/loaded/list` 和 `thread/list` JSON-RPC 消息。
 
 Codex APP adapter 可把 `thread/started`、`thread/name/updated`、`turn/started`、`item/agentMessage/delta`、`thread/status/changed`、`thread/tokenUsage/updated` 和 `turn/completed` notification 转换为归一事件。
 
 Codex APP `thread/status/changed` 的 `idle` 映射为完成态；`systemError` 映射为失败态；`notLoaded` 映射为失联态。
 
 Codex APP hook payload 由 Codex hook 入口接收；当 `terminal_app` 归一化后等于 `codexapp` 时，payload 被清洗为 `Codex APP` session。
+
+Codex hook payload 缺少 `terminal_app` 时，hook helper 会按优先级读取 `BUILDER_PANEL_HOOK_TERMINAL_APP`、`__CFBundleIdentifier` 和 `TERM_PROGRAM` 环境变量；归一化后等于 `codexapp` 或 `comopenaicodex` 时改判为 Codex APP，并把命中的值回填到 `terminal_app`。
+
+Codex hook payload 仍被判为 Codex CLI 时，本地 bridge 会在分流前查询 Codex APP runtime 已知 thread；命中已知 `thread_id` 或已知 cwd 后改判为 Codex APP，避免把 Codex APP 的 hook 误存到 Codex CLI runtime。
+
+Codex APP runtime 收录新的 `thread_id` 后会通知 Codex CLI runtime 清理同 `(cwd, thread_id)` 的孤儿 session；通知触发的删除会发布 `session_updated` 事件让前端立刻刷新。
+
+Codex hook 在 bridge 分流阶段第一次未命中 Codex APP 已知 thread 时，可以触发一次受限超时的同步 thread list 刷新，再判一次归属；同步刷新只使用已存在且仍存活的 app-server client，不负责启动 app-server，总时长上限不得超过 300 毫秒。
 
 Codex APP runtime 可处理 hook `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`PostToolUse` 和 `Stop` 事件。
 
@@ -42,25 +50,31 @@ Codex APP `mcpServer/elicitation/request` 当前可回写文本 answer。
 
 Codex APP follow-up turn 通过 app-server `turn/start` 发送。
 
+Codex APP follow-up 创建前会先通过 `thread/loaded/list` 确认目标 thread 已加载；未加载时先调用 `thread/resume`。
+
+Codex APP `thread/loaded/list` 只返回当前内存已加载的 thread id；空白 id 会在 adapter 边界跳过，重复 id 会去重，缺失 `data`、`data` 非数组或数组元素非字符串时视为列表格式错误。
+
 Codex APP follow-up 只允许在 session 无 pending interaction 且状态为完成或失败时创建；app-server `idle` 状态会映射为可 follow-up 的完成态。
 
 Codex APP follow-up 只有在 `turn/start` 写入成功后才写入用户输入原文事件。
 
 Codex APP follow-up 的 app-server request id 由 app-server client 内部递增分配。
 
+Codex APP schema 探针必须验证 `thread/loaded/list` 和 `thread/resume` 相关 schema 后，才能把 follow-up resume 链路视为已验证能力。
+
 Codex APP runtime 维护 `thread_id -> cwd` 映射；hook payload 的 `cwd` 和 app-server 实时消息中的 `cwd` 都可补齐该映射，保证 hook 与 app-server 事件折叠为同一个 `SessionKey`。
 
-Codex APP runtime 只把可信 cwd 写入 session key；可信 cwd 来源包括 hook payload、app-server message 的 `params.cwd`、`params.thread.cwd`、app-server thread 列表元数据和 Codex rollout 的 `session_meta.payload.cwd`。
+Codex APP runtime 在事件入口拒绝 `agent_kind` 不是 Codex APP 的归一事件和 hook payload；非 Codex APP payload 不会进入 Codex APP runtime 状态。
+
+Codex APP runtime 只把可信 cwd 写入 session key；可信 cwd 来源包括 hook payload、app-server message 的 `params.cwd`、`params.thread.cwd`、app-server `thread/list` 元数据和 Codex rollout 的 `session_meta.payload.cwd`。
 
 Codex APP runtime 不使用 Builder Panel 进程 cwd 冒充 Codex thread cwd。
 
 Codex APP app-server 实时事件缺少可信 cwd 时，会创建待识别项目占位 session；该占位 session 不生成跳回目标。
 
-Codex APP 待识别 session 在后续获取可信 cwd 后，会按 thread ID 迁移到真实 session key，并保留 pending interaction、摘要、错误、用量和 timeline。
-
 Codex APP 使用可信 cwd 派生项目展示名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
 
-Codex APP session 列表和详情读取会尝试通过 app-server `thread/loaded/list` 创建或补齐当前已加载 thread 的 cwd、预览、状态和跳回目标；需要补齐待识别 session 或已知但缺标题的 session 时，可通过 `thread/list` 读取有限数量 thread 历史。
+Codex APP session 列表和详情读取会尝试通过 app-server `thread/loaded/list` 获取当前已加载 thread id，再通过有限数量的 `thread/list` 元数据按 id 补齐当前已加载 thread 的 cwd、预览、状态和跳回目标；需要补齐待识别 session 或已知但缺标题的 session 时，也可通过 `thread/list` 读取有限数量 thread 历史。
 
 Codex APP thread 标题可来自 `~/.codex/session_index.jsonl` 中同 ID 的 `thread_name`，app-server `thread/started.thread.name`、thread metadata，或 app-server `thread/name/updated` 实时通知。
 
@@ -76,9 +90,9 @@ Codex APP path-only thread metadata 不创建新 session；runtime 已有该 thr
 
 Codex APP thread metadata 或 rollout 历史补齐已有 session 的标题、项目、跳回目标、能力或摘要时，会发布轻量 `session_updated` 事件。
 
-Codex APP thread 列表 response 会逐条清洗；单条 thread 无效不会丢弃同批其它有效 thread。
+Codex APP `thread/list` response 会逐条清洗；单条 thread 无效不会丢弃同批其它有效 thread。
 
-Codex APP thread 列表中缺少 cwd 但带 path 的 thread 可作为 rollout 候选；只有 rollout `session_meta.cwd` 读取成功后才会补齐真实项目。
+Codex APP `thread/list` 中缺少 cwd 但带 path 的 thread 可作为 rollout 候选；只有 rollout `session_meta.cwd` 读取成功后才会补齐真实项目。
 
 Codex APP thread status 缺失时可按 idle 处理；`status.type` 类型错误时必须跳过该条 thread。
 
@@ -100,11 +114,7 @@ Codex APP 最终 Agent 输出按 65535 字符上限保留多段内容。
 
 Codex rollout 中的用户输入和 Agent 输出只展示原文，不拼接 `用户输入` 或 `Codex 回复` 前缀。
 
-Codex rollout 中的工具开始、工具调用、计划更新和 turn 开始事件不写摘要或 timeline。
-
 Codex rollout 中未知工具、动态工具和已知工具的 JSON arguments 不作为最后消息展示。
-
-Codex rollout 中的工具输出结束事件不写摘要或 timeline 条目。
 
 Codex rollout 中的工具事件不得在完成后覆盖最终 Agent 输出。
 
@@ -120,15 +130,9 @@ Codex APP hook 权限请求可在 pending approval 摘要中保留清洗后的�
 
 Codex APP app-server 实时事件可以为当前进程创建 session，即使对应 thread 早于 Builder Panel APP 启动。
 
-Codex APP app-server 实时事件首次创建 session 时，runtime 会补齐 Codex APP 交互能力和 timeline 能力；只有存在可信 cwd 时才补齐跳回目标。
-
 Codex APP app-server 无 cwd 实时事件先创建的 session，会在后续真实 cwd 到达时按 thread ID 合并到同一个 session。
 
 Codex APP session 跳回目标使用 `codex://threads/<thread_id>`。
-
-Codex APP hook 和 app-server 事件写入进程内 process timeline。
-
-Codex APP 已知 rollout 追加行清洗后的实时事件写入进程内 process timeline。
 
 Codex APP runtime 应用归一事件后通过 session 更新端口发布轻量 Tauri 事件。
 
@@ -144,10 +148,6 @@ Codex APP app-server 启动或初始化失败时，前端跳过 Codex APP sessio
 
 Codex APP app-server 启动或初始化失败后，后端在短时间退避窗口内不重复 spawn。
 
-Codex APP hook session 列表、详情、hook 审批和 hook timeline 不依赖 app-server 成功启动。
-
-Codex APP session 列表、详情和 timeline 查询会尽量启动 app-server；启动失败不阻断已存在的 hook runtime 状态读取。
-
 已缓存的 Codex APP app-server client 若检测到子进程退出，会清理缓存并进入重新启动或退避流程。
 
 Codex APP app-server 写入时只短暂读取全局 client slot；等待 response 时不持有全局 slot 锁。
@@ -160,11 +160,7 @@ Codex APP 当前不从 app-server 原始 JSON 直接污染 Domain。
 
 ## 不支持能力
 
-当前不持久化 Codex APP timeline。
-
 当前不持久化 Codex APP session。
-
-当前不从 Codex transcript 或 rollout 文件恢复 Codex APP timeline。
 
 当前不从未知或非候选 rollout 文件创建 Codex APP session。
 
@@ -184,10 +180,16 @@ WebSocket transport 当前不作为 Builder Panel 的 Codex APP 接入方式。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP schema 探针、hook 转换、app-server stdio 客户端、runtime、消息编码和 notification 转换入口。
 
-`src-tauri/src/tauri_api/commands.rs` 是 Codex APP schema 探针、session、审批、回复、follow-up 和 timeline command 入口。
-
 ## 相关测试
 
 `src-tauri/src/adapters/codex_app/mod.rs` 覆盖 schema 文件探针、hook payload 分流、notification 转换、request 编码和完整能力 capability。
+
+`src-tauri/src/adapters/codex_app/mod.rs` 覆盖 Codex APP runtime 拒绝非 Codex APP 事件、孤儿迁移回调按 thread 元数据触发和按 hook payload 触发。
+
+`src-tauri/src/adapters/codex_app/mod.rs` 覆盖按 `session_id` 和 `cwd` 认领 Codex APP thread 的判定。
+
+`src-tauri/src/adapters/codex_cli_hook/mod.rs` 覆盖 Codex CLI bridge 分流阶段对已知 Codex APP thread 的改判。
+
+`src-tauri/src/adapters/bridge/hook_cli.rs` 覆盖 hook helper 通过环境变量兜底识别 Codex.app。
 
 人工验证通过本机 `codex app-server generate-json-schema --experimental` 确认关键 schema 文件存在。

@@ -18,8 +18,6 @@
 
 阶段 2 不声明 Windows Named Pipe 已在 Windows 本机验证。
 
-阶段 3 测试 mock agent 事件、session 读取、审批回写、文本回复、timeline 查询和前端 UI 状态基线。
-
 阶段 3 不测试真实 Codex 或 Claude Code 协议。
 
 阶段 3 不声明 Windows 本机人工验证。
@@ -33,8 +31,6 @@
 阶段 5 测试审批允许并记住、选项提交、快捷回复过滤、预设命令计划、跳回降级和前端选项状态。
 
 阶段 5 当前不执行 Windows 本机人工验证。
-
-阶段 6 测试 timeline 内存缓存、分页、正文搜索、筛选、去重、淘汰、Codex CLI hook 接收、前端复制筛选结果、虚拟列表范围和缓存释放。
 
 阶段 6 当前不执行 Windows 本机人工验证。
 
@@ -90,7 +86,11 @@ Rust Codex APP adapter 测试验证无可信 cwd 的 app-server 实时事件不�
 
 Rust Codex APP adapter 测试验证 app-server thread 元数据可迁移待识别 session，且不覆盖 pending、summary 或状态。
 
-Rust Codex APP adapter 测试验证 app-server 已加载 thread 元数据可创建当前 session。
+Rust Codex APP adapter 测试验证 app-server `thread/list` 元数据可创建当前 session。
+
+Rust Codex APP adapter 测试验证 `thread/loaded/list` 响应只清洗 loaded thread id，空白 id 被跳过，重复 id 去重，缺失 `data` 或非字符串 id 会被拒绝。
+
+Rust Codex APP adapter 测试验证同步刷新专用 try-RPC 在 request id、pending、stdin 锁竞争、非阻塞写失败或 Unix stdin pipe 已满时快速失败，不进入阻塞等待，并清理已插入的 pending request。
 
 Rust Codex APP adapter 测试验证 `thread/name/updated` 可把模型名标题更新为真实 thread 标题，且不覆盖摘要或状态。
 
@@ -105,6 +105,12 @@ Rust Codex APP adapter 测试验证当前 turn Agent message delta 会累积展�
 Rust Codex APP adapter 测试验证同一 thread 新 turn 不串联上一 turn 输出。
 
 Rust Codex APP adapter 测试验证 follow-up 成功提交会清空上一 turn Agent 输出，并用用户输入原文更新摘要。
+
+Rust Codex APP follow-up 测试验证未加载 thread 会先 resume，已加载 thread 不重复 resume，loaded thread 查询、resume 或 turn/start 失败会释放提交占位。
+
+Rust Codex APP follow-up 测试验证 follow-up 提交期间 session key 迁移后，成功完成和失败释放仍会按 thread id 清理提交占位。
+
+Rust Tauri command 测试验证 Codex APP hook 分流同步刷新在 app-server slot 或 runtime 锁竞争时快速跳过，不阻塞 hook 路径。
 
 Rust Codex APP rollout 测试验证 `session_meta`、`agent_message`、`task_complete.last_agent_message` 和 assistant `output_text` 清洗。
 
@@ -140,15 +146,9 @@ Rust hook 安装测试验证 Codex `config.toml` 通过 TOML AST 处理格式变
 
 Rust bridge transport 测试验证长请求等待时 listener 仍可接收后续请求。
 
-Rust service 测试验证 session 读取、审批、回复和 timeline 查询。
-
 Rust service 测试验证选项校验、快捷回复过滤和预设命令计划生成。
 
-Rust timeline adapter 测试验证用户类型映射、空摘要不写条目、去重、单 session 上限、全局上限、优先级淘汰和大文本释放。
-
 Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复制降级。
-
-前端 mock store 测试验证草稿隔离、提交中状态和 timeline 缓存释放。
 
 前端 mock store 测试验证选项选择按 interaction 隔离，失败后可保留，成功后只清当前交互。
 
@@ -166,7 +166,7 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证具备 jump action 的 session 在全局跳回关闭时仍可被点击选中。
 
-前端 Builder Panel 测试验证完成和失败状态在可 follow-up 时可展开。
+前端 Builder Panel 测试验证完成和失败状态在可 follow-up 时默认单行，点击展开后展示输入区。
 
 前端 Builder Panel 测试验证工具用量按工具和来源键取最新值且不按 session 求和。
 
@@ -190,15 +190,9 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证窗口移动和尺寸变化的局部保存更新会合并。
 
-前端 Builder Panel 测试验证实时更新只刷新匹配 session 的 timeline。
-
-前端 Builder Panel 测试验证用户 timeline 行样式和单条复制只使用正文。
-
 Rust settings service 测试验证配置缺失、配置损坏和保存。
 
 Rust config file adapter 测试验证设置文件缺失、读写和损坏 JSON。
-
-Rust notification service 测试验证当前 session 抑制、短时间重复通知合并和点击不打开 timeline。
 
 Rust config file adapter 测试验证缺字段默认化、未知字段丢弃、临时文件写入失败不覆盖旧配置和并发保存临时文件隔离。
 
@@ -244,8 +238,6 @@ Codex CLI runtime 测试断言当前 session pending interaction 不匹配时旧
 
 Codex APP adapter 测试断言 token usage 只来自 app-server 已验证 notification 字段。
 
-Codex APP adapter 测试断言审批、回复、follow-up turn 和 process timeline capability 会显式暴露。
-
 Interaction Service 测试断言 allow、deny 和回写失败路径。
 
 Interaction Service 测试断言 allow and remember、单选、多选空选择、非法选项和回写失败路径。
@@ -255,16 +247,6 @@ Reply Service 测试断言非空、空内容、超长和回写失败路径。
 Shortcut Reply Service 测试断言启用状态、agent 绑定、项目绑定和排序。
 
 Preset Command Service 测试断言结构化创建优先、托管进程降级和复制降级。
-
-Process Timeline Service 测试断言分页、正文搜索和类型筛选。
-
-Timeline adapter 测试断言重复条目不重复写入。
-
-Timeline adapter 测试断言达到上限后优先淘汰低优先级旧条目。
-
-Timeline adapter 测试断言大文本释放后缓存正文字符数下降。
-
-Mock panel store 测试断言草稿按 session 隔离，关闭 timeline 释放当前页缓存。
 
 Mock panel store 测试断言虚拟列表不会按一万条记录全量计算可见范围。
 
@@ -296,9 +278,7 @@ Hook install adapter 测试断言卸载成功后 manifest 不再生效。
 
 Hook install adapter 测试断言单项安装和单项卸载会保留其它 agent 的 manifest 记录。
 
-Log sanitizer 测试断言 prompt、transcript、timeline 和 token 类字段不会输出原文。
-
-Notification Service 测试断言通知点击只定位 session，不打开过程弹层。
+Notification Service 测试断言通知点击只定位 session。
 
 ## 资源隔离
 
@@ -318,7 +298,7 @@ Codex APP schema 真实验证执行本机 `codex app-server generate-json-schema
 
 Codex APP app-server 真实 smoke 验证执行本机 `codex app-server --listen stdio://` 并完成基础初始化。
 
-Codex APP app-server 真实 smoke 不验证已加载 thread 同步。
+Codex APP app-server 真实 smoke 不验证已加载 thread id 与 `thread/list` 元数据联动同步。
 
 Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Codex hook 配置，并用代表性 hook payload 验证 helper 到 bridge 的投递路径。
 
@@ -372,8 +352,6 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 
 `src-tauri/src/adapters/mock_agent/mod.rs` 是 mock adapter 测试入口。
 
-`src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存测试入口。
-
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook adapter 和 runtime 测试入口。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP app-server adapter 测试入口。
@@ -387,8 +365,6 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 `src-tauri/src/services/shortcut_reply_service.rs` 是 shortcut reply service 测试入口。
 
 `src-tauri/src/services/preset_command_service.rs` 是 preset command service 测试入口。
-
-`src-tauri/src/services/process_timeline_service.rs` 是 process timeline service 测试入口。
 
 `src-tauri/src/adapters/terminal/mod.rs` 是 terminal adapter 测试入口。
 
@@ -407,10 +383,6 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 `src-tauri/src/services/notification_service.rs` 是 notification service 测试入口。
 
 `src-tauri/src/adapters/notification/mod.rs` 是记录型通知 adapter 入口。
-
-`src/stores/mockPanelStore.test.ts` 是前端草稿、提交和 timeline 状态测试入口。
-
-`src/stores/mockPanelStore.test.ts` 是前端 timeline 复制和虚拟范围测试入口。
 
 `src/views/BuilderPanelApp.test.ts` 是前端 Codex CLI session 刷新选择测试入口。
 
@@ -441,8 +413,6 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 `cargo test --manifest-path src-tauri/Cargo.toml bridge` 运行阶段 2 bridge 和 hook helper 测试。
 
 `cargo test --manifest-path src-tauri/Cargo.toml codex_cli_hook` 运行 Codex CLI hook adapter 测试。
-
-`cargo test --manifest-path src-tauri/Cargo.toml timeline` 运行 timeline service、adapter 和 Codex CLI timeline 接收测试。
 
 `cargo test --manifest-path src-tauri/Cargo.toml codex_app` 运行 Codex APP app-server adapter 测试。
 

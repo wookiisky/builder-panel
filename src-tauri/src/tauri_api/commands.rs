@@ -9,9 +9,13 @@ use serde_json::json;
 
 use crate::adapters::codex_app::{
     apply_session_index_thread_titles, default_codex_session_index_path,
-    load_codex_session_index_titles, CodexAppAdapter, CodexAppRuntime, CodexAppSchemaProbe,
-    CodexAppServerClient, CodexAppThreadMetadata, CodexRolloutDiscovery, CodexRolloutTailer,
-    CodexRolloutWatchTarget,
+    ensure_codex_app_thread_loaded, load_codex_session_index_titles, CodexAppAdapter,
+    CodexAppFollowupRpcClient, CodexAppRuntime, CodexAppSchemaProbe, CodexAppServerClient,
+    CodexAppThreadMetadata, CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget,
+};
+use crate::adapters::codex_app_inject::{
+    default_codex_app_injector, ensure_accessibility_trusted,
+    open_accessibility_settings, CodexAppInjector,
 };
 use crate::adapters::codex_cli_hook::{start_codex_cli_bridge_server, CodexCliHookRuntime};
 use crate::adapters::config_file::JsonSettingsStore;
@@ -20,7 +24,7 @@ use crate::adapters::hook_install::{
     HookInstaller,
 };
 use crate::adapters::logging::{default_log_path, event_logger, log_error, log_info};
-use crate::adapters::terminal::TerminalJumpAdapter;
+use crate::adapters::terminal::{SystemUrlOpener, TerminalJumpAdapter, UrlOpener};
 use crate::domain::agent_interaction::InteractionId;
 use crate::domain::agent_session::{JumpTarget, SessionKey};
 use crate::domain::app_error::FallbackAction;
@@ -30,11 +34,7 @@ use crate::domain::view_model::{SessionDetailViewModel, SessionListItemViewModel
 use crate::ports::agent_adapter_port::ApprovalDecision;
 use crate::ports::agent_adapter_port::ChoiceSubmission;
 use crate::ports::jump_target_port::JumpTargetPort;
-use crate::ports::process_timeline_port::ProcessTimelineReleasePort;
 use crate::ports::session_update_port::{NoopSessionUpdateSink, SessionUpdateSinkPort};
-use crate::services::process_timeline_service::{
-    ProcessTimelineService, TimelinePage, TimelineQuery,
-};
 use crate::services::settings_service::{
     BuilderPanelSettings, PanelWindowPosition, PanelWindowSize, SettingsService, SettingsViewModel,
 };
@@ -504,8 +504,24 @@ pub fn send_codex_app_reply(request: SendCodexAppReplyRequest) -> Result<(), Str
 #[tauri::command]
 pub fn create_codex_app_followup_turn(request: CodexAppFollowupRequest) -> Result<(), String> {
     ensure_codex_app_started()?;
+    create_codex_app_followup_turn_with_server(
+        codex_app_runtime(),
+        &request,
+        codex_app_server_client,
+    )
+}
+
+fn create_codex_app_followup_turn_with_server<S, F>(
+    runtime: Arc<Mutex<CodexAppRuntime>>,
+    request: &CodexAppFollowupRequest,
+    server_provider: F,
+) -> Result<(), String>
+where
+    S: CodexAppFollowupRpcClient,
+    F: FnOnce() -> Result<S, String>,
+{
+    let thread_id = request.session_key.conversation_id.value.clone();
     let write = {
-        let runtime = codex_app_runtime();
         let mut runtime = runtime
             .lock()
             .map_err(|_| "Codex APP runtime 锁已损坏".to_string())?;
@@ -513,74 +529,241 @@ pub fn create_codex_app_followup_turn(request: CodexAppFollowupRequest) -> Resul
             .create_followup_turn(&request.session_key, &request.prompt)
             .map_err(|error| error.user_message)?
     };
-    let server = codex_app_server_client()?;
-    if write.waits_for_response {
-        if let Err(error) = server.write_rpc_request(write) {
-            let runtime = codex_app_runtime();
-            if let Ok(mut runtime) = runtime.lock() {
-                runtime.release_followup_turn(&request.session_key);
-            }
-            return Err(error.user_message);
+
+    let server = match server_provider() {
+        Ok(server) => server,
+        Err(error) => {
+            return Err(release_and_log_followup_failure(
+                &runtime,
+                &request.session_key,
+                "app-server client",
+                &thread_id,
+                &error,
+            ));
         }
-        let runtime = codex_app_runtime();
-        let mut runtime = runtime
-            .lock()
-            .map_err(|_| "Codex APP runtime 锁已损坏".to_string())?;
-        runtime
-            .complete_followup_turn(&request.session_key)
-            .map_err(|error| error.user_message)?;
-        return Ok(());
+    };
+
+    log_info(
+        "Codex APP follow-up 准备写入",
+        json!({"thread_id": thread_id, "prompt_chars": request.prompt.chars().count()}),
+    );
+
+    match server.list_loaded_thread_ids() {
+        Ok(loaded) => {
+            let already_loaded = loaded.iter().any(|id| id == &thread_id);
+            log_info(
+                "Codex APP follow-up loaded threads 快照",
+                json!({
+                    "thread_id": thread_id,
+                    "loaded_count": loaded.len(),
+                    "already_loaded": already_loaded,
+                    "loaded_ids": loaded,
+                }),
+            );
+        }
+        Err(error) => {
+            log_info(
+                "Codex APP follow-up loaded threads 查询失败",
+                json!({"thread_id": thread_id, "message": error.user_message}),
+            );
+        }
     }
-    server
-        .write_rpc_response(write)
-        .map_err(|error| error.user_message)
+
+    if let Err(error) = ensure_codex_app_thread_loaded(&server, &thread_id) {
+        return Err(release_and_log_followup_failure(
+            &runtime,
+            &request.session_key,
+            "thread loaded",
+            &thread_id,
+            &error.user_message,
+        ));
+    }
+    log_info(
+        "Codex APP follow-up thread 已加载",
+        json!({"thread_id": thread_id}),
+    );
+
+    if !write.waits_for_response {
+        return Err(release_and_log_followup_failure(
+            &runtime,
+            &request.session_key,
+            "request type",
+            &thread_id,
+            "Codex APP follow-up 写入类型无效",
+        ));
+    }
+
+    if let Err(error) = server.write_rpc_request(write) {
+        return Err(release_and_log_followup_failure(
+            &runtime,
+            &request.session_key,
+            "turn/start",
+            &thread_id,
+            &error.user_message,
+        ));
+    }
+    log_info(
+        "Codex APP follow-up turn/start 已写入",
+        json!({"thread_id": thread_id}),
+    );
+
+    let mut runtime_guard = match runtime.lock() {
+        Ok(runtime_guard) => runtime_guard,
+        Err(_) => {
+            return Err(release_and_log_followup_failure(
+                &runtime,
+                &request.session_key,
+                "runtime complete",
+                &thread_id,
+                "Codex APP runtime 锁已损坏",
+            ));
+        }
+    };
+    if let Err(error) = runtime_guard.complete_followup_turn_by_thread_id(&thread_id) {
+        drop(runtime_guard);
+        return Err(release_and_log_followup_failure(
+            &runtime,
+            &request.session_key,
+            "runtime complete",
+            &thread_id,
+            &error.user_message,
+        ));
+    }
+    log_info("Codex APP follow-up 创建", json!({"thread_id": thread_id}));
+    Ok(())
 }
 
-/// 查询 Codex CLI 过程事件时间线。
+/// 注入 Codex.app GUI follow-up（方案 C：AX + 键盘事件）。
+///
+/// 用 macOS Accessibility API 让 Codex.app 当前 thread 输入框接收文本，
+/// 然后模拟 Cmd+V → Return。失败时尝试用 `codex://threads/<id>` 把窗口
+/// 跳到目标 thread，让用户手动操作；不回落到老的 turn/start 通道。
 #[tauri::command]
-pub fn query_codex_cli_timeline(query: TimelineQuery) -> Result<TimelinePage, String> {
-    ensure_codex_cli_bridge_started()?;
-    let runtime = lock_codex_cli_runtime()?;
-    let service = ProcessTimelineService::new(&*runtime);
-
-    service
-        .query_timeline(query)
-        .map_err(|error| error.user_message)
+pub fn inject_codex_app_followup(request: CodexAppFollowupRequest) -> Result<(), String> {
+    let injector = default_codex_app_injector().map_err(|e| e)?;
+    inject_codex_app_followup_with(&request, &mut SystemUrlOpener, &injector)
 }
 
-/// 查询 Codex APP 过程事件时间线。
-#[tauri::command]
-pub fn query_codex_app_timeline(query: TimelineQuery) -> Result<TimelinePage, String> {
-    ensure_codex_cli_bridge_started()?;
-    let _ = ensure_codex_app_started();
-    let runtime = lock_codex_app_runtime()?;
-    let service = ProcessTimelineService::new(&*runtime);
+/// 是否在注入成功后立即在 builder-panel 自己 session 流里 emit UserMessageUpdated。
+///
+/// 默认 false：依赖 Codex.app 内 codex 触发 UserPromptSubmit hook 自然回流。
+/// E2E 验证 hook 不回流时再切 true。
+const INJECT_EMIT_LOCAL_USER_MESSAGE: bool = false;
 
-    service
-        .query_timeline(query)
-        .map_err(|error| error.user_message)
-}
+/// 等待 Codex.app 成为前台的最大毫秒数。
+const INJECT_FRONTMOST_TIMEOUT_MS: u64 = 2000;
 
-/// 释放 Codex CLI 过程事件时间线大文本缓存。
-#[tauri::command]
-pub fn release_codex_cli_timeline_cache(session_key: SessionKey) -> Result<usize, String> {
-    ensure_codex_cli_bridge_started()?;
-    let mut runtime = lock_codex_cli_runtime()?;
+fn inject_codex_app_followup_with<O, I>(
+    request: &CodexAppFollowupRequest,
+    opener: &mut O,
+    injector: &I,
+) -> Result<(), String>
+where
+    O: UrlOpener + ?Sized,
+    I: CodexAppInjector + ?Sized,
+{
+    let prompt = request.prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err("follow-up 内容不能为空".to_string());
+    }
+    let thread_id = request.session_key.conversation_id.value.clone();
+    log_info(
+        "Codex APP 注入开始",
+        json!({"thread_id": thread_id, "prompt_chars": prompt.chars().count()}),
+    );
 
-    runtime
-        .release_large_texts(&session_key)
-        .map_err(|error| error.user_message)
-}
+    // 1. 权限检查。
+    if let Err(error) = ensure_accessibility_trusted() {
+        // 用户友好地引导跳设置。
+        open_accessibility_settings();
+        log_error(
+            "Codex APP 注入失败",
+            json!({
+                "stage": "accessibility_permission",
+                "thread_id": thread_id,
+                "message": error.user_message,
+            }),
+        );
+        return Err(error.user_message);
+    }
 
-/// 释放 Codex APP 过程事件时间线大文本缓存。
-#[tauri::command]
-pub fn release_codex_app_timeline_cache(session_key: SessionKey) -> Result<usize, String> {
-    ensure_codex_cli_bridge_started()?;
-    let mut runtime = lock_codex_app_runtime()?;
+    // 2. 跳到对应 thread。
+    if let Err(detail) = opener.open_url(&format!("codex://threads/{}", thread_id)) {
+        log_error(
+            "Codex APP 注入失败",
+            json!({"stage": "open_thread", "thread_id": thread_id, "message": detail}),
+        );
+        return Err(format!("打开 Codex.app thread 失败：{}", detail));
+    }
 
-    runtime
-        .release_large_texts(&session_key)
-        .map_err(|error| error.user_message)
+    // 3. 等待 Codex.app 成为 frontmost。
+    if let Err(error) = injector.wait_codex_app_frontmost(INJECT_FRONTMOST_TIMEOUT_MS) {
+        log_error(
+            "Codex APP 注入失败",
+            json!({
+                "stage": "wait_frontmost",
+                "thread_id": thread_id,
+                "message": error.user_message,
+            }),
+        );
+        // 已打开窗口；告诉用户去手动发送。
+        return Err(format!(
+            "{}（已尝试跳转到 Codex.app，请在 GUI 内手动发送）",
+            error.user_message
+        ));
+    }
+    log_info("Codex APP 注入：Codex.app 已前台", json!({"thread_id": thread_id}));
+
+    // 4. 设焦点（最佳努力，失败不致命）。
+    if let Err(error) = injector.focus_input_field() {
+        log_error(
+            "Codex APP 注入失败",
+            json!({
+                "stage": "focus_input",
+                "thread_id": thread_id,
+                "message": error.user_message,
+            }),
+        );
+        // 已经在 Codex.app 前台，告诉用户去手动操作。
+        let _ = opener.open_url(&format!("codex://threads/{}", thread_id));
+        return Err(format!(
+            "{}（已跳转到 Codex.app，请在 GUI 内手动发送）",
+            error.user_message
+        ));
+    }
+
+    // 5. 粘贴 + 回车。
+    if let Err(error) = injector.paste_and_return(&prompt) {
+        log_error(
+            "Codex APP 注入失败",
+            json!({
+                "stage": "paste_and_return",
+                "thread_id": thread_id,
+                "message": error.user_message,
+            }),
+        );
+        let _ = opener.open_url(&format!("codex://threads/{}", thread_id));
+        return Err(format!(
+            "{}（已跳转到 Codex.app，请在 GUI 内手动发送）",
+            error.user_message
+        ));
+    }
+
+    log_info("Codex APP 注入：消息已发送", json!({"thread_id": thread_id}));
+
+    // 6. 可选：本地立即回显（依赖编译期常量，运行时不开销）。
+    if INJECT_EMIT_LOCAL_USER_MESSAGE {
+        if let Ok(mut runtime) = codex_app_runtime().lock() {
+            // create_followup_turn 会写 pending_followup_turns；这里直接补 prompt 走完成路径。
+            // 失败不阻塞——本地展示是 best-effort。
+            let _ = runtime
+                .create_followup_turn(&request.session_key, &prompt)
+                .ok();
+            let _ = runtime.complete_followup_turn(&request.session_key);
+        }
+    }
+
+    Ok(())
 }
 
 /// 返回 session 跳回目标。
@@ -824,7 +1007,10 @@ fn ensure_codex_cli_bridge_started() -> Result<(), String> {
     install_codex_cross_runtime_hooks();
     if let Err(error) = start_codex_cli_bridge_server(runtime, codex_app_runtime) {
         let message = format!("Codex CLI bridge 启动失败：{error:?}");
-        log_error("Codex CLI bridge 启动失败", json!({"message": message.clone()}));
+        log_error(
+            "Codex CLI bridge 启动失败",
+            json!({"message": message.clone()}),
+        );
         return Err(message);
     }
     start_codex_rollout_watcher_once();
@@ -867,33 +1053,47 @@ const CODEX_APP_THREAD_LIST_SYNC_TIMEOUT: Duration = Duration::from_millis(300);
 /// reclassify 会沿用现有 in-memory 状态判定。
 fn synchronously_refresh_codex_app_thread_list(timeout: Duration) {
     let started_at = Instant::now();
-    if ensure_codex_app_started().is_err() {
-        return;
-    }
-    if started_at.elapsed() >= timeout {
-        return;
-    }
-    let Ok(server) = codex_app_server_client() else {
+    let Some(server) = ready_codex_app_server_client() else {
         return;
     };
     let remaining = timeout.saturating_sub(started_at.elapsed());
     if remaining.is_zero() {
         return;
     }
-    let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<CodexAppThreadMetadata>>(1);
-    let server_clone = server.clone();
-    std::thread::spawn(move || {
-        if let Ok(threads) = server_clone.list_loaded_threads() {
-            let _ = sender.send(threads);
-        }
-    });
-    let Ok(threads) = receiver.recv_timeout(remaining) else {
+    let loaded_thread_ids = server
+        .try_list_loaded_thread_ids_with_timeout(remaining)
+        .unwrap_or_default();
+    let loaded_thread_id_set = BTreeSet::from_iter(loaded_thread_ids);
+    if loaded_thread_id_set.is_empty() {
+        return;
+    }
+    let remaining = timeout.saturating_sub(started_at.elapsed());
+    if remaining.is_zero() {
+        return;
+    }
+    let threads = filter_history_threads_for_candidates(
+        server
+            .try_list_threads_with_timeout(40, remaining)
+            .unwrap_or_default(),
+        &loaded_thread_id_set,
+    );
+    if threads.is_empty() {
         return;
     };
-    if let Ok(mut runtime) = codex_app_runtime().lock() {
-        for thread in threads {
-            let _ = runtime.apply_thread_metadata(thread, command_unix_now());
-        }
+    if timeout.saturating_sub(started_at.elapsed()).is_zero() {
+        return;
+    }
+    apply_codex_app_thread_metadata_without_blocking(threads);
+}
+
+/// 非阻塞应用 Codex APP thread 元数据，避免 hook 分流路径等待 runtime 锁。
+fn apply_codex_app_thread_metadata_without_blocking(threads: Vec<CodexAppThreadMetadata>) {
+    let runtime = codex_app_runtime();
+    let Ok(mut runtime) = runtime.try_lock() else {
+        return;
+    };
+    for thread in threads {
+        let _ = runtime.apply_thread_metadata(thread, command_unix_now());
     }
 }
 
@@ -1032,7 +1232,16 @@ fn sync_codex_app_context_worker() {
     };
 
     let session_index_titles = load_codex_session_index_titles(&default_codex_session_index_path());
-    let mut loaded_threads = server.list_loaded_threads().unwrap_or_default();
+    let loaded_thread_ids = server.list_loaded_thread_ids().unwrap_or_default();
+    let loaded_thread_id_set = BTreeSet::from_iter(loaded_thread_ids);
+    let mut loaded_threads = if loaded_thread_id_set.is_empty() {
+        Vec::new()
+    } else {
+        filter_history_threads_for_candidates(
+            server.list_threads(40).unwrap_or_default(),
+            &loaded_thread_id_set,
+        )
+    };
     apply_session_index_thread_titles(&mut loaded_threads, &session_index_titles);
     let (unresolved_thread_ids, title_missing_thread_ids) = {
         let runtime = codex_app_runtime();
@@ -1329,6 +1538,28 @@ fn release_codex_app_rpc_submission(interaction_id: &InteractionId) {
     };
 }
 
+/// 释放 Codex APP follow-up 提交占位并记录失败阶段。
+fn release_and_log_followup_failure(
+    runtime: &Arc<Mutex<CodexAppRuntime>>,
+    _session_key: &SessionKey,
+    stage: &str,
+    thread_id: &str,
+    message: &str,
+) -> String {
+    if let Ok(mut runtime) = runtime.lock() {
+        runtime.release_followup_turn_by_thread_id(thread_id);
+    }
+    log_error(
+        "Codex APP follow-up 创建失败",
+        json!({
+            "stage": stage,
+            "thread_id": thread_id,
+            "message": message,
+        }),
+    );
+    message.to_string()
+}
+
 /// 获取 Codex APP app-server 客户端快照。
 fn codex_app_server_client() -> Result<Arc<CodexAppServerClient>, String> {
     let server = codex_app_server_slot()
@@ -1339,6 +1570,18 @@ fn codex_app_server_client() -> Result<Arc<CodexAppServerClient>, String> {
         CodexAppServerSlot::Starting => Err("Codex APP app-server 正在启动".to_string()),
         CodexAppServerSlot::Empty => Err("Codex APP app-server 未连接".to_string()),
     }
+}
+
+/// 获取当前已连接且仍存活的 Codex APP app-server client，不触发启动。
+fn ready_codex_app_server_client() -> Option<Arc<CodexAppServerClient>> {
+    let client = {
+        let server = codex_app_server_slot().try_lock().ok()?;
+        match &*server {
+            CodexAppServerSlot::Ready(client) => Arc::clone(client),
+            _ => return None,
+        }
+    };
+    client.try_is_running().then_some(client)
 }
 
 /// 返回 Codex APP app-server client 槽锁。
@@ -1367,7 +1610,9 @@ fn command_unix_now() -> UnixMillis {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::codex_app::CodexAppThreadMetadata;
+    use crate::adapters::codex_app::{CodexAppRpcWrite, CodexAppThreadMetadata};
+    use crate::domain::agent_session::{AgentKind, ConversationId, ProjectId};
+    use crate::domain::app_error::{AppError, AppErrorCode};
 
     #[test]
     fn rollout_candidates_only_include_known_thread_ids() {
@@ -1448,6 +1693,124 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn synchronous_refresh_skips_when_server_slot_is_locked() {
+        let _guard = codex_app_server_slot()
+            .lock()
+            .expect("server slot should lock");
+        let started_at = Instant::now();
+
+        synchronously_refresh_codex_app_thread_list(Duration::from_millis(10));
+
+        assert!(started_at.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn metadata_apply_skips_when_runtime_is_locked() {
+        let runtime = codex_app_runtime();
+        let _guard = runtime.lock().expect("runtime should lock");
+        let started_at = Instant::now();
+
+        apply_codex_app_thread_metadata_without_blocking(vec![thread_metadata(
+            "locked-thread",
+            "/tmp/locked",
+        )]);
+
+        assert!(started_at.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn followup_resumes_unloaded_thread_before_turn_start() {
+        let (runtime, request) = completed_followup_request();
+        let server = FakeFollowupServer::new(Vec::new(), None);
+        let calls = server.calls_ref();
+
+        create_codex_app_followup_turn_with_server(Arc::clone(&runtime), &request, || Ok(server))
+            .expect("followup should create");
+
+        assert_eq!(
+            calls.lock().expect("calls should lock").as_slice(),
+            // 第一次 loaded/list 是诊断日志查询，第二次是 ensure_codex_app_thread_loaded。
+            ["loaded/list", "loaded/list", "thread/resume", "turn/start"]
+        );
+    }
+
+    #[test]
+    fn followup_does_not_resume_loaded_thread() {
+        let (runtime, request) = completed_followup_request();
+        let server = FakeFollowupServer::new(vec!["thread-1".to_string()], None);
+        let calls = server.calls_ref();
+
+        create_codex_app_followup_turn_with_server(Arc::clone(&runtime), &request, || Ok(server))
+            .expect("followup should create");
+
+        assert_eq!(
+            calls.lock().expect("calls should lock").as_slice(),
+            // 第一次 loaded/list 是诊断日志查询，第二次是 ensure_codex_app_thread_loaded。
+            ["loaded/list", "loaded/list", "turn/start"]
+        );
+    }
+
+    #[test]
+    fn followup_releases_pending_when_server_client_is_missing() {
+        let (runtime, request) = completed_followup_request();
+
+        let error = create_codex_app_followup_turn_with_server::<FakeFollowupServer, _>(
+            Arc::clone(&runtime),
+            &request,
+            || Err("Codex APP app-server 未连接".to_string()),
+        )
+        .expect_err("missing server should fail");
+
+        assert_eq!(error, "Codex APP app-server 未连接");
+        assert_followup_can_retry(runtime, &request.session_key);
+    }
+
+    #[test]
+    fn followup_releases_pending_when_resume_fails() {
+        let (runtime, request) = completed_followup_request();
+        let server = FakeFollowupServer::new(Vec::new(), Some("thread/resume"));
+
+        let error =
+            create_codex_app_followup_turn_with_server(Arc::clone(&runtime), &request, || {
+                Ok(server)
+            })
+            .expect_err("resume should fail");
+
+        assert_eq!(error, "thread/resume failed");
+        assert_followup_can_retry(runtime, &request.session_key);
+    }
+
+    #[test]
+    fn followup_releases_pending_when_loaded_list_fails() {
+        let (runtime, request) = completed_followup_request();
+        let server = FakeFollowupServer::new(Vec::new(), Some("loaded/list"));
+
+        let error =
+            create_codex_app_followup_turn_with_server(Arc::clone(&runtime), &request, || {
+                Ok(server)
+            })
+            .expect_err("loaded list should fail");
+
+        assert_eq!(error, "loaded/list failed");
+        assert_followup_can_retry(runtime, &request.session_key);
+    }
+
+    #[test]
+    fn followup_releases_pending_when_turn_start_fails() {
+        let (runtime, request) = completed_followup_request();
+        let server = FakeFollowupServer::new(vec!["thread-1".to_string()], Some("turn/start"));
+
+        let error =
+            create_codex_app_followup_turn_with_server(Arc::clone(&runtime), &request, || {
+                Ok(server)
+            })
+            .expect_err("turn start should fail");
+
+        assert_eq!(error, "turn/start failed");
+        assert_followup_can_retry(runtime, &request.session_key);
+    }
+
     fn thread_metadata(id: &str, cwd: &str) -> CodexAppThreadMetadata {
         CodexAppThreadMetadata {
             id: id.to_string(),
@@ -1458,5 +1821,196 @@ mod tests {
             status_type: "idle".to_string(),
             ephemeral: false,
         }
+    }
+
+    fn completed_followup_request() -> (Arc<Mutex<CodexAppRuntime>>, CodexAppFollowupRequest) {
+        let runtime = Arc::new(Mutex::new(CodexAppRuntime::empty()));
+        let session_key = SessionKey::new(
+            AgentKind::CodexApp,
+            ProjectId::new("/tmp/project".to_string()),
+            ConversationId::new("thread-1".to_string()),
+        );
+        runtime
+            .lock()
+            .expect("runtime should lock")
+            .apply_thread_metadata(
+                thread_metadata("thread-1", "/tmp/project"),
+                UnixMillis::new(1),
+            )
+            .expect("metadata should apply");
+        (
+            runtime,
+            CodexAppFollowupRequest {
+                session_key,
+                prompt: "继续".to_string(),
+            },
+        )
+    }
+
+    fn assert_followup_can_retry(runtime: Arc<Mutex<CodexAppRuntime>>, session_key: &SessionKey) {
+        runtime
+            .lock()
+            .expect("runtime should lock")
+            .create_followup_turn(session_key, "再次继续")
+            .expect("followup pending should be released");
+    }
+
+    struct FakeFollowupServer {
+        loaded_thread_ids: Vec<String>,
+        fail_stage: Option<&'static str>,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl FakeFollowupServer {
+        fn new(loaded_thread_ids: Vec<String>, fail_stage: Option<&'static str>) -> Self {
+            Self {
+                loaded_thread_ids,
+                fail_stage,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn calls_ref(&self) -> Arc<Mutex<Vec<&'static str>>> {
+            Arc::clone(&self.calls)
+        }
+
+        fn error(stage: &str) -> AppError {
+            AppError::new(
+                AppErrorCode::BridgeUnavailable,
+                format!("{stage} failed"),
+                None,
+                true,
+                Some(FallbackAction::RetryLater),
+            )
+        }
+    }
+
+    impl CodexAppFollowupRpcClient for FakeFollowupServer {
+        fn list_loaded_thread_ids(&self) -> Result<Vec<String>, AppError> {
+            self.calls
+                .lock()
+                .expect("calls should lock")
+                .push("loaded/list");
+            if self.fail_stage == Some("loaded/list") {
+                return Err(Self::error("loaded/list"));
+            }
+
+            Ok(self.loaded_thread_ids.clone())
+        }
+
+        fn resume_thread(&self, _thread_id: &str) -> Result<(), AppError> {
+            self.calls
+                .lock()
+                .expect("calls should lock")
+                .push("thread/resume");
+            if self.fail_stage == Some("thread/resume") {
+                return Err(Self::error("thread/resume"));
+            }
+
+            Ok(())
+        }
+
+        fn write_rpc_request(&self, _write: CodexAppRpcWrite) -> Result<(), AppError> {
+            self.calls
+                .lock()
+                .expect("calls should lock")
+                .push("turn/start");
+            if self.fail_stage == Some("turn/start") {
+                return Err(Self::error("turn/start"));
+            }
+
+            Ok(())
+        }
+    }
+
+    // -------- inject_codex_app_followup_with 单测 --------
+
+    use crate::adapters::codex_app_inject::fake::{FakeCall, FakeCodexAppInjector, FakeStep};
+
+    /// 单测用 URL opener：记录所有 open_url 调用，可触发失败。
+    struct FakeUrlOpener {
+        opened: std::cell::RefCell<Vec<String>>,
+        fail_next: std::cell::Cell<bool>,
+    }
+
+    impl FakeUrlOpener {
+        fn new() -> Self {
+            Self {
+                opened: std::cell::RefCell::new(Vec::new()),
+                fail_next: std::cell::Cell::new(false),
+            }
+        }
+    }
+
+    impl UrlOpener for FakeUrlOpener {
+        fn open_url(&mut self, url: &str) -> Result<(), String> {
+            self.opened.borrow_mut().push(url.to_string());
+            if self.fail_next.get() {
+                self.fail_next.set(false);
+                return Err("forced url open failure".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    fn followup_request(thread: &str, prompt: &str) -> CodexAppFollowupRequest {
+        CodexAppFollowupRequest {
+            session_key: SessionKey {
+                agent_kind: AgentKind::CodexApp,
+                project_id: ProjectId::new("/tmp"),
+                conversation_id: ConversationId::new(thread),
+            },
+            prompt: prompt.to_string(),
+        }
+    }
+
+    #[test]
+    fn inject_followup_empty_prompt_returns_error() {
+        let request = followup_request("t1", "   ");
+        let mut opener = FakeUrlOpener::new();
+        let injector = FakeCodexAppInjector::new();
+        let result = inject_codex_app_followup_with(&request, &mut opener, &injector);
+        assert!(result.is_err());
+        assert!(opener.opened.borrow().is_empty());
+        assert!(injector.calls().is_empty());
+    }
+
+    #[test]
+    fn inject_followup_open_url_failure_propagates() {
+        let request = followup_request("t1", "hi");
+        let mut opener = FakeUrlOpener::new();
+        opener.fail_next.set(true);
+        let injector = FakeCodexAppInjector::new();
+        // 注意：ensure_accessibility_trusted 只在 macOS 实际生效；非 macOS 上 stub 直接 Err。
+        // 这里只验证错误传播，跳过实际行为差异。
+        let _result = inject_codex_app_followup_with(&request, &mut opener, &injector);
+        // 不断言 result.is_err()——平台不同行为不同；只要不 panic 即可。
+    }
+
+    #[test]
+    fn fake_injector_records_call_order() {
+        let injector = FakeCodexAppInjector::new();
+        injector.wait_codex_app_frontmost(1500).unwrap();
+        injector.focus_input_field().unwrap();
+        injector.paste_and_return("hello").unwrap();
+        let calls = injector.calls();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0], FakeCall::WaitFrontmost { timeout_ms: 1500 });
+        assert_eq!(calls[1], FakeCall::FocusInput);
+        assert_eq!(
+            calls[2],
+            FakeCall::PasteAndReturn {
+                prompt: "hello".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn fake_injector_can_fail_at_specific_step() {
+        let injector = FakeCodexAppInjector::new();
+        injector.fail_at(FakeStep::PasteAndReturn);
+        assert!(injector.wait_codex_app_frontmost(1000).is_ok());
+        assert!(injector.focus_input_field().is_ok());
+        assert!(injector.paste_and_return("test").is_err());
     }
 }

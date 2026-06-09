@@ -62,8 +62,6 @@ pub struct NotificationClickAction {
     pub focus_panel: bool,
     /// 是否展开 panel。
     pub expand_panel: bool,
-    /// 是否打开过程时间线。
-    pub open_timeline: bool,
 }
 
 /// 通知应用服务。
@@ -142,7 +140,6 @@ where
             session_key,
             focus_panel: true,
             expand_panel: true,
-            open_timeline: false,
         }
     }
 }
@@ -208,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn click_action_focuses_panel_without_opening_timeline() {
+    fn click_action_focuses_and_expands_panel() {
         let adapter = RecordingNotificationAdapter::new();
         let service = NotificationService::new(adapter);
         let session_key = session_key("project-a", "conversation-a");
@@ -218,7 +215,6 @@ mod tests {
         assert_eq!(action.session_key, session_key);
         assert!(action.focus_panel);
         assert!(action.expand_panel);
-        assert!(!action.open_timeline);
     }
 
     fn request(session_key: SessionKey, kind: NotificationKind) -> NotificationRequest {

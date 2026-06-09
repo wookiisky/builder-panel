@@ -50,6 +50,14 @@ Claude 来源当前接受 Codex 来源事件，并额外接受 `Notification` �
 
 未支持事件不会发送给 bridge。
 
+## Codex.app 兜底识别
+
+Codex 来源 payload 的 `terminal_app` 归一化后等于 `codexapp` 或 `comopenaicodex` 时直接判为 Codex APP。
+
+`terminal_app` 缺失或不匹配时，hook helper 按优先级读取 `BUILDER_PANEL_HOOK_TERMINAL_APP`、`__CFBundleIdentifier` 和 `TERM_PROGRAM` 环境变量；任一值归一化后命中 Codex.app 关键字时改判为 Codex APP，并把命中值回填到 `terminal_app`。
+
+env 兜底只对 Codex 来源生效；Claude 来源不受 env 兜底影响。
+
 ## Timeout 语义
 
 非阻塞 hook 等待短超时。
@@ -87,6 +95,8 @@ Claude `PreToolUse` directive 的 `permissionDecision` 必须显式为 allow、d
 `src-tauri/src/adapters/bridge/hook_cli.rs` 覆盖空 stdin、非法 JSON、bridge 不可用、Codex directive 和 Claude directive。
 
 `src-tauri/src/adapters/bridge/hook_cli.rs` 覆盖 response request ID 错配和 agent 错配。
+
+`src-tauri/src/adapters/bridge/hook_cli.rs` 覆盖 Codex.app 环境变量兜底命中和未命中、`TERM_PROGRAM` 命中以及 Claude 来源不受 env 兜底影响。
 
 `src-tauri/src/adapters/bridge/hook_payload.rs` 覆盖来源解析、必填字段、事件范围和基础 JSON 类型校验。
 

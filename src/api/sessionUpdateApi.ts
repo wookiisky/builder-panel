@@ -5,17 +5,12 @@ import type { SessionKey } from "./mockPanelContract";
 /// Session 运行时来源。
 export type SessionUpdateRuntimeSource = "codex_cli" | "codex_app";
 
-/// Session 更新影响区域。
-export type SessionUpdateArea = "session" | "timeline" | "both";
-
 /// 后端推送的轻量 session 更新。
 export interface SessionUpdateNotification {
   /// 更新来源。
   readonly runtime_source: SessionUpdateRuntimeSource;
   /// 所属 session。
   readonly session_key: SessionKey;
-  /// 影响区域。
-  readonly changed_area: SessionUpdateArea;
   /// 更新时间。
   readonly updated_at: { readonly value: number };
 }

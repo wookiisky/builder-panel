@@ -4,7 +4,9 @@ mod codex_rollout;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -19,7 +21,6 @@ use crate::adapters::bridge::codec::{
     BridgeCommandType, BridgeDirectivePayload, BridgeErrorCode, BridgeErrorPayload,
     BridgeHookEventName, BridgeRequestEnvelope, BridgeResponseEnvelope, ValidatedHookPayload,
 };
-use crate::adapters::timeline::InMemoryProcessTimelineCache;
 use crate::domain::agent_event::{
     ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, ApprovalRequestedEvent, DetachedEvent,
     FailedEvent, InteractionCompletedEvent, JumpTargetUpdatedEvent, SessionStartedEvent,
@@ -45,21 +46,21 @@ use crate::domain::view_model::{
 };
 use crate::ports::agent_adapter_port::ApprovalDecision;
 use crate::ports::agent_adapter_port::ChoiceSubmission;
-use crate::ports::process_timeline_port::{
-    ProcessTimelineItem, ProcessTimelineReaderPort, ProcessTimelineReleasePort,
-};
 use crate::ports::session_update_port::{
-    NoopSessionUpdateSink, SessionRuntimeSource, SessionUpdateArea, SessionUpdateNotification,
-    SessionUpdateSinkPort,
+    NoopSessionUpdateSink, SessionRuntimeSource, SessionUpdateNotification, SessionUpdateSinkPort,
 };
 
 pub use self::codex_rollout::{CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget};
 
 use self::codex_rollout::CodexRolloutSnapshot;
 
-const REQUIRED_SCHEMA_FILES: [&str; 16] = [
+const REQUIRED_SCHEMA_FILES: [&str; 20] = [
     "v2/ThreadStartParams.json",
     "v2/ThreadStartResponse.json",
+    "v2/ThreadResumeParams.json",
+    "v2/ThreadResumeResponse.json",
+    "v2/ThreadLoadedListParams.json",
+    "v2/ThreadLoadedListResponse.json",
     "v2/TurnStartParams.json",
     "v2/TurnStartResponse.json",
     "v2/ThreadStartedNotification.json",
@@ -326,6 +327,17 @@ impl CodexAppAdapter {
         })
     }
 
+    /// 编码 thread/resume request。
+    pub fn thread_resume_request(id: u64, thread_id: &str) -> Value {
+        json!({
+            "id": id,
+            "method": "thread/resume",
+            "params": {
+                "threadId": thread_id
+            }
+        })
+    }
+
     /// 编码 turn/start request。
     pub fn turn_start_request(id: u64, thread_id: &str, prompt: &str) -> Value {
         json!({
@@ -361,6 +373,32 @@ impl CodexAppAdapter {
                 "limit": limit
             }
         })
+    }
+
+    /// 清洗 app-server thread/loaded/list response。
+    pub fn loaded_thread_ids_from_response(
+        response: &Value,
+    ) -> Result<Vec<String>, CodexAppAdapterError> {
+        let data = response
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or(CodexAppAdapterError::MissingField("data"))?;
+        let mut seen = BTreeSet::new();
+        let mut output = Vec::new();
+        for item in data {
+            let id = item
+                .as_str()
+                .ok_or(CodexAppAdapterError::InvalidField("data"))?
+                .trim();
+            if id.is_empty() {
+                continue;
+            }
+            if seen.insert(id.to_string()) {
+                output.push(id.to_string());
+            }
+        }
+
+        Ok(output)
     }
 
     /// 清洗 app-server thread/list response。
@@ -552,8 +590,6 @@ pub struct CodexAppRuntime {
     current_turn_agent_outputs: BTreeMap<String, String>,
     /// 已发起但尚未完成写入确认的 follow-up turn。
     pending_followup_turns: BTreeMap<SessionKey, String>,
-    /// 托管事件时间线缓存。
-    timeline_cache: InMemoryProcessTimelineCache,
     /// 清洗后 session 更新发布端口。
     update_sink: Arc<dyn SessionUpdateSinkPort>,
     /// Codex APP 收录新 thread 时通知 Codex CLI runtime 清理同名孤儿 session。
@@ -579,7 +615,6 @@ impl CodexAppRuntime {
             thread_rollout_paths: BTreeMap::new(),
             current_turn_agent_outputs: BTreeMap::new(),
             pending_followup_turns: BTreeMap::new(),
-            timeline_cache: InMemoryProcessTimelineCache::new(),
             update_sink,
             orphan_eviction_callback: None,
         }
@@ -1047,9 +1082,36 @@ impl CodexAppRuntime {
         }))
     }
 
+    /// 按 thread ID 标记 follow-up turn 已成功写入 app-server。
+    pub fn complete_followup_turn_by_thread_id(&mut self, thread_id: &str) -> Result<(), AppError> {
+        let Some(session_key) = self.pending_followup_session_key_for_thread_id(thread_id) else {
+            self.current_turn_agent_outputs.remove(thread_id);
+            return Ok(());
+        };
+        self.complete_followup_turn(&session_key)
+    }
+
     /// 释放未成功写入的 follow-up turn。
     pub fn release_followup_turn(&mut self, session_key: &SessionKey) {
         self.pending_followup_turns.remove(session_key);
+    }
+
+    /// 按 thread ID 释放未成功写入的 follow-up turn。
+    pub fn release_followup_turn_by_thread_id(&mut self, thread_id: &str) {
+        self.pending_followup_turns.retain(|session_key, _| {
+            session_key.agent_kind != AgentKind::CodexApp
+                || session_key.conversation_id.value != thread_id
+        });
+    }
+
+    fn pending_followup_session_key_for_thread_id(&self, thread_id: &str) -> Option<SessionKey> {
+        self.pending_followup_turns
+            .keys()
+            .find(|session_key| {
+                session_key.agent_kind == AgentKind::CodexApp
+                    && session_key.conversation_id.value == thread_id
+            })
+            .cloned()
     }
 
     fn apply_event(&mut self, event: AgentEvent) -> Result<(), AppError> {
@@ -1080,7 +1142,6 @@ impl CodexAppRuntime {
             }
             _ => None,
         };
-        self.timeline_cache.record_agent_event(&event)?;
         let notification = session_update_notification(&event);
         self.session_state = self.session_state.apply_event(event);
         if let Some(notification) = notification {
@@ -1091,7 +1152,6 @@ impl CodexAppRuntime {
                 return Ok(());
             }
             let jump_event = jump_target_event(session_key, &thread_id, updated_at);
-            self.timeline_cache.record_agent_event(&jump_event)?;
             let notification = session_update_notification(&jump_event);
             self.session_state = self.session_state.apply_event(jump_event);
             if let Some(notification) = notification {
@@ -1122,7 +1182,6 @@ impl CodexAppRuntime {
             .publish_session_update(SessionUpdateNotification {
                 runtime_source: SessionRuntimeSource::CodexApp,
                 session_key: session_key.clone(),
-                changed_area: SessionUpdateArea::Session,
                 updated_at,
             });
     }
@@ -1641,9 +1700,6 @@ impl CodexAppRuntime {
             self.pending_followup_turns
                 .insert(target_key.clone(), prompt);
         }
-        self.timeline_cache
-            .migrate_session_key(stale_key, target_key)?;
-
         Ok(true)
     }
 
@@ -1664,21 +1720,6 @@ impl CodexAppRuntime {
             error: protocol_error(summary),
             updated_at,
         }))
-    }
-}
-
-impl ProcessTimelineReaderPort for CodexAppRuntime {
-    fn read_timeline(
-        &self,
-        session_key: &SessionKey,
-    ) -> Result<Vec<ProcessTimelineItem>, AppError> {
-        self.timeline_cache.read_timeline(session_key)
-    }
-}
-
-impl ProcessTimelineReleasePort for CodexAppRuntime {
-    fn release_large_texts(&mut self, session_key: &SessionKey) -> Result<usize, AppError> {
-        self.timeline_cache.release_large_texts(session_key)
     }
 }
 
@@ -2098,6 +2139,29 @@ pub struct CodexAppServerClient {
     next_id: Arc<Mutex<u64>>,
 }
 
+/// Codex APP follow-up 需要的 app-server RPC 边界。
+pub trait CodexAppFollowupRpcClient {
+    /// 读取已加载 thread ID。
+    fn list_loaded_thread_ids(&self) -> Result<Vec<String>, AppError>;
+    /// 恢复指定 thread。
+    fn resume_thread(&self, thread_id: &str) -> Result<(), AppError>;
+    /// 写入需要 response 的 RPC request。
+    fn write_rpc_request(&self, write: CodexAppRpcWrite) -> Result<(), AppError>;
+}
+
+/// 确保 follow-up 目标 thread 已加载。
+pub fn ensure_codex_app_thread_loaded(
+    client: &impl CodexAppFollowupRpcClient,
+    thread_id: &str,
+) -> Result<(), AppError> {
+    let loaded_thread_ids = client.list_loaded_thread_ids()?;
+    if loaded_thread_ids.iter().any(|id| id == thread_id) {
+        return Ok(());
+    }
+
+    client.resume_thread(thread_id)
+}
+
 impl CodexAppServerClient {
     /// 启动 app-server 并完成 initialize。
     pub fn start(
@@ -2171,21 +2235,72 @@ impl CodexAppServerClient {
         Ok(())
     }
 
-    /// 读取已加载 Codex APP threads。
-    pub fn list_loaded_threads(&self) -> Result<Vec<CodexAppThreadMetadata>, AppError> {
+    /// 恢复已有 Codex APP thread。
+    pub fn resume_thread(&self, thread_id: &str) -> Result<(), AppError> {
+        let request = CodexAppAdapter::thread_resume_request(self.next_request_id()?, thread_id);
+        self.send_request_value(request)?;
+        Ok(())
+    }
+
+    /// 读取已加载 Codex APP thread ID。
+    pub fn list_loaded_thread_ids(&self) -> Result<Vec<String>, AppError> {
+        self.list_loaded_thread_ids_with_timeout(APP_SERVER_THREAD_LIST_TIMEOUT)
+    }
+
+    /// 在指定超时内读取已加载 Codex APP thread ID。
+    pub fn list_loaded_thread_ids_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<String>, AppError> {
         let response = self.send_request_value_with_timeout(
             CodexAppAdapter::thread_loaded_list_request(self.next_request_id()?),
-            APP_SERVER_THREAD_LIST_TIMEOUT,
+            timeout,
         )?;
-        CodexAppAdapter::threads_from_response(&response)
+        CodexAppAdapter::loaded_thread_ids_from_response(&response)
+            .map_err(|_| app_server_error("Codex APP thread 列表格式无效", String::new()))
+    }
+
+    /// 使用非阻塞锁读取已加载 Codex APP thread ID。
+    pub fn try_list_loaded_thread_ids_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<String>, AppError> {
+        let response = self.try_send_request_value_with_timeout(
+            CodexAppAdapter::thread_loaded_list_request(self.try_next_request_id()?),
+            timeout,
+        )?;
+        CodexAppAdapter::loaded_thread_ids_from_response(&response)
             .map_err(|_| app_server_error("Codex APP thread 列表格式无效", String::new()))
     }
 
     /// 读取 Codex APP thread 历史。
     pub fn list_threads(&self, limit: usize) -> Result<Vec<CodexAppThreadMetadata>, AppError> {
+        self.list_threads_with_timeout(limit, APP_SERVER_THREAD_LIST_TIMEOUT)
+    }
+
+    /// 在指定超时内读取 Codex APP thread 历史。
+    pub fn list_threads_with_timeout(
+        &self,
+        limit: usize,
+        timeout: Duration,
+    ) -> Result<Vec<CodexAppThreadMetadata>, AppError> {
         let response = self.send_request_value_with_timeout(
             CodexAppAdapter::thread_list_request(self.next_request_id()?, limit),
-            APP_SERVER_THREAD_LIST_TIMEOUT,
+            timeout,
+        )?;
+        CodexAppAdapter::threads_from_response(&response)
+            .map_err(|_| app_server_error("Codex APP thread 历史格式无效", String::new()))
+    }
+
+    /// 使用非阻塞锁读取 Codex APP thread 历史。
+    pub fn try_list_threads_with_timeout(
+        &self,
+        limit: usize,
+        timeout: Duration,
+    ) -> Result<Vec<CodexAppThreadMetadata>, AppError> {
+        let response = self.try_send_request_value_with_timeout(
+            CodexAppAdapter::thread_list_request(self.try_next_request_id()?, limit),
+            timeout,
         )?;
         CodexAppAdapter::threads_from_response(&response)
             .map_err(|_| app_server_error("Codex APP thread 历史格式无效", String::new()))
@@ -2229,6 +2344,17 @@ impl CodexAppServerClient {
         }
     }
 
+    /// 非阻塞判断 app-server 子进程是否仍存活。
+    pub fn try_is_running(&self) -> bool {
+        let Ok(mut child) = self.child.try_lock() else {
+            return false;
+        };
+        match child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(_)) | Err(_) => false,
+        }
+    }
+
     fn stop_and_wait(&self) {
         if let Ok(mut child) = self.child.lock() {
             let _ = child.kill();
@@ -2240,6 +2366,16 @@ impl CodexAppServerClient {
         let mut id = self.next_id.lock().map_err(|_| {
             app_server_error("Codex APP app-server request id 锁已损坏", String::new())
         })?;
+        let current = *id;
+        *id += 1;
+        Ok(current)
+    }
+
+    fn try_next_request_id(&self) -> Result<u64, AppError> {
+        let mut id = self
+            .next_id
+            .try_lock()
+            .map_err(|_| app_server_error("Codex APP app-server request id 正忙", String::new()))?;
         let current = *id;
         *id += 1;
         Ok(current)
@@ -2273,6 +2409,47 @@ impl CodexAppServerClient {
             }
             return Err(error);
         }
+        self.wait_response(request_id, timeout)
+    }
+
+    fn try_send_request_value_with_timeout(
+        &self,
+        request: Value,
+        timeout: Duration,
+    ) -> Result<Value, AppError> {
+        let request_id = request
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| app_server_error("Codex APP request 缺少 id", String::new()))?;
+        let mut line = serde_json::to_vec(&request)
+            .map_err(|error| app_server_error("Codex APP request 编码失败", error.to_string()))?;
+        line.push(b'\n');
+        let (lock, _) = &*self.pending;
+        let mut pending = lock
+            .try_lock()
+            .map_err(|_| app_server_error("Codex APP pending request 正忙", String::new()))?;
+        pending.insert(request_id, PendingRpcResult::Waiting);
+
+        let mut stdin = match self.stdin.try_lock() {
+            Ok(stdin) => stdin,
+            Err(_) => {
+                pending.remove(&request_id);
+                return Err(app_server_error(
+                    "Codex APP app-server stdin 正忙",
+                    String::new(),
+                ));
+            }
+        };
+        if let Err(error) = try_write_message_line_nonblocking(&mut stdin, &line) {
+            pending.remove(&request_id);
+            return Err(app_server_error(
+                "Codex APP app-server 写入失败",
+                error.to_string(),
+            ));
+        }
+        drop(stdin);
+        drop(pending);
+
         self.wait_response(request_id, timeout)
     }
 
@@ -2321,6 +2498,34 @@ impl CodexAppServerClient {
                 String::new(),
             )),
         }
+    }
+}
+
+impl CodexAppFollowupRpcClient for CodexAppServerClient {
+    fn list_loaded_thread_ids(&self) -> Result<Vec<String>, AppError> {
+        CodexAppServerClient::list_loaded_thread_ids(self)
+    }
+
+    fn resume_thread(&self, thread_id: &str) -> Result<(), AppError> {
+        CodexAppServerClient::resume_thread(self, thread_id)
+    }
+
+    fn write_rpc_request(&self, write: CodexAppRpcWrite) -> Result<(), AppError> {
+        CodexAppServerClient::write_rpc_request(self, write)
+    }
+}
+
+impl CodexAppFollowupRpcClient for Arc<CodexAppServerClient> {
+    fn list_loaded_thread_ids(&self) -> Result<Vec<String>, AppError> {
+        self.as_ref().list_loaded_thread_ids()
+    }
+
+    fn resume_thread(&self, thread_id: &str) -> Result<(), AppError> {
+        self.as_ref().resume_thread(thread_id)
+    }
+
+    fn write_rpc_request(&self, write: CodexAppRpcWrite) -> Result<(), AppError> {
+        self.as_ref().write_rpc_request(write)
     }
 }
 
@@ -2416,6 +2621,58 @@ fn write_app_server_message(
     stdin
         .flush()
         .map_err(|error| app_server_error("Codex APP app-server flush 失败", error.to_string()))
+}
+
+#[cfg(unix)]
+fn try_write_message_line_nonblocking(stdin: &mut ChildStdin, line: &[u8]) -> io::Result<()> {
+    const POSIX_PIPE_BUF_MIN: usize = 4096;
+    if line.len() > POSIX_PIPE_BUF_MIN {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "nonblocking request line is too large",
+        ));
+    }
+
+    let fd = stdin.as_raw_fd();
+    // 同步刷新只发送短小 request；非阻塞写失败时跳过本轮，避免阻塞 hook 线程。
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let written = libc::write(fd, line.as_ptr().cast(), line.len());
+        let write_error = if written < 0 {
+            Some(io::Error::last_os_error())
+        } else if written as usize == line.len() {
+            None
+        } else {
+            Some(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "nonblocking request line was partially written",
+            ))
+        };
+
+        if libc::fcntl(fd, libc::F_SETFL, flags) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if let Some(error) = write_error {
+            return Err(error);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn try_write_message_line_nonblocking(_stdin: &mut ChildStdin, _line: &[u8]) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "nonblocking app-server stdin write is unsupported on this platform",
+    ))
 }
 
 fn handle_rpc_response(
@@ -3104,7 +3361,6 @@ fn codex_app_capabilities() -> SessionCapabilities {
         can_send_reply: true,
         can_resolve_approval: true,
         can_create_followup_turn: true,
-        can_view_process_timeline: true,
     }
 }
 
@@ -3115,7 +3371,6 @@ fn codex_app_capabilities_for_key(session_key: &SessionKey) -> SessionCapabiliti
             can_send_reply: true,
             can_resolve_approval: true,
             can_create_followup_turn: true,
-            can_view_process_timeline: true,
         };
     }
 
@@ -3164,7 +3419,6 @@ fn session_update_notification(event: &AgentEvent) -> Option<SessionUpdateNotifi
     Some(SessionUpdateNotification {
         runtime_source,
         session_key,
-        changed_area: SessionUpdateArea::Both,
         updated_at: event_updated_at(event),
     })
 }
@@ -3254,16 +3508,20 @@ fn required_schema_files() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::io;
     use std::path::PathBuf;
+    use std::process::{Command, Stdio};
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::Duration;
 
     use serde_json::{json, Value};
 
     use super::{
-        app_server_protocol_error_response, apply_session_index_thread_titles,
-        codex_app_capabilities, codex_session_index_titles_from_reader, handle_rpc_response,
-        schema_probe_from_dir, session_key, CodexAppAdapter, CodexAppRuntime,
+        app_server_error, app_server_protocol_error_response, apply_session_index_thread_titles,
+        codex_app_capabilities, codex_session_index_titles_from_reader,
+        ensure_codex_app_thread_loaded, handle_rpc_response, schema_probe_from_dir, session_key,
+        try_write_message_line_nonblocking, CodexAppAdapter, CodexAppAdapterError,
+        CodexAppFollowupRpcClient, CodexAppRpcWrite, CodexAppRuntime, CodexAppServerClient,
         CodexAppThreadMetadata, CodexRolloutSnapshot, CodexRolloutWatchTarget, PendingRpcResult,
         MAX_CURRENT_TURN_OUTPUT_CHARS, MAX_FINAL_OUTPUT_CHARS, UNRESOLVED_CODEX_APP_PROJECT_ID,
         UNRESOLVED_CODEX_APP_PROJECT_LABEL,
@@ -3274,13 +3532,11 @@ mod tests {
     use crate::domain::agent_event::{AgentEvent, SessionStartedEvent, TurnCompletedEvent};
     use crate::domain::agent_interaction::AgentInteraction;
     use crate::domain::agent_session::{AgentKind, SessionStatus};
+    use crate::domain::app_error::AppError;
     use crate::domain::usage::{UnixMillis, UsageSnapshot};
     use crate::domain::view_model::UiAction;
     use crate::ports::agent_adapter_port::{ApprovalDecision, ChoiceSubmission};
-    use crate::ports::process_timeline_port::ProcessTimelineReaderPort;
-    use crate::ports::session_update_port::{
-        SessionUpdateArea, SessionUpdateNotification, SessionUpdateSinkPort,
-    };
+    use crate::ports::session_update_port::{SessionUpdateNotification, SessionUpdateSinkPort};
 
     #[derive(Default)]
     struct RecordingSessionUpdateSink {
@@ -3353,7 +3609,6 @@ mod tests {
         assert!(event.capabilities.can_resolve_approval);
         assert!(event.capabilities.can_send_reply);
         assert!(event.capabilities.can_create_followup_turn);
-        assert!(event.capabilities.can_view_process_timeline);
         assert_eq!(event.title.as_deref(), Some("阶段 4"));
     }
 
@@ -3609,12 +3864,183 @@ mod tests {
         let initialize = CodexAppAdapter::initialize_request(1);
         let thread_start =
             CodexAppAdapter::thread_start_request(2, "/tmp/builder-panel", Some("gpt-5.4"));
-        let turn_start = CodexAppAdapter::turn_start_request(3, "thread-1", "ping");
+        let thread_resume = CodexAppAdapter::thread_resume_request(3, "thread-1");
+        let turn_start = CodexAppAdapter::turn_start_request(4, "thread-1", "ping");
 
         assert_eq!(initialize["method"], "initialize");
         assert_eq!(thread_start["method"], "thread/start");
+        assert_eq!(thread_resume["method"], "thread/resume");
+        assert_eq!(thread_resume["params"]["threadId"], "thread-1");
         assert_eq!(turn_start["method"], "turn/start");
         assert_eq!(turn_start["params"]["input"][0]["type"], "text");
+    }
+
+    #[test]
+    fn ensure_thread_loaded_resumes_missing_thread() {
+        let client = FakeFollowupClient::new(Vec::new(), None);
+
+        ensure_codex_app_thread_loaded(&client, "thread-1").expect("thread should resume");
+
+        assert_eq!(client.calls(), vec!["loaded/list", "thread/resume"]);
+    }
+
+    #[test]
+    fn ensure_thread_loaded_does_not_resume_loaded_thread() {
+        let client = FakeFollowupClient::new(vec!["thread-1".to_string()], None);
+
+        ensure_codex_app_thread_loaded(&client, "thread-1").expect("loaded thread should pass");
+
+        assert_eq!(client.calls(), vec!["loaded/list"]);
+    }
+
+    #[test]
+    fn ensure_thread_loaded_reports_resume_failure() {
+        let client = FakeFollowupClient::new(Vec::new(), Some("thread/resume"));
+
+        let error =
+            ensure_codex_app_thread_loaded(&client, "thread-1").expect_err("resume should fail");
+
+        assert_eq!(error.user_message, "thread/resume failed");
+        assert_eq!(client.calls(), vec!["loaded/list", "thread/resume"]);
+    }
+
+    #[test]
+    fn loaded_thread_response_cleans_ids() {
+        let response = json!({
+            "data": [
+                " thread-1 ",
+                "",
+                "thread-2",
+                "thread-1",
+                "   "
+            ],
+            "nextCursor": null
+        });
+
+        let ids = CodexAppAdapter::loaded_thread_ids_from_response(&response)
+            .expect("response should clean");
+
+        assert_eq!(ids, vec!["thread-1", "thread-2"]);
+    }
+
+    #[test]
+    fn loaded_thread_response_requires_data_array() {
+        let response = json!({"threads": []});
+
+        let error = CodexAppAdapter::loaded_thread_ids_from_response(&response)
+            .expect_err("missing data should fail");
+
+        assert_eq!(error, CodexAppAdapterError::MissingField("data"));
+    }
+
+    #[test]
+    fn loaded_thread_response_rejects_non_string_items() {
+        let response = json!({"data": ["thread-1", 123]});
+
+        let error = CodexAppAdapter::loaded_thread_ids_from_response(&response)
+            .expect_err("non-string id should fail");
+
+        assert_eq!(error, CodexAppAdapterError::InvalidField("data"));
+    }
+
+    #[test]
+    fn try_request_id_fails_when_lock_is_busy() {
+        let client = test_app_server_client();
+        let _guard = client.next_id.lock().expect("request id should lock");
+
+        let error = client
+            .try_next_request_id()
+            .expect_err("busy request id should fail");
+
+        assert_eq!(error.user_message, "Codex APP app-server request id 正忙");
+        drop(_guard);
+        client.stop_and_wait();
+    }
+
+    #[test]
+    fn try_rpc_fails_when_pending_lock_is_busy() {
+        let client = test_app_server_client();
+        let (lock, _) = &*client.pending;
+        let _guard = lock.lock().expect("pending should lock");
+
+        let error = client
+            .try_send_request_value_with_timeout(
+                CodexAppAdapter::thread_loaded_list_request(1),
+                Duration::from_millis(10),
+            )
+            .expect_err("busy pending should fail");
+
+        assert_eq!(error.user_message, "Codex APP pending request 正忙");
+        drop(_guard);
+        client.stop_and_wait();
+    }
+
+    #[test]
+    fn try_rpc_fails_when_stdin_lock_is_busy() {
+        let client = test_app_server_client();
+        let _guard = client.stdin.lock().expect("stdin should lock");
+
+        let error = client
+            .try_send_request_value_with_timeout(
+                CodexAppAdapter::thread_loaded_list_request(1),
+                Duration::from_millis(10),
+            )
+            .expect_err("busy stdin should fail");
+
+        assert_eq!(error.user_message, "Codex APP app-server stdin 正忙");
+        drop(_guard);
+        let (lock, _) = &*client.pending;
+        assert!(lock.lock().expect("pending should lock").is_empty());
+        client.stop_and_wait();
+    }
+
+    #[test]
+    fn try_rpc_cleans_pending_when_nonblocking_write_fails() {
+        let client = test_app_server_client();
+        let request = json!({
+            "id": 1,
+            "method": "thread/loaded/list",
+            "params": {
+                "padding": "x".repeat(5000)
+            }
+        });
+
+        let error = client
+            .try_send_request_value_with_timeout(request, Duration::from_millis(10))
+            .expect_err("oversized nonblocking write should fail");
+
+        assert_eq!(error.user_message, "Codex APP app-server 写入失败");
+        let (lock, _) = &*client.pending;
+        assert!(lock.lock().expect("pending should lock").is_empty());
+        client.stop_and_wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn try_nonblocking_write_fails_when_pipe_is_full() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 5"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sleep child should spawn");
+        let mut stdin = child.stdin.take().expect("stdin should exist");
+        let chunk = vec![b'a'; 4096];
+        let mut last_error = None;
+
+        for _ in 0..1024 {
+            if let Err(error) = try_write_message_line_nonblocking(&mut stdin, &chunk) {
+                last_error = Some(error);
+                break;
+            }
+        }
+
+        let error = last_error.expect("pipe should eventually be full");
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]
@@ -3721,7 +4147,6 @@ mod tests {
         assert_eq!(interaction.request_summary, "cargo test");
         assert_eq!(session.summary, None);
         assert!(session.capabilities.can_create_followup_turn);
-        assert!(session.capabilities.can_view_process_timeline);
     }
 
     #[test]
@@ -4055,9 +4480,7 @@ mod tests {
         assert_eq!(session.title.as_deref(), Some("说明身份"));
         assert!(notifications.len() > notification_count);
         assert!(notifications.iter().any(|notification| {
-            notification.session_key == key
-                && notification.changed_area == SessionUpdateArea::Session
-                && notification.updated_at == UnixMillis::new(2)
+            notification.session_key == key && notification.updated_at == UnixMillis::new(2)
         }));
     }
 
@@ -4285,7 +4708,6 @@ mod tests {
 
         assert!(list_item.actions.contains(&UiAction::ResolveApproval));
         assert!(!list_item.actions.contains(&UiAction::Jump));
-        assert!(list_item.actions.contains(&UiAction::ViewProcessTimeline));
         assert_eq!(list_item.project_label, UNRESOLVED_CODEX_APP_PROJECT_LABEL);
         let write = runtime
             .resolve_approval(&session_key, &interaction_id, ApprovalDecision::Allow)
@@ -4313,7 +4735,6 @@ mod tests {
             .clone();
         assert!(list_item.actions.contains(&UiAction::SendReply));
         assert!(list_item.actions.contains(&UiAction::Jump));
-        assert!(list_item.actions.contains(&UiAction::ViewProcessTimeline));
     }
 
     #[test]
@@ -4590,10 +5011,6 @@ mod tests {
             .expect("request should apply");
         let fallback_key = session_key(UNRESOLVED_CODEX_APP_PROJECT_ID, "thread-1");
         assert!(runtime.session_state().sessions.contains_key(&fallback_key));
-        assert!(!runtime
-            .read_timeline(&fallback_key)
-            .expect("timeline should read")
-            .is_empty());
 
         let hook = BridgeRequestEnvelope::process_agent_hook(
             "request-1".to_string(),
@@ -4623,14 +5040,6 @@ mod tests {
                 .session_key(),
             &real_key
         );
-        assert!(runtime
-            .read_timeline(&fallback_key)
-            .expect("fallback timeline should read")
-            .is_empty());
-        assert!(!runtime
-            .read_timeline(&real_key)
-            .expect("real timeline should read")
-            .is_empty());
 
         let interaction_id = session
             .pending_interaction
@@ -4756,9 +5165,7 @@ mod tests {
         assert!(runtime.session_state().sessions.contains_key(&real_key));
         assert!(notifications.len() > notification_count);
         assert!(notifications.iter().any(|notification| {
-            notification.session_key == real_key
-                && notification.changed_area == SessionUpdateArea::Session
-                && notification.updated_at == UnixMillis::new(2)
+            notification.session_key == real_key && notification.updated_at == UnixMillis::new(2)
         }));
     }
 
@@ -4808,9 +5215,7 @@ mod tests {
         assert_eq!(session.summary.as_deref(), Some("最新输出"));
         assert!(notifications.len() > notification_count);
         assert!(notifications.iter().any(|notification| {
-            notification.session_key == real_key
-                && notification.changed_area == SessionUpdateArea::Session
-                && notification.updated_at == UnixMillis::new(2)
+            notification.session_key == real_key && notification.updated_at == UnixMillis::new(2)
         }));
     }
 
@@ -5647,6 +6052,61 @@ mod tests {
     }
 
     #[test]
+    fn followup_complete_by_thread_id_clears_pending_after_session_migration() {
+        let mut runtime = CodexAppRuntime::empty();
+        let old_key = session_key("/tmp/old", "thread-1");
+        runtime
+            .apply_thread_metadata(
+                thread_metadata_with_cwd("thread-1", "/tmp/old"),
+                UnixMillis::new(1),
+            )
+            .expect("old metadata should apply");
+        runtime
+            .create_followup_turn(&old_key, "继续")
+            .expect("followup should create");
+        runtime
+            .apply_thread_metadata(
+                thread_metadata_with_cwd("thread-1", "/tmp/new"),
+                UnixMillis::new(2),
+            )
+            .expect("new metadata should migrate");
+
+        runtime
+            .complete_followup_turn_by_thread_id("thread-1")
+            .expect("migrated followup should complete");
+
+        assert!(runtime.pending_followup_turns.is_empty());
+    }
+
+    #[test]
+    fn followup_release_by_thread_id_clears_pending_after_session_migration() {
+        let mut runtime = CodexAppRuntime::empty();
+        let old_key = session_key("/tmp/old", "thread-1");
+        runtime
+            .apply_thread_metadata(
+                thread_metadata_with_cwd("thread-1", "/tmp/old"),
+                UnixMillis::new(1),
+            )
+            .expect("old metadata should apply");
+        runtime
+            .create_followup_turn(&old_key, "继续")
+            .expect("followup should create");
+        runtime
+            .apply_thread_metadata(
+                thread_metadata_with_cwd("thread-1", "/tmp/new"),
+                UnixMillis::new(2),
+            )
+            .expect("new metadata should migrate");
+
+        runtime.release_followup_turn_by_thread_id("thread-1");
+
+        let new_key = session_key("/tmp/new", "thread-1");
+        runtime
+            .create_followup_turn(&new_key, "再次继续")
+            .expect("pending should be cleared after migrated release");
+    }
+
+    #[test]
     fn followup_turn_rejects_running_or_pending_session() {
         let mut runtime = CodexAppRuntime::empty();
         let hook = BridgeRequestEnvelope::process_agent_hook(
@@ -5801,8 +6261,7 @@ mod tests {
         let mut runtime = CodexAppRuntime::empty();
         let mut p = hook_payload(BridgeHookEventName::SessionStart);
         p.agent_kind = AgentKind::CodexCli;
-        let request =
-            BridgeRequestEnvelope::process_agent_hook("request-foreign".to_string(), p);
+        let request = BridgeRequestEnvelope::process_agent_hook("request-foreign".to_string(), p);
 
         let result = runtime.apply_hook_request(&request, UnixMillis::new(1));
         let error = match result {
@@ -5836,7 +6295,6 @@ mod tests {
                 can_send_reply: false,
                 can_resolve_approval: false,
                 can_create_followup_turn: false,
-                can_view_process_timeline: false,
             },
             usage: UsageSnapshot::unavailable(),
             updated_at: UnixMillis::new(1),
@@ -5922,5 +6380,96 @@ mod tests {
             .expect("hook should apply");
 
         assert_eq!(*calls.lock().expect("lock"), 1);
+    }
+
+    struct FakeFollowupClient {
+        loaded_thread_ids: Vec<String>,
+        fail_stage: Option<&'static str>,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl FakeFollowupClient {
+        fn new(loaded_thread_ids: Vec<String>, fail_stage: Option<&'static str>) -> Self {
+            Self {
+                loaded_thread_ids,
+                fail_stage,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().expect("calls should lock").clone()
+        }
+
+        fn error(stage: &str) -> AppError {
+            app_server_error(&format!("{stage} failed"), String::new())
+        }
+    }
+
+    impl CodexAppFollowupRpcClient for FakeFollowupClient {
+        fn list_loaded_thread_ids(&self) -> Result<Vec<String>, AppError> {
+            self.calls
+                .lock()
+                .expect("calls should lock")
+                .push("loaded/list");
+            if self.fail_stage == Some("loaded/list") {
+                return Err(Self::error("loaded/list"));
+            }
+
+            Ok(self.loaded_thread_ids.clone())
+        }
+
+        fn resume_thread(&self, _thread_id: &str) -> Result<(), AppError> {
+            self.calls
+                .lock()
+                .expect("calls should lock")
+                .push("thread/resume");
+            if self.fail_stage == Some("thread/resume") {
+                return Err(Self::error("thread/resume"));
+            }
+
+            Ok(())
+        }
+
+        fn write_rpc_request(&self, _write: CodexAppRpcWrite) -> Result<(), AppError> {
+            self.calls
+                .lock()
+                .expect("calls should lock")
+                .push("turn/start");
+            if self.fail_stage == Some("turn/start") {
+                return Err(Self::error("turn/start"));
+            }
+
+            Ok(())
+        }
+    }
+
+    fn thread_metadata_with_cwd(id: &str, cwd: &str) -> CodexAppThreadMetadata {
+        CodexAppThreadMetadata {
+            id: id.to_string(),
+            cwd: Some(cwd.to_string()),
+            name: None,
+            preview: None,
+            path: None,
+            status_type: "idle".to_string(),
+            ephemeral: false,
+        }
+    }
+
+    fn test_app_server_client() -> CodexAppServerClient {
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("test child should spawn");
+        let stdin = child.stdin.take().expect("stdin should exist");
+
+        CodexAppServerClient {
+            child: Arc::new(Mutex::new(child)),
+            stdin: Arc::new(Mutex::new(stdin)),
+            pending: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
+            next_id: Arc::new(Mutex::new(1)),
+        }
     }
 }

@@ -100,7 +100,6 @@
 
 `spec/SERVICE/PRESET_COMMAND_SERVICE.md` 回答预设命令计划生成、结构化创建优先和复制降级口径。
 
-`spec/SERVICE/PROCESS_TIMELINE_SERVICE.md` 回答过程事件时间线分页、搜索、类型筛选和缓存释放口径。
 
 `spec/SERVICE/SETTINGS_SERVICE.md` 回答设置模型、默认化、保存和配置损坏降级口径。
 
@@ -113,6 +112,8 @@
 `spec/INFRA/HOOK_INSTALL.md` 回答 hook 安装、备份、manifest、卸载和 trust review 边界。
 
 `spec/INFRA/RELEASE_QUALITY.md` 回答日志脱敏、性能预算、文档门禁和 CI 发布质量入口。
+
+`spec/INFRA/LOGGING.md` 回答事件日志启用开关、文件位置、滚动策略、记录范围和脱敏边界。
 
 `spec/INFRA/TERMINAL.md` 回答终端跳回边界、降级策略和 Windows 未验证口径。
 
@@ -134,7 +135,8 @@
 
 `spec/INTEGRATIONS/CODEX_CLI.md` 回答 Codex CLI 阶段 4 真实 hook 闭环、能力和降级边界。
 
-`spec/INTEGRATIONS/CODEX_APP.md` 回答 Codex APP hook、app-server、session、审批、回复、follow-up、timeline 和降级边界。
+`spec/INTEGRATIONS/CODEX_APP.md` 回答 Codex APP hook、app-server、session、审批、回复、follow-up 和降级边界。
+
 
 `spec/INTEGRATIONS/CLAUDE_HOOKS.md` 回答 Claude Code CLI hook 当前接入边界。
 
@@ -174,7 +176,6 @@
 
 `src-tauri/src/adapters/bridge/hook_output.rs` 是 hook stdout directive 编码入口。
 
-`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock agent 测试基线 adapter、runtime、directive 记录和 timeline 数据源入口。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook 事件转换、runtime 和 bridge server 入口。
 
@@ -190,9 +191,10 @@
 
 `src-tauri/src/adapters/log_sanitizer/mod.rs` 是阶段 8 日志脱敏入口。
 
+`src-tauri/src/adapters/logging/mod.rs` 是事件日志器、文件滚动和默认路径入口。
+
 `src-tauri/src/adapters/notification/mod.rs` 是阶段 7 记录型通知 adapter 入口。
 
-`src-tauri/src/adapters/timeline/mod.rs` 是 timeline 内存缓存、去重、淘汰和释放入口。
 
 `src-tauri/src/adapters/terminal/mod.rs` 是阶段 5 终端跳回 adapter、系统 URL 打开和复制降级测试入口。
 
@@ -206,7 +208,6 @@
 
 `src-tauri/src/services/preset_command_service.rs` 是预设命令计划生成服务入口。
 
-`src-tauri/src/services/process_timeline_service.rs` 是过程事件时间线应用服务入口。
 
 `src-tauri/src/services/settings_service.rs` 是阶段 7 设置应用服务入口。
 
@@ -216,7 +217,8 @@
 
 `src/api/panelProbeContract.ts` 是前端基础探针契约入口。
 
-`src/api/mockPanelContract.ts` 是前端 session、交互、timeline 和 view model 契约入口。
+
+`src/api/mockPanelContract.ts` 是前端 session、交互和 view model 契约入口。
 
 `src/api/codexCliPanelApi.ts` 是前端 Codex CLI Tauri API 入口。
 
@@ -232,7 +234,6 @@
 
 `src/api/hookInstallApi.ts` 是前端 hook 状态查询、安装预览、安装和卸载 command 调用入口。
 
-`src/stores/mockPanelStore.ts` 是前端 session 草稿、提交和 timeline 弹层状态入口。
 
 `src/components/SettingsPanel.tsx` 是阶段 7 设置弹窗内容组件入口。
 
@@ -284,9 +285,10 @@
 
 `src-tauri/src/adapters/log_sanitizer/mod.rs` 包含敏感字段脱敏、长文本截断和中文业务事件名测试。
 
+`src-tauri/src/adapters/logging/mod.rs` 包含日志关闭 no-op、JSON 行追加、滚动和时间戳格式测试。
+
 `src-tauri/src/adapters/notification/mod.rs` 提供通知服务测试使用的记录型 adapter。
 
-`src-tauri/src/adapters/timeline/mod.rs` 包含 timeline 内存缓存、去重、淘汰和释放测试。
 
 `src-tauri/src/services/session_service.rs` 包含 session 读取测试。
 
@@ -298,13 +300,11 @@
 
 `src-tauri/src/services/preset_command_service.rs` 包含预设命令计划生成测试。
 
-`src-tauri/src/services/process_timeline_service.rs` 包含 timeline 分页、搜索和类型筛选测试。
 
 `src-tauri/src/services/settings_service.rs` 包含设置缺失、损坏和保存测试。
 
 `src-tauri/src/services/notification_service.rs` 包含通知抑制、合并和点击定位测试。
 
-`src/stores/mockPanelStore.test.ts` 包含前端草稿、提交中和 timeline 缓存测试。
 
 `src/api/settingsApi.test.ts` 包含前端设置默认值和自定义快捷输入清洗测试。
 

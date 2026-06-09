@@ -17,7 +17,6 @@ use crate::adapters::codex_app::{
     clean_thread_title, handle_codex_app_bridge_request, should_replace_session_title,
     CodexAppRuntime, CodexRolloutWatchTarget,
 };
-use crate::adapters::timeline::InMemoryProcessTimelineCache;
 use crate::domain::agent_event::{
     AgentEvent, ApprovalRequestedEvent, FailedEvent, SessionStartedEvent, TurnCompletedEvent,
     UserMessageUpdatedEvent,
@@ -37,12 +36,8 @@ use crate::domain::view_model::{
     SessionListItemViewModel,
 };
 use crate::ports::agent_adapter_port::ApprovalDecision;
-use crate::ports::process_timeline_port::{
-    ProcessTimelineItem, ProcessTimelineReaderPort, ProcessTimelineReleasePort,
-};
 use crate::ports::session_update_port::{
-    NoopSessionUpdateSink, SessionRuntimeSource, SessionUpdateArea, SessionUpdateNotification,
-    SessionUpdateSinkPort,
+    NoopSessionUpdateSink, SessionRuntimeSource, SessionUpdateNotification, SessionUpdateSinkPort,
 };
 
 const APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -133,8 +128,6 @@ pub struct CodexCliHookRuntime {
     session_state: SessionState,
     /// 等待 UI 决策的 hook 审批。
     pending_approvals: BTreeMap<InteractionId, PendingHookApproval>,
-    /// 托管 hook 事件时间线缓存。
-    timeline_cache: InMemoryProcessTimelineCache,
     /// 已知 Codex rollout 文件路径。
     rollout_paths: BTreeMap<SessionKey, PathBuf>,
     /// 清洗后 session 更新发布端口。
@@ -152,7 +145,6 @@ impl CodexCliHookRuntime {
         Self {
             session_state: SessionState::empty(),
             pending_approvals: BTreeMap::new(),
-            timeline_cache: InMemoryProcessTimelineCache::new(),
             rollout_paths: BTreeMap::new(),
             update_sink,
         }
@@ -204,7 +196,6 @@ impl CodexCliHookRuntime {
             .publish_session_update(SessionUpdateNotification {
                 runtime_source: SessionRuntimeSource::CodexCli,
                 session_key: key,
-                changed_area: SessionUpdateArea::Session,
                 updated_at,
             });
         true
@@ -246,7 +237,6 @@ impl CodexCliHookRuntime {
                 let notification = SessionUpdateNotification {
                     runtime_source: SessionRuntimeSource::CodexCli,
                     session_key: session_key.clone(),
-                    changed_area: SessionUpdateArea::Session,
                     updated_at,
                 };
                 self.update_sink.publish_session_update(notification);
@@ -265,22 +255,6 @@ impl CodexCliHookRuntime {
     /// 返回当前 session 状态。
     pub fn session_state(&self) -> &SessionState {
         &self.session_state
-    }
-
-    /// 读取指定 session 的过程事件时间线。
-    pub fn read_timeline(
-        &self,
-        session_key: &SessionKey,
-    ) -> Result<Vec<ProcessTimelineItem>, AppError> {
-        self.timeline_cache.read_timeline(session_key)
-    }
-
-    /// 释放指定 session 的大文本时间线缓存。
-    pub fn release_timeline_large_texts(
-        &mut self,
-        session_key: &SessionKey,
-    ) -> Result<usize, AppError> {
-        self.timeline_cache.release_large_texts(session_key)
     }
 
     /// 应用 Codex hook request，并返回可能需要等待的审批。
@@ -397,7 +371,6 @@ impl CodexCliHookRuntime {
             ));
         }
         self.ensure_codex_cli_session(&event)?;
-        self.timeline_cache.record_agent_event(&event)?;
         let notification = session_update_notification(&event);
         self.session_state = self.session_state.apply_event(event);
         if let Some(notification) = notification {
@@ -500,7 +473,6 @@ fn session_update_notification(event: &AgentEvent) -> Option<SessionUpdateNotifi
     Some(SessionUpdateNotification {
         runtime_source,
         session_key,
-        changed_area: SessionUpdateArea::Both,
         updated_at: event_updated_at(event),
     })
 }
@@ -520,21 +492,6 @@ fn event_updated_at(event: &AgentEvent) -> UnixMillis {
         AgentEvent::CapabilitiesUpdated(event) => event.updated_at,
         AgentEvent::UsageUpdated(event) => event.updated_at,
         AgentEvent::JumpTargetUpdated(event) => event.updated_at,
-    }
-}
-
-impl ProcessTimelineReaderPort for CodexCliHookRuntime {
-    fn read_timeline(
-        &self,
-        session_key: &SessionKey,
-    ) -> Result<Vec<ProcessTimelineItem>, AppError> {
-        self.timeline_cache.read_timeline(session_key)
-    }
-}
-
-impl ProcessTimelineReleasePort for CodexCliHookRuntime {
-    fn release_large_texts(&mut self, session_key: &SessionKey) -> Result<usize, AppError> {
-        self.timeline_cache.release_large_texts(session_key)
     }
 }
 
@@ -785,7 +742,6 @@ fn codex_cli_capabilities() -> SessionCapabilities {
         can_send_reply: false,
         can_resolve_approval: true,
         can_create_followup_turn: false,
-        can_view_process_timeline: true,
     }
 }
 
@@ -999,7 +955,6 @@ mod tests {
         assert_eq!(event.title, None);
         assert!(event.capabilities.can_resolve_approval);
         assert!(!event.capabilities.can_send_reply);
-        assert!(event.capabilities.can_view_process_timeline);
         assert!(!serde_json::to_string(&events)
             .unwrap()
             .contains("tool_input"));
@@ -1297,7 +1252,9 @@ mod tests {
     #[test]
     fn apply_event_rejects_non_codex_cli_session_event() {
         use crate::domain::agent_event::SessionStartedEvent;
-        use crate::domain::agent_session::{ConversationId, ProjectId, SessionCapabilities, SessionKey};
+        use crate::domain::agent_session::{
+            ConversationId, ProjectId, SessionCapabilities, SessionKey,
+        };
         use crate::domain::usage::UsageSnapshot;
 
         let mut runtime = CodexCliHookRuntime::empty();
@@ -1317,7 +1274,6 @@ mod tests {
                 can_send_reply: false,
                 can_resolve_approval: false,
                 can_create_followup_turn: false,
-                can_view_process_timeline: false,
             },
             usage: UsageSnapshot::unavailable(),
             updated_at: UnixMillis::new(1),
@@ -1335,8 +1291,7 @@ mod tests {
         let mut runtime = CodexCliHookRuntime::empty();
         let mut p = payload(BridgeHookEventName::SessionStart);
         p.agent_kind = AgentKind::CodexApp;
-        let request =
-            BridgeRequestEnvelope::process_agent_hook("request-foreign".to_string(), p);
+        let request = BridgeRequestEnvelope::process_agent_hook("request-foreign".to_string(), p);
 
         let result = runtime.apply_hook_request(&request, UnixMillis::new(1));
         let error = match result {
@@ -1430,8 +1385,7 @@ mod tests {
             .expect("hook should register");
         assert!(!runtime.session_state().sessions.is_empty());
 
-        let evicted =
-            runtime.evict_codex_app_orphan_session(&cwd, &session_id, UnixMillis::new(2));
+        let evicted = runtime.evict_codex_app_orphan_session(&cwd, &session_id, UnixMillis::new(2));
         assert!(evicted);
         assert!(runtime.session_state().sessions.is_empty());
     }

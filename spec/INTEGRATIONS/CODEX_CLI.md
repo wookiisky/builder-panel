@@ -18,7 +18,6 @@ Builder Panel APP 打开期间会定时刷新 Codex CLI session，承接后续�
 
 Codex CLI session 只由当前 APP 进程启动后送达 bridge 的实时 hook 事件创建。
 
-Codex CLI 不从 transcript、JSONL 或其它历史记录恢复历史 session 或历史 timeline。
 
 Codex CLI hook payload 携带 transcript path 时，runtime 可把该 path 作为已知 session 的 rollout tail 目标。
 
@@ -38,7 +37,6 @@ Codex CLI `SessionStart` 会生成运行中的 Codex CLI session，但不写启�
 
 Codex CLI hook payload 的 `model` 字段不作为 thread 标题；缺少真实标题时显示为未命名。
 
-Codex CLI `UserPromptSubmit` 会以用户原始输入更新 session 摘要和 timeline。
 
 Codex CLI `PreToolUse` 不写活动摘要。
 
@@ -54,9 +52,13 @@ Codex CLI `PermissionRequest` 等待超时时，runtime 会移除 pending approv
 
 Codex CLI `Stop` 会生成 turn completed 并清理 pending interaction；只有携带 assistant 原文时才更新摘要。
 
-Codex CLI hook 事件会写入进程内过程事件 timeline 缓存。
+Codex CLI runtime 在事件入口拒绝 `agent_kind` 不是 Codex CLI 的归一事件和 hook payload；非 Codex CLI payload 不会进入 Codex CLI runtime 状态。
 
-Codex CLI session 具备过程事件能力时，UI 可以展示 timeline 入口。
+Codex CLI runtime 收到 Codex APP 收录新 thread 的迁移通知时，会删除同 `(cwd, thread_id)` 的孤儿 session 并清理对应的 rollout path 与 pending approval；删除会发布 `session_updated` 事件让前端立刻刷新。
+
+Codex CLI bridge 分流阶段会先按 hook payload 的 `terminal_app` 与 hook helper env 兜底改判 agent_kind；仍是 Codex CLI 时，会用 Codex APP runtime 已知 thread/cwd 再判一次，并在第一次未命中时触发一次受限超时的同步 thread list 刷新。
+
+
 
 ## 降级能力
 
@@ -78,7 +80,6 @@ hook 安装器不绕过 Codex hook trust review。
 
 ## 不支持能力
 
-当前不从 Codex transcript 或 JSONL 反读历史过程事件或 session 状态。
 
 当前不处理 Codex `Notification` 或 `SessionEnd` 事件。
 
@@ -100,7 +101,6 @@ Codex hook stdout directive 由本项目测试固定，不由 Domain 推导。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook 事件转换、runtime 和 bridge server 入口。
 
-`src-tauri/src/adapters/timeline/mod.rs` 是 Codex CLI 过程事件 timeline 内存缓存入口。
 
 `src-tauri/src/adapters/hook_install/mod.rs` 是 Codex hook 安装和卸载入口。
 
@@ -114,9 +114,7 @@ Codex hook stdout directive 由本项目测试固定，不由 Domain 推导。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 覆盖审批等待超时清理 pending approval。
 
-`src-tauri/src/adapters/codex_cli_hook/mod.rs` 覆盖 Codex CLI hook 事件写入 timeline 缓存。
-
-`src-tauri/src/adapters/timeline/mod.rs` 覆盖 timeline 去重、淘汰和释放。
+`src-tauri/src/adapters/codex_cli_hook/mod.rs` 覆盖 Codex CLI runtime 拒绝非 Codex CLI 事件、孤儿 session 迁移和 bridge 分流阶段对已知 Codex APP thread 的改判。
 
 `src-tauri/src/adapters/bridge/transport.rs` 覆盖长请求等待时 listener 仍可接收后续请求。
 

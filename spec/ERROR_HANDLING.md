@@ -40,7 +40,7 @@ Codex APP notification 可能缺少必填字段或字段类型错误。
 
 Codex APP app-server server request 可能缺少必填字段或字段类型错误。
 
-Codex APP app-server thread 列表 response 可能缺少必填字段或字段类型错误。
+Codex APP app-server `thread/loaded/list` 与 `thread/list` response 可能缺少必填字段或字段类型错误。
 
 Codex APP rollout 文件可能不存在、过旧、过大、格式无效或缺少 session 元数据。
 
@@ -57,14 +57,6 @@ Codex APP 审批提交可能遇到会话不存在、状态不匹配、交互类�
 Codex APP 选项提交可能遇到空选择、非法选项值、单选提交多个值、会话不存在、状态不匹配、交互类型不匹配、交互 ID 不匹配或回写失败。
 
 Codex APP 文本回复提交可能遇到空内容、超长内容、会话不存在、状态不匹配、交互类型不匹配、交互 ID 不匹配或回写失败。
-
-Codex APP timeline 查询可能遇到 reader 端口错误。
-
-Codex CLI timeline 查询可能遇到 reader 端口错误。
-
-timeline 接收过程事件可能遇到缓存写入错误。
-
-timeline 大文本释放可能失败。
 
 跳回终端可能失败。
 
@@ -118,14 +110,6 @@ Codex APP 审批、选项和回复回写失败返回可重试应用错误，不�
 
 Codex APP 审批、选项和回复回写失败不清理 pending interaction。
 
-Codex APP timeline 查询失败不写 session 状态。
-
-Codex CLI timeline 查询失败不写 session 状态。
-
-timeline 接收失败不写 session 状态。
-
-timeline 大文本释放失败不阻塞关闭弹层。
-
 Codex CLI 非阻塞 hook 处理成功后返回 ack。
 
 Codex CLI approval 等待超时时返回 bridge error，hook helper 继续按 fail-open 收敛。
@@ -166,13 +150,13 @@ Codex APP 未识别或畸形 app-server server request 会回写 JSON-RPC error�
 
 Codex APP app-server `notLoaded` 会清理 pending interaction 和对应 RPC 回写上下文。
 
-Codex APP app-server thread 列表读取使用短超时；读取失败不写 session 失败状态。
+Codex APP app-server `thread/loaded/list` 与 `thread/list` 读取使用短超时；读取失败不写 session 失败状态。
 
-Codex APP app-server thread 列表单条 thread 清洗失败时跳过该条，保留同批其它有效 thread。
+Codex APP app-server `thread/list` 单条 thread 清洗失败时跳过该条，保留同批其它有效 thread。
 
-Codex APP app-server thread 列表中缺 cwd 但带 path 的 thread 不直接写 session 状态；若后续 rollout 读取失败，则保持待识别项目。
+Codex APP app-server `thread/list` 中缺 cwd 但带 path 的 thread 不直接写 session 状态；若后续 rollout 读取失败，则保持待识别项目。
 
-Codex APP app-server thread 列表中 `status.type` 类型错误时跳过该条，避免把脏数据折叠成完成态。
+Codex APP app-server `thread/list` 中 `status.type` 类型错误时跳过该条，避免把脏数据折叠成完成态。
 
 Codex APP rollout 历史读取失败不写 session 失败状态。
 
@@ -201,6 +185,10 @@ Codex APP thread path 不在 Codex sessions root 内、文件名不匹配、不�
 Codex APP 缺少可信 cwd 时写入待识别项目占位，不生成跳回目标。
 
 Codex APP follow-up 写入失败时，不写入用户输入原文事件。
+
+Codex APP follow-up 在 app-server client 获取、loaded thread 查询、thread resume 或 turn/start 任一阶段失败时，释放 follow-up 提交占位并返回可重试错误。
+
+Codex APP `thread/loaded/list` 缺失 `data`、`data` 非数组或包含非字符串 id 时视为 loaded thread 查询失败；空白 id 会跳过，重复 id 会去重，不阻断同批有效 id。
 
 Codex APP follow-up 若 session 仍在运行或存在 pending interaction，后端拒绝创建后续 turn。
 
@@ -264,17 +252,13 @@ Codex APP 回复回写失败时，前端保留当前 session 草稿。
 
 Codex CLI bridge 不可用或审批超时时，Codex CLI hook 不输出阻塞 directive。
 
-timeline 不可用时，对应入口不应展示；查询失败时只展示 timeline 错误状态。
-
-timeline 大文本释放失败时，用户仍可关闭弹层。
-
 Codex APP schema 或 app-server 不可用时，不展示 Codex APP 结构化控制能力。
 
 Codex APP session 来源读取失败时，前端跳过 Codex APP 来源，不阻断 Codex CLI session 展示。
 
-Codex APP app-server 启动失败时，不通过已加载 thread 列表补齐 session，但仍可读取当前进程内已捕捉的 hook runtime 状态。
+Codex APP app-server 启动失败时，不通过已加载 thread id 或 thread 元数据补齐 session，但仍可读取当前进程内已捕捉的 hook runtime 状态。
 
-Codex APP app-server thread 列表后台读取被节流或短超时打断时，仅跳过本轮元数据补齐，不阻断当前 session 列表返回。
+Codex APP app-server `thread/loaded/list` 或 `thread/list` 后台读取被节流或短超时打断时，仅跳过本轮元数据补齐，不阻断当前 session 列表返回。
 
 Codex rollout tail 不可用时，对应 session 仍保留 hook、app-server 和定时刷新可见能力。
 
@@ -306,8 +290,6 @@ hook 安装失败时，用户可根据状态原因和备份路径人工检查配
 
 hook 安装 manifest 写入失败时，不应留下可被卸载流程当作成功安装使用的新 manifest，且旧 manifest 和旧备份不得被污染。
 
-默认日志脱敏 prompt、transcript、timeline、token、secret、password 和 api_key 字段。
-
 ## 用户侧表现
 
 前端 command 失败不会弹出错误通知。
@@ -323,8 +305,6 @@ hook helper 可输出简短 stderr 诊断。
 Codex APP 审批或回复失败时，前端显示错误提示。
 
 Codex APP 选项失败时，前端显示错误提示，并保留已选选项。
-
-timeline 查询失败时，前端在 timeline 弹层中展示错误状态。
 
 Codex CLI session 出现后按真实 hook 状态展示。
 
@@ -358,8 +338,6 @@ hook 安装或卸载失败时，调用方应展示用户可读错误消息。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server、runtime 和审批等待错误收敛入口。
 
-`src-tauri/src/adapters/timeline/mod.rs` 是 timeline 缓存写入、淘汰和释放入口。
-
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server、schema 探针和 notification 错误收敛入口。
 
 `src-tauri/src/lib.rs` 是 Tauri 启动失败入口。
@@ -373,10 +351,6 @@ hook 安装或卸载失败时，调用方应展示用户可读错误消息。
 `src-tauri/src/services/interaction_service.rs` 是 mock 测试基线审批和选项错误收敛入口。
 
 `src-tauri/src/services/reply_service.rs` 是 mock 测试基线回复错误收敛入口。
-
-`src-tauri/src/services/process_timeline_service.rs` 是 Codex CLI 和 Codex APP timeline 查询错误收敛入口。
-
-`src-tauri/src/adapters/mock_agent/mod.rs` 是 mock 测试基线 timeline 数据源入口。
 
 `src-tauri/src/services/preset_command_service.rs` 是预设命令复制降级入口。
 
@@ -417,8 +391,6 @@ hook 安装或卸载失败时，调用方应展示用户可读错误消息。
 `src-tauri/src/adapters/bridge/transport.rs` 覆盖 bridge 不存在。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 覆盖 Codex CLI ack、approval 等待和超时等待器。
-
-`src-tauri/src/adapters/timeline/mod.rs` 覆盖 timeline 去重、淘汰和释放。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 覆盖 Codex APP hook 分流、schema 探针、app-server request 和 notification 字段校验。
 

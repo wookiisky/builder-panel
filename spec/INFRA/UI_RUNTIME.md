@@ -38,13 +38,22 @@ Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
 
 每个 session 使用一行展示状态、运行时来源、项目名、thread 名和当前输出文本。
 
+session 来源徽章按运行时来源派生：来自 Codex APP 的 session 显示为 `Codex`，来自 Codex CLI 的 session 显示为 `Codex CLI`。
+
 当前输出文本 tooltip 由前端自绘，hover 或 focus 后立即展示，保留段内换行并按 Markdown 渲染。
 
 当前输出文本 tooltip 通过视口 fixed 浮层展示，并在下方空间不足时翻到触发文本上方，避免被 session 列表和 panel 容器裁剪。
 
-thread 名最长展示 10 个字符，缺少真实名称时在 session 行、详情标题和 timeline 标题显示为未命名。
 
-完成、失败或等待用户回复的 session 可展开为两行，第二行展示行内回复区。
+等待审批和等待用户回复的 session 会自动展示第二行。
+
+完成和失败且可创建后续 turn 的 session 默认保持单行。
+
+完成和失败且可创建后续 turn 的 session 第一行右侧展示展开按钮。
+
+用户点击展开按钮后，完成或失败 session 展示第二行；再次点击后收起。
+
+完成和失败 session 的第二行只展示快捷输入和单行输入区。
 
 有选项的行内回复区展示选项按钮，并保留 choice tooltip。
 
@@ -120,7 +129,6 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 `src/api/hookInstallApi.ts` 是前端 hook 状态查询和安装 command 调用入口。
 
-`src/stores/mockPanelStore.ts` 是 session 草稿和 timeline 弹层状态入口。
 
 `src/styles.css` 是阶段 7 扩展模式布局入口。
 
@@ -132,7 +140,7 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 ## 相关测试
 
-`src/views/BuilderPanelApp.test.ts` 覆盖合并 session 捕捉顺序、统计、能力动作标签和工具用量聚合。
+`src/views/BuilderPanelApp.test.ts` 覆盖合并 session 捕捉顺序、统计、能力动作标签、工具用量聚合和 follow-up 展开规则。
 
 `src/api/settingsApi.test.ts` 覆盖阶段 7 默认设置、收缩状态归一化和自定义快捷输入校验。
 

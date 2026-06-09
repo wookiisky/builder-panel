@@ -112,8 +112,6 @@ if (existsSync(tauriLibPath)) {
     "resolve_mock_approval",
     "submit_mock_choice",
     "send_mock_reply",
-    "query_mock_timeline",
-    "release_mock_timeline_cache",
     "reset_mock_runtime",
   ];
   for (const commandName of forbiddenMockCommands) {

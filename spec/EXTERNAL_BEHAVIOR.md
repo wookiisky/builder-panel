@@ -46,6 +46,8 @@ session 列表展示等待审批、等待回复、运行中、完成和失败状
 
 每个 session 行从左到右展示状态、来源标签、项目名、thread 名和当前输出文本。
 
+session 来源标签按运行时来源派生：来自 Codex APP 的 session 显示为 `Codex`，来自 Codex CLI 的 session 显示为 `Codex CLI`。
+
 当前输出文本超过行宽时截断展示。
 
 当前输出文本按段落展示；用户可通过立即显示的 tooltip 查看同一段完整文本。
@@ -58,33 +60,36 @@ session 详情可展示当前 view model 可用的完整多段摘要。
 
 任务结束时，最终 Agent 输出按 65535 字符上限保留多段内容。
 
-完成、失败或等待用户回复的 session 可展示为两行。
+等待审批和等待用户回复的 session 可自动展示为两行。
+
+完成和失败且可创建后续 turn 的 session 默认展示为单行。
+
+完成和失败且可创建后续 turn 的 session 第一行右侧提供展开按钮。
+
+用户点击展开按钮后，完成或失败 session 才展示第二行。
 
 两行 session 的第一行展示最后一段输出文本。
 
-Codex CLI 和 Codex APP thread 名最长展示 10 个字符；缺少真实名称时，session 行、详情标题和 timeline 标题显示为未命名，不展示 thread ID。
 
 Codex APP thread 名可由 Codex session index、app-server thread metadata 或 app-server 实时改名通知补齐。
 
 Codex CLI hook 的模型字段和 Codex APP 中形似模型名的值不展示为 thread 名。
 
-两行 session 的第二行展示回复区。
+两行 session 的第二行展示快捷输入和输入区。
 
 session 列表合并 Codex CLI 和 Codex APP session 后按首次捕捉顺序保持稳定。
 
 新捕捉到的 session 展示在列表顶部。
 
-每次打开 Builder Panel APP 时，session 列表先从进程内空状态开始；Codex APP 可随后通过当前已加载 thread 元数据补出当前 APP thread。
+每次打开 Builder Panel APP 时，session 列表先从进程内空状态开始；Codex APP 可随后通过当前已加载 thread id 和 `thread/list` 元数据补出当前 APP thread。
 
-Builder Panel 可为 Codex APP 读取 app-server 已加载 thread 元数据和 Codex rollout 历史，用于补齐项目名、跳回目标和最新 Agent 输出。
+Builder Panel 可为 Codex APP 读取 app-server 已加载 thread id、`thread/list` 元数据和 Codex rollout 历史，用于补齐项目名、跳回目标和最新 Agent 输出。
 
 Builder Panel 可在已知 Codex CLI session 的 rollout path 后展示新增追加行产生的用户文本和 assistant 文本。
 
 Builder Panel 可在已知 Codex APP session 的 rollout path 后展示新增追加行产生的用户文本和 assistant 文本。
 
-实时输出会更新 session 行摘要，并可出现在该 session 的 timeline 弹层中。
 
-session 摘要和普通文本 timeline 正文只展示用户输入和 assistant 输出的原始内容，不展示 `Codex 回复`、`用户输入` 或工具动作前缀。
 
 Codex CLI 和 Codex APP session 最后消息不展示 hook 工具调用、命令预览或其它工具调用参数。
 
@@ -120,23 +125,14 @@ APP 打开前已经结束且不再发出实时事件的 Codex CLI 或未接入 a
 
 自定义快捷输入发送失败后，快捷输入内容保留在当前草稿中。
 
-用户可以打开支持 timeline 的 Codex CLI 或 Codex APP session 过程事件弹层。
 
-用户可以按正文搜索、按类型筛选和复制单条 timeline 条目。
 
-用户可以复制当前筛选页的 timeline 条目。
 
-timeline 条目复制只复制正文，不复制隐藏标题。
 
-用户可以在 timeline 弹层中跳到最新条目。
 
-关闭 timeline 弹层后，当前页缓存被释放。
 
-关闭 timeline 弹层后，后端会尝试释放该 session 的大文本正文缓存。
 
-timeline 弹层不提供导出过程事件文件入口。
 
-timeline 弹层不回放未知历史 JSONL；只展示当前进程内已接收的事件和已知 session 新增追加行产生的实时事件。
 
 mock agent 不再作为产品运行时 session 来源。
 
@@ -150,13 +146,15 @@ Codex CLI 审批决策会通过 hook stdout directive 返回给 Codex CLI。
 
 Codex CLI 的允许并记住入口当前按允许 directive 返回，不声明真实记忆规则已支持。
 
-Codex CLI hook 产生的托管事件可在支持 timeline 的 session 中查询。
 
-Codex CLI 已知 rollout path 后，新增追加行中的用户文本和 assistant 输出可在 session 摘要和 timeline 中展示。
 
 Codex APP 开关默认开启。开关开启后，panel 会尝试启动 Codex APP app-server 并接收启动后的 Codex APP 实时事件。
 
 Codex APP hook payload 中 `terminal_app` 归一化后等于 `codexapp` 时，会显示为 Codex APP session。
+
+Codex APP hook payload 缺少 `terminal_app` 时，hook helper 可通过 `BUILDER_PANEL_HOOK_TERMINAL_APP`、`__CFBundleIdentifier` 或 `TERM_PROGRAM` 环境变量识别 Codex.app；本地 bridge 也会按已知 thread 或已知 cwd 改判，避免 Codex.app 任务被误显示为 Codex CLI。
+
+Codex APP 收录某 thread 元数据后，若该 thread 已被 hook 早到误存为 Codex CLI session，列表中的对应 Codex CLI 行会被移除，只保留 Codex APP 行。
 
 Codex APP 请求权限时，用户可在 panel 中点击允许或拒绝。
 
@@ -176,9 +174,7 @@ Codex APP 待识别项目 session 不提供跳回行为。
 
 Codex CLI 和 Codex APP session 使用可信 cwd 派生项目名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
 
-Codex APP session 可打开 timeline 弹层查看 hook 和 app-server 过程事件。
 
-Codex APP 已知 rollout path 后，新增追加行中的用户文本和 assistant 输出可在 session 摘要和 timeline 中展示。
 
 Codex APP session 最后消息不展示 hook 工具调用、命令预览或其它工具调用参数。
 
@@ -226,7 +222,7 @@ Enter 发送开关关闭后，Enter 不触发文本回复发送。
 
 通知点击只定位 session 并聚焦 panel。
 
-通知点击不直接打开过程弹出层。
+通知点击只定位 session，不打开其它浮层。
 
 Codex APP app-server schema 可由后端探针验证。
 
@@ -278,9 +274,7 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 阶段 2 不承诺 Windows Named Pipe 已在 Windows 本机验收。
 
-阶段 3 不承诺真实 Codex 或 Claude Code 审批、回复和 timeline 接入。
 
-阶段 4 当前声明 Codex CLI 审批 hook 闭环和 Codex APP hook、app-server、审批、回复、follow-up、跳回与 timeline 接入。
 
 阶段 4 当前不声明 Claude Code 真实闭环已完成。
 
@@ -304,9 +298,7 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 阶段 8 性能预算脚本不替代 10 分钟空闲 CPU 人工采样。
 
-阶段 6 不支持从 transcript 或 JSONL 文件恢复 timeline。
 
-阶段 6 不支持导出过程事件文件。
 
 阶段 3 不执行 Windows 本机人工验证。
 
@@ -326,7 +318,6 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook 状态和 directive 入口。
 
-`src-tauri/src/adapters/timeline/mod.rs` 是过程事件时间线内存缓存入口。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server、runtime、schema 探针和 notification 转换入口。
 
@@ -336,7 +327,6 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 `src/api/codexCliPanelApi.ts` 和 `src/api/codexAppPanelApi.ts` 是前端真实 Codex command 调用入口。
 
-`src-tauri/src/tauri_api/commands.rs` 是 Codex CLI 和 Codex APP session、审批、选项、回复、follow-up 和 timeline command 入口。
 
 `src-tauri/src/services/shortcut_reply_service.rs` 是快捷回复过滤入口。
 

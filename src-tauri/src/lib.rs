@@ -39,10 +39,7 @@ pub fn run() {
             tauri_api::commands::submit_codex_app_choice,
             tauri_api::commands::send_codex_app_reply,
             tauri_api::commands::create_codex_app_followup_turn,
-            tauri_api::commands::query_codex_cli_timeline,
-            tauri_api::commands::query_codex_app_timeline,
-            tauri_api::commands::release_codex_cli_timeline_cache,
-            tauri_api::commands::release_codex_app_timeline_cache,
+            tauri_api::commands::inject_codex_app_followup,
             tauri_api::commands::get_log_info,
             tauri_api::commands::open_log_folder
         ])

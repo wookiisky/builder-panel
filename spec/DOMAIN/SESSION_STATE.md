@@ -88,7 +88,6 @@ Session 列表 view model 暴露项目标签、thread 标签、对话标签、�
 
 Thread 标签优先来自 `AgentSession.title`，最长展示 10 个字符。
 
-缺少标题时，Thread 标签、详情标题和 timeline 标题显示为未命名，不回退展示对话 ID。
 
 ## 排序规则
 

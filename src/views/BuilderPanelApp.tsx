@@ -1,7 +1,6 @@
 import {
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -9,18 +8,14 @@ import {
 import { createPortal } from "react-dom";
 
 import {
-  createCodexAppFollowupTurn,
   fetchCodexAppSessions,
-  fetchCodexAppTimeline,
-  releaseCodexAppTimelineCache,
+  injectCodexAppFollowup,
   submitCodexAppApproval,
   submitCodexAppChoice,
   submitCodexAppReply,
 } from "../api/codexAppPanelApi";
 import {
   fetchCodexCliSessions,
-  fetchCodexCliTimeline,
-  releaseCodexCliTimelineCache,
   submitCodexCliApproval,
 } from "../api/codexCliPanelApi";
 import {
@@ -42,13 +37,9 @@ import { jumpToSession } from "../api/sessionJumpApi";
 import type {
   ApprovalDecision,
   InteractionId,
-  ProcessTimelineItem,
   SessionDetailViewModel,
-  SessionKey,
   SessionListItemViewModel,
   TextDisplay,
-  TimelinePage,
-  TimelineQuery,
   UiAction,
 } from "../api/mockPanelContract";
 import {
@@ -58,10 +49,7 @@ import {
   openLogFolder,
   savePanelSettings,
 } from "../api/settingsApi";
-import {
-  subscribeSessionUpdates,
-  type SessionUpdateNotification,
-} from "../api/sessionUpdateApi";
+import { subscribeSessionUpdates } from "../api/sessionUpdateApi";
 import type {
   BuilderPanelSettings,
   CustomShortcutInput,
@@ -71,27 +59,20 @@ import { PanelShell } from "../components/PanelShell";
 import { SettingsPanel } from "../components/SettingsPanel";
 import {
   beginSubmit,
-  beginTimelineLoad,
   clearChoiceSelection,
   clearDraft,
-  closeTimeline,
   countReplyChars,
   createDefaultMockPanelUiState,
   endSubmit,
-  failTimelineLoad,
+  clearFollowupSessionExpansion,
+  isFollowupSessionExpanded,
   isReplyDraftInvalid,
-  openTimeline,
   selectSession,
   sessionKeyToId,
-  setTimelinePage,
-  timelinePageToCopyText,
-  timelineVisibleRange,
+  toggleFollowupSessionExpansion,
   toggleChoiceSelection,
   updateDraft,
-  updateTimelineKind,
-  updateTimelineSearch,
   type MockPanelUiState,
-  type TimelineKindFilter,
 } from "../stores/mockPanelStore";
 /// 会话运行时来源。
 type RuntimeSource = "codex_cli" | "codex_app";
@@ -118,15 +99,6 @@ export type PanelSessionListItem = SessionListItemViewModel & {
 export const SESSION_REFRESH_INTERVAL_MS = 1000;
 /// 后端实时更新触发前端刷新时的节流间隔。
 const SESSION_UPDATE_REFRESH_DEBOUNCE_MS = 180;
-
-/// Timeline 单次读取页大小。
-const TIMELINE_PAGE_SIZE = 50;
-/// Timeline 虚拟列表固定行高。
-const TIMELINE_ROW_HEIGHT = 82;
-/// Timeline 虚拟列表视口高度。
-const TIMELINE_VIEWPORT_HEIGHT = 330;
-/// Timeline 虚拟列表额外渲染行数。
-const TIMELINE_OVERSCAN = 4;
 
 /// Builder Panel 首屏应用。
 export const BuilderPanelApp = () => {
@@ -155,9 +127,7 @@ export const BuilderPanelApp = () => {
   const panelGeometryApplied = useRef(false);
   const panelGeometrySaveTimer = useRef<number | null>(null);
   const sessionUpdateRefreshTimer = useRef<number | null>(null);
-  const timelineUpdateRefreshTimer = useRef<number | null>(null);
   const pendingPanelWindowUpdate = useRef<PanelWindowStateUpdate>({});
-  const [timelineRefreshToken, setTimelineRefreshToken] = useState(0);
 
   const applySessionRefresh = (
     items: readonly PanelSessionListItem[],
@@ -312,15 +282,6 @@ export const BuilderPanelApp = () => {
     };
   }, [settingsView.settings]);
 
-  const selectedSession = useMemo(() => {
-    return (
-      sessions.find(
-        (session) =>
-          panelSessionToId(session) === mockUiState.selectedSessionId,
-      ) ?? null
-    );
-  }, [mockUiState.selectedSessionId, sessions]);
-
   useEffect(() => {
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
@@ -347,26 +308,8 @@ export const BuilderPanelApp = () => {
       }, SESSION_UPDATE_REFRESH_DEBOUNCE_MS);
     };
 
-    const scheduleTimelineRefresh = (): void => {
-      if (timelineUpdateRefreshTimer.current !== null) {
-        window.clearTimeout(timelineUpdateRefreshTimer.current);
-      }
-      timelineUpdateRefreshTimer.current = window.setTimeout(() => {
-        if (!disposed) {
-          setTimelineRefreshToken((current) => current + 1);
-        }
-      }, SESSION_UPDATE_REFRESH_DEBOUNCE_MS);
-    };
-
-    subscribeSessionUpdates((notification) => {
+    subscribeSessionUpdates(() => {
       scheduleSessionsRefresh();
-      if (
-        mockUiState.timeline.open &&
-        selectedSession !== null &&
-        shouldRefreshTimelineForUpdate(notification, selectedSession)
-      ) {
-        scheduleTimelineRefresh();
-      }
     })
       .then((unlisten) => {
         if (disposed) {
@@ -389,57 +332,8 @@ export const BuilderPanelApp = () => {
       if (sessionUpdateRefreshTimer.current !== null) {
         window.clearTimeout(sessionUpdateRefreshTimer.current);
       }
-      if (timelineUpdateRefreshTimer.current !== null) {
-        window.clearTimeout(timelineUpdateRefreshTimer.current);
-      }
     };
-  }, [mockUiState.timeline.open, selectedSession, settingsView.settings]);
-
-  useEffect(() => {
-    let disposed = false;
-
-    if (!mockUiState.timeline.open || selectedSession === null) {
-      return;
-    }
-
-    setMockUiState((current) => beginTimelineLoad(current));
-    fetchTimelinePage(selectedSession, {
-      session_key: selectedSession.session_key,
-      page: 0,
-      page_size: TIMELINE_PAGE_SIZE,
-      search:
-        mockUiState.timeline.search.trim().length === 0
-          ? null
-          : mockUiState.timeline.search,
-      kind:
-        mockUiState.timeline.kind === "all" ? null : mockUiState.timeline.kind,
-    })
-      .then((page) => {
-        if (!disposed) {
-          setMockUiState((current) => setTimelinePage(current, page));
-        }
-      })
-      .catch((error: unknown) => {
-        if (!disposed) {
-          setMockUiState((current) =>
-            failTimelineLoad(
-              current,
-              readableError(error, "读取 timeline 失败"),
-            ),
-          );
-        }
-      });
-
-    return () => {
-      disposed = true;
-    };
-  }, [
-    mockUiState.timeline.kind,
-    mockUiState.timeline.open,
-    mockUiState.timeline.search,
-    selectedSession,
-    timelineRefreshToken,
-  ]);
+  }, [settingsView.settings]);
 
   const refreshSessions = async (): Promise<void> => {
     const nextSessions = await fetchAllSessions(settingsView.settings);
@@ -706,17 +600,23 @@ export const BuilderPanelApp = () => {
     const submitId = `followup-${sessionKeyToId(session.session_key)}`;
     setMockUiState((current) => beginSubmit(current, submitId));
     try {
-      await createCodexAppFollowupTurn({
+      await injectCodexAppFollowup({
         session_key: session.session_key,
         prompt,
       });
       await refreshSessions();
       setMockUiState((current) =>
-        endSubmit(clearDraft(current, session.session_key), null),
+        endSubmit(
+          clearFollowupSessionExpansion(
+            clearDraft(current, session.session_key),
+            session.session_key,
+          ),
+          null,
+        ),
       );
     } catch (error: unknown) {
       setMockUiState((current) =>
-        endSubmit(current, readableError(error, "follow-up 创建失败")),
+        endSubmit(current, readableError(error, "follow-up 注入失败")),
       );
     }
   };
@@ -819,14 +719,6 @@ export const BuilderPanelApp = () => {
           onJump={(session) => {
             void jumpToPanelSession(session);
           }}
-          onOpenTimeline={(session) => {
-            setMockUiState((current) =>
-              openTimeline(
-                selectPanelSession(current, session),
-                session.session_key,
-              ),
-            );
-          }}
           onResolveApproval={(session, interactionId, decision) => {
             void resolveApprovalForSession(session, interactionId, decision);
           }}
@@ -844,6 +736,11 @@ export const BuilderPanelApp = () => {
                 choiceValue,
                 allowsMultiple,
               ),
+            );
+          }}
+          onToggleFollowupExpansion={(session) => {
+            setMockUiState((current) =>
+              toggleFollowupSessionExpansion(current, session.session_key),
             );
           }}
         />
@@ -887,24 +784,6 @@ export const BuilderPanelApp = () => {
               />
             </section>
           </div>
-        )}
-        {mockUiState.timeline.open && selectedSession !== null && (
-          <TimelineOverlay
-            state={mockUiState}
-            selectedSession={selectedSession}
-            onClose={() => {
-              releaseTimelineCache(selectedSession);
-              setMockUiState((current) => closeTimeline(current));
-            }}
-            onSearch={(search) => {
-              setMockUiState((current) =>
-                updateTimelineSearch(current, search),
-              );
-            }}
-            onKind={(kind) => {
-              setMockUiState((current) => updateTimelineKind(current, kind));
-            }}
-          />
         )}
       </PanelShell>
     </main>
@@ -1111,27 +990,6 @@ export const panelSessionToId = (session: PanelSessionListItem): string => {
   );
 };
 
-/// 判断实时更新是否影响当前打开的 timeline。
-export const shouldRefreshTimelineForUpdate = (
-  notification: SessionUpdateNotification,
-  session: PanelSessionListItem,
-): boolean => {
-  if (
-    notification.changed_area !== "timeline" &&
-    notification.changed_area !== "both"
-  ) {
-    return false;
-  }
-  if (notification.runtime_source !== session.runtimeSource) {
-    return false;
-  }
-
-  return (
-    sessionKeyToId(notification.session_key) ===
-    sessionKeyToId(session.session_key)
-  );
-};
-
 /// 选择合并后的前端 session。
 export const selectPanelSession = (
   current: MockPanelUiState,
@@ -1205,11 +1063,6 @@ export const isCodexAppRuntime = (session: PanelSessionListItem): boolean => {
   return session.runtimeSource === "codex_app";
 };
 
-/// 判断是否展示 timeline 入口。
-export const canShowTimelineEntry = (actions: readonly UiAction[]): boolean => {
-  return actions.includes("view_process_timeline");
-};
-
 /// 判断点击 session 行是否应跳回。
 export const canJumpOnSessionClick = (
   actions: readonly UiAction[],
@@ -1228,17 +1081,51 @@ export const shouldSubmitReplyOnKeyDown = (
   shiftKey: boolean,
 ): boolean => enterToSend && key === "Enter" && !shiftKey;
 
-/// 判断 session 行是否应展开。
-export const canExpandSessionRow = (
+/// 判断 session 行是否因待处理交互自动展示第二行。
+export const shouldAutoShowSessionActionRow = (
+  statusKind: PanelSessionListItem["status_kind"],
+): boolean => {
+  return (
+    statusKind === "waiting_for_approval" ||
+    statusKind === "waiting_for_answer"
+  );
+};
+
+/// 判断 session 是否可手动展开 follow-up 输入区。
+export const canToggleFollowupRow = (
   statusKind: PanelSessionListItem["status_kind"],
   canCreateFollowupTurn: boolean,
 ): boolean => {
   return (
-    statusKind === "waiting_for_approval" ||
-    statusKind === "waiting_for_answer" ||
-    ((statusKind === "completed" || statusKind === "failed") &&
-      canCreateFollowupTurn)
+    canCreateFollowupTurn &&
+    (statusKind === "completed" || statusKind === "failed")
   );
+};
+
+/// 判断 session 第二行是否应显示。
+export const shouldShowSessionActionRow = (
+  statusKind: PanelSessionListItem["status_kind"],
+  canCreateFollowupTurn: boolean,
+  followupExpanded: boolean,
+): boolean => {
+  if (shouldAutoShowSessionActionRow(statusKind)) {
+    return true;
+  }
+
+  return (
+    canToggleFollowupRow(statusKind, canCreateFollowupTurn) && followupExpanded
+  );
+};
+
+/// 返回 session 第二行样式类名。
+export const sessionActionRowClassName = (
+  statusKind: PanelSessionListItem["status_kind"],
+): string => {
+  if (shouldAutoShowSessionActionRow(statusKind)) {
+    return "session-row-action";
+  }
+
+  return "session-row-action session-row-action-followup";
 };
 
 /// 判断快捷输入是否应创建 follow-up。
@@ -1263,54 +1150,7 @@ export const actionLabel = (action: UiAction): string => {
       return "审批";
     case "create_followup_turn":
       return "新对话";
-    case "view_process_timeline":
-      return "过程";
   }
-};
-
-/// Timeline 行 className。
-export const timelineRowClassName = (
-  kind: ProcessTimelineItem["kind"],
-): string => {
-  return `timeline-row timeline-row-${kind}`;
-};
-
-/// 单条 timeline 复制文本。
-export const timelineItemCopyText = (item: ProcessTimelineItem): string => {
-  return item.body;
-};
-
-/// 按运行时来源读取 timeline。
-const fetchTimelinePage = async (
-  session: PanelSessionListItem,
-  query: TimelineQuery,
-): Promise<TimelinePage> => {
-  if (isCodexCliRuntime(session)) {
-    return fetchCodexCliTimeline(query);
-  }
-  if (isCodexAppRuntime(session)) {
-    return fetchCodexAppTimeline(query);
-  }
-
-  return {
-    items: [],
-    page: query.page,
-    page_size: query.page_size,
-    total: 0,
-    has_next: false,
-    filter_count: 0,
-  };
-};
-
-/// 按运行时来源释放 timeline 大文本缓存。
-const releaseTimelineCache = (session: PanelSessionListItem): void => {
-  const releaseTask = isCodexCliRuntime(session)
-    ? releaseCodexCliTimelineCache(session.session_key)
-    : releaseCodexAppTimelineCache(session.session_key);
-
-  releaseTask.catch(() => {
-    // 关闭弹层不能被释放失败阻塞；下次查询仍可重新读取可用缓存。
-  });
 };
 
 /// Session 流属性。
@@ -1354,13 +1194,13 @@ interface SessionStreamProps {
     interactionId: InteractionId,
     values: readonly string[],
   ) => void;
-  /// 打开时间线回调。
-  readonly onOpenTimeline: (session: PanelSessionListItem) => void;
   /// 创建后续 turn 回调。
   readonly onCreateFollowupTurn: (
     session: PanelSessionListItem,
     content: string,
   ) => void;
+  /// 切换 follow-up 输入区回调。
+  readonly onToggleFollowupExpansion: (session: PanelSessionListItem) => void;
 }
 
 /// Session 流。
@@ -1375,8 +1215,8 @@ const SessionStream = ({
   onSendReply,
   onToggleChoice,
   onSubmitChoice,
-  onOpenTimeline,
   onCreateFollowupTurn,
+  onToggleFollowupExpansion,
 }: SessionStreamProps) => (
   <div className="session-list" aria-label="agent 会话列表">
     {sessions.length === 0 && (
@@ -1392,11 +1232,11 @@ const SessionStream = ({
         onCreateFollowupTurn={onCreateFollowupTurn}
         onDraftChange={onDraftChange}
         onJump={onJump}
-        onOpenTimeline={onOpenTimeline}
         onResolveApproval={onResolveApproval}
         onSendReply={onSendReply}
         onSubmitChoice={onSubmitChoice}
         onToggleChoice={onToggleChoice}
+        onToggleFollowupExpansion={onToggleFollowupExpansion}
       />
     ))}
   </div>
@@ -1548,10 +1388,10 @@ interface SessionRowProps {
   readonly onToggleChoice: SessionStreamProps["onToggleChoice"];
   /// 提交选项回调。
   readonly onSubmitChoice: SessionStreamProps["onSubmitChoice"];
-  /// 打开时间线回调。
-  readonly onOpenTimeline: (session: PanelSessionListItem) => void;
   /// 创建后续 turn 回调。
   readonly onCreateFollowupTurn: SessionStreamProps["onCreateFollowupTurn"];
+  /// 切换 follow-up 输入区回调。
+  readonly onToggleFollowupExpansion: SessionStreamProps["onToggleFollowupExpansion"];
 }
 
 /// Session 行。
@@ -1566,8 +1406,8 @@ const SessionRow = ({
   onSendReply,
   onToggleChoice,
   onSubmitChoice,
-  onOpenTimeline,
   onCreateFollowupTurn,
+  onToggleFollowupExpansion,
 }: SessionRowProps) => {
   const interaction = session.inline_interaction;
   const interactionId = interaction.interaction_id;
@@ -1583,14 +1423,22 @@ const SessionRow = ({
   const followupSubmitId = `followup-${sessionKeyToId(session.session_key)}`;
   const followupSubmitting =
     mockUiState.submittingInteractionId === followupSubmitId;
-  const expanded = canExpandSessionRow(
+  const canToggleFollowup = canToggleFollowupRow(
     session.status_kind,
     interaction.can_create_followup_turn,
+  );
+  const followupExpanded =
+    canToggleFollowup && isFollowupSessionExpanded(mockUiState, session.session_key);
+  const expanded = shouldShowSessionActionRow(
+    session.status_kind,
+    interaction.can_create_followup_turn,
+    followupExpanded,
   );
   const canCreateFollowup = shouldUseFollowupShortcut(
     session.status_kind,
     interaction.can_create_followup_turn,
   );
+  const showActionSummary = shouldAutoShowSessionActionRow(session.status_kind);
   const shortcuts = sortedEnabledShortcuts(settings.replies.custom_shortcuts);
   const summaryParagraph = textDisplayParagraph(session.summary);
   const actionSummary = interaction.summary ?? summaryParagraph.visibleText;
@@ -1614,29 +1462,47 @@ const SessionRow = ({
         </span>
         <span className="session-source">{sourceTag(session)}</span>
         <strong title={session.project_label}>{session.project_label}</strong>
-        <strong className="session-thread" title={session.thread_label}>
-          {session.thread_label}
-        </strong>
+        <MarkdownTooltip
+          className="session-thread"
+          content={session.thread_label}
+        >
+          <strong>{session.thread_label}</strong>
+        </MarkdownTooltip>
         <MarkdownTooltip
           className="session-summary-tooltip"
           content={summaryParagraph.tooltipText}
         >
           {summaryParagraph.visibleText}
         </MarkdownTooltip>
+        {canToggleFollowup && (
+          <button
+            aria-expanded={followupExpanded}
+            className="session-expand-button"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleFollowupExpansion(session);
+            }}
+          >
+            {followupExpanded ? "收起" : "展开"}
+          </button>
+        )}
       </div>
       {expanded && (
         <div
-          className="session-row-action"
+          className={sessionActionRowClassName(session.status_kind)}
           onClick={(event) => {
             event.stopPropagation();
           }}
         >
-          <MarkdownTooltip
-            className="session-action-tooltip"
-            content={actionSummaryTooltip}
-          >
-            {actionSummary}
-          </MarkdownTooltip>
+          {showActionSummary && (
+            <MarkdownTooltip
+              className="session-action-tooltip"
+              content={actionSummaryTooltip}
+            >
+              {actionSummary}
+            </MarkdownTooltip>
+          )}
           {interaction.can_resolve_approval && interactionId !== null && (
             <div className="button-row">
               <button
@@ -1820,16 +1686,6 @@ const SessionRow = ({
                 发送
               </button>
             </div>
-          )}
-          {interaction.can_view_process_timeline && (
-            <button
-              type="button"
-              onClick={() => {
-                onOpenTimeline(session);
-              }}
-            >
-              Timeline
-            </button>
           )}
         </div>
       )}
@@ -2441,8 +2297,6 @@ interface SessionDetailProps {
   ) => void;
   /// 提交选项回调。
   readonly onSubmitChoice: () => void;
-  /// 打开时间线回调。
-  readonly onOpenTimeline: (sessionKey: SessionKey) => void;
   /// 创建后续 turn 回调。
   readonly onCreateFollowupTurn: (content: string) => void;
 }
@@ -2461,7 +2315,6 @@ export const SessionDetail = ({
   onUseShortcutReply,
   onToggleChoice,
   onSubmitChoice,
-  onOpenTimeline,
   onCreateFollowupTurn,
 }: SessionDetailProps) => {
   const [detailOverlayOpen, setDetailOverlayOpen] = useState(false);
@@ -2485,7 +2338,6 @@ export const SessionDetail = ({
     detail.toolbar_actions.includes("send_reply") &&
     detail.pending_interaction_kind === "choice" &&
     detail.choice_box.enabled;
-  const canOpenTimeline = canShowTimelineEntry(detail.toolbar_actions);
   const canCreateFollowup =
     selectedSession.runtimeSource === "codex_app" &&
     detail.toolbar_actions.includes("create_followup_turn");
@@ -2631,28 +2483,16 @@ export const SessionDetail = ({
             )}
           </div>
         )}
-        {(canOpenTimeline || canCreateFollowup) && (
+        {canCreateFollowup && (
           <footer>
-            {canCreateFollowup && (
-              <button
-                type="button"
-                onClick={() => {
-                  setFollowupComposerOpen(true);
-                }}
-              >
-                Follow-up
-              </button>
-            )}
-            {canOpenTimeline && (
-              <button
-                type="button"
-                onClick={() => {
-                  onOpenTimeline(selectedSession.session_key);
-                }}
-              >
-                Timeline
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => {
+                setFollowupComposerOpen(true);
+              }}
+            >
+              Follow-up
+            </button>
           </footer>
         )}
       </section>
@@ -2884,169 +2724,6 @@ const FollowupComposerOverlay = ({
     </section>
   </div>
 );
-
-/// Timeline 弹层属性。
-interface TimelineOverlayProps {
-  /// Mock panel UI 状态。
-  readonly state: MockPanelUiState;
-  /// 当前选中 session。
-  readonly selectedSession: PanelSessionListItem;
-  /// 关闭回调。
-  readonly onClose: () => void;
-  /// 搜索回调。
-  readonly onSearch: (search: string) => void;
-  /// 类型筛选回调。
-  readonly onKind: (kind: TimelineKindFilter) => void;
-}
-
-/// Timeline 弹层。
-const TimelineOverlay = ({
-  state,
-  selectedSession,
-  onClose,
-  onSearch,
-  onKind,
-}: TimelineOverlayProps) => {
-  const listRef = useRef<HTMLDivElement | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const items = state.timeline.page?.items ?? [];
-  const range = timelineVisibleRange(
-    items.length,
-    scrollTop,
-    TIMELINE_VIEWPORT_HEIGHT,
-    TIMELINE_ROW_HEIGHT,
-    TIMELINE_OVERSCAN,
-  );
-  const visibleItems = items.slice(range.start, range.end);
-  const topSpacerHeight = range.start * TIMELINE_ROW_HEIGHT;
-  const bottomSpacerHeight = (items.length - range.end) * TIMELINE_ROW_HEIGHT;
-  const canCopyFiltered =
-    state.timeline.page !== null && state.timeline.page.items.length > 0;
-
-  return (
-    <div className="overlay-backdrop" role="presentation">
-      <section
-        className="overlay-panel timeline-overlay"
-        aria-label="过程时间线"
-      >
-        <header>
-          <div>
-            <strong>Timeline</strong>
-            <p>
-              {selectedSession.project_label} / {selectedSession.thread_label}
-            </p>
-          </div>
-          <button type="button" onClick={onClose}>
-            关闭
-          </button>
-        </header>
-        <div className="timeline-filters">
-          <input
-            value={state.timeline.search}
-            placeholder="搜索"
-            onChange={(event) => {
-              onSearch(event.target.value);
-            }}
-          />
-          <select
-            value={state.timeline.kind}
-            onChange={(event) => {
-              onKind(event.target.value as TimelineKindFilter);
-            }}
-          >
-            <option value="all">全部</option>
-            <option value="activity">活动</option>
-            <option value="user">用户</option>
-            <option value="tool">工具</option>
-            <option value="approval">审批</option>
-            <option value="reply">回复</option>
-            <option value="system">系统</option>
-          </select>
-        </div>
-        <div className="timeline-actions">
-          <span>
-            {state.timeline.page === null
-              ? "0 条"
-              : `${state.timeline.page.total} 条`}
-          </span>
-          <button
-            type="button"
-            disabled={!canCopyFiltered}
-            onClick={() => {
-              if (state.timeline.page !== null) {
-                void copyText(timelinePageToCopyText(state.timeline.page));
-              }
-            }}
-          >
-            复制筛选结果
-          </button>
-          <button
-            type="button"
-            disabled={items.length === 0}
-            onClick={() => {
-              const list = listRef.current;
-              if (list !== null) {
-                list.scrollTop = list.scrollHeight;
-              }
-            }}
-          >
-            跳到最新
-          </button>
-        </div>
-        {state.timeline.loading && <p className="timeline-empty">读取中</p>}
-        {state.timeline.errorMessage !== null && (
-          <p className="timeline-empty">{state.timeline.errorMessage}</p>
-        )}
-        <div
-          className="timeline-list"
-          ref={listRef}
-          onScroll={(event) => {
-            setScrollTop(event.currentTarget.scrollTop);
-          }}
-        >
-          <div style={{ height: topSpacerHeight }} />
-          {visibleItems.map((item) => (
-            <TimelineRow item={item} key={item.item_id} />
-          ))}
-          <div style={{ height: bottomSpacerHeight }} />
-          {state.timeline.page !== null &&
-            state.timeline.page.items.length === 0 &&
-            !state.timeline.loading && (
-              <p className="timeline-empty">没有匹配的过程事件</p>
-            )}
-        </div>
-      </section>
-    </div>
-  );
-};
-
-/// Timeline 行属性。
-interface TimelineRowProps {
-  /// Timeline 条目。
-  readonly item: ProcessTimelineItem;
-}
-
-/// Timeline 行。
-const TimelineRow = ({ item }: TimelineRowProps) => (
-  <article className={timelineRowClassName(item.kind)}>
-    <div>
-      <p>{item.body}</p>
-    </div>
-    <button
-      type="button"
-      onClick={() => {
-        void copyTimelineItem(item);
-      }}
-    >
-      复制
-    </button>
-  </article>
-);
-
-/// 复制单条 timeline 文本。
-const copyTimelineItem = async (item: ProcessTimelineItem): Promise<void> => {
-  await copyText(timelineItemCopyText(item));
-};
 
 /// 复制纯文本。
 const copyText = async (text: string): Promise<void> => {
