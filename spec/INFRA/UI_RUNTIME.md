@@ -34,6 +34,18 @@ Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
 
 前端支持浅色和深色两种主题，由 Display 设置控制。
 
+前端浅色和深色主题通过 `src/styles.css` 的语义样式变量成对定义。
+
+前端主题变量覆盖背景、表面、正文、次级文本、边框、主色、状态色、危险色、焦点环、阴影、圆角和动效时长。
+
+前端主界面和设置页共享同一组按钮、输入框、徽章、浮层、分组和状态色样式规则。
+
+前端主题状态色区分运行、等待、完成、失败、危险和禁用状态。
+
+前端保留可见 `focus-visible` 焦点环。
+
+前端样式响应系统级 `prefers-reduced-motion`，减少非必要过渡和 hover 位移。
+
 前端主界面使用紧凑工作台布局，主体为单列 session 列表。
 
 每个 session 使用一行展示状态、运行时来源、项目名、thread 名和当前输出文本。
@@ -43,7 +55,6 @@ session 来源徽章按运行时来源派生：来自 Codex APP 的 session 显�
 当前输出文本 tooltip 由前端自绘，hover 或 focus 后立即展示，保留段内换行并按 Markdown 渲染。
 
 当前输出文本 tooltip 通过视口 fixed 浮层展示，并在下方空间不足时翻到触发文本上方，避免被 session 列表和 panel 容器裁剪。
-
 
 等待审批和等待用户回复的 session 会自动展示第二行。
 
@@ -128,7 +139,6 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
 `src/api/hookInstallApi.ts` 是前端 hook 状态查询和安装 command 调用入口。
-
 
 `src/styles.css` 是阶段 7 扩展模式布局入口。
 

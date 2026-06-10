@@ -388,6 +388,7 @@ export const SettingsPanel = ({
                   下移
                 </button>
                 <button
+                  className="button-danger"
                   type="button"
                   onClick={() => {
                     update({
@@ -613,6 +614,7 @@ const HookInstallRow = ({
       </div>
       <div className="hook-install-row-actions">
         <button
+          className="button-primary"
           disabled={blocked || !status.can_install}
           type="button"
           onClick={() => {
@@ -622,6 +624,7 @@ const HookInstallRow = ({
           安装
         </button>
         <button
+          className="button-danger"
           disabled={blocked || !status.can_uninstall}
           type="button"
           onClick={() => {

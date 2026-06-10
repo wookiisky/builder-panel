@@ -1086,8 +1086,7 @@ export const shouldAutoShowSessionActionRow = (
   statusKind: PanelSessionListItem["status_kind"],
 ): boolean => {
   return (
-    statusKind === "waiting_for_approval" ||
-    statusKind === "waiting_for_answer"
+    statusKind === "waiting_for_approval" || statusKind === "waiting_for_answer"
   );
 };
 
@@ -1428,7 +1427,8 @@ const SessionRow = ({
     interaction.can_create_followup_turn,
   );
   const followupExpanded =
-    canToggleFollowup && isFollowupSessionExpanded(mockUiState, session.session_key);
+    canToggleFollowup &&
+    isFollowupSessionExpanded(mockUiState, session.session_key);
   const expanded = shouldShowSessionActionRow(
     session.status_kind,
     interaction.can_create_followup_turn,
@@ -1511,6 +1511,7 @@ const SessionRow = ({
           {interaction.can_resolve_approval && interactionId !== null && (
             <div className="button-row">
               <button
+                className="button-primary"
                 disabled={submitting}
                 type="button"
                 onClick={() => {
@@ -1520,6 +1521,7 @@ const SessionRow = ({
                 允许
               </button>
               <button
+                className="button-danger"
                 disabled={submitting}
                 type="button"
                 onClick={() => {
@@ -1575,6 +1577,7 @@ const SessionRow = ({
               </div>
               <div className="button-row">
                 <button
+                  className="button-primary"
                   disabled={selectedChoiceValues.length === 0 || submitting}
                   type="button"
                   onClick={() => {
@@ -1646,6 +1649,7 @@ const SessionRow = ({
                 }}
               />
               <button
+                className="button-primary"
                 disabled={isReplyDraftInvalid(draft, 1000) || submitting}
                 type="button"
                 onClick={() => {
@@ -1680,6 +1684,7 @@ const SessionRow = ({
                 }}
               />
               <button
+                className="button-primary"
                 disabled={
                   isReplyDraftInvalid(draft, 1000) || followupSubmitting
                 }
@@ -2384,6 +2389,7 @@ export const SessionDetail = ({
             {canResolveApproval && (
               <div className="button-row">
                 <button
+                  className="button-primary"
                   type="button"
                   disabled={submitting}
                   onClick={() => {
@@ -2393,6 +2399,7 @@ export const SessionDetail = ({
                   允许
                 </button>
                 <button
+                  className="button-danger"
                   type="button"
                   disabled={submitting}
                   onClick={() => {
@@ -2475,6 +2482,7 @@ export const SessionDetail = ({
                 </div>
                 <div className="button-row">
                   <button
+                    className="button-primary"
                     type="button"
                     disabled={selectedChoiceValues.length === 0 || submitting}
                     onClick={() => {
@@ -2655,6 +2663,7 @@ const ReplyComposerOverlay = ({
           {countReplyChars(draft)}/1000
         </span>
         <button
+          className="button-primary"
           type="button"
           disabled={replyInvalid || submitting}
           onClick={() => {
@@ -2717,6 +2726,7 @@ const FollowupComposerOverlay = ({
           {countReplyChars(draft)}/1000
         </span>
         <button
+          className="button-primary"
           type="button"
           disabled={replyInvalid || submitting}
           onClick={() => {
