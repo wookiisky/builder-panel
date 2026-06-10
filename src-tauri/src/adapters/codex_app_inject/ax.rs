@@ -32,8 +32,9 @@ const K_AX_VALUE_CGPOINT_TYPE: u32 = 1;
 /// `kAXValueCGSizeType` 常量值。
 const K_AX_VALUE_CGSIZE_TYPE: u32 = 2;
 
-/// 距窗口底部多少像素是输入框文本区中线（实测，可根据 E2E 调整）。
-const INPUT_OFFSET_FROM_BOTTOM_PX: f64 = 120.0;
+/// 距窗口底部多少像素是输入框文本区中线（实测：120 时光标在输入框上沿外，
+/// 80 让光标落在文本区上部）。
+const INPUT_OFFSET_FROM_BOTTOM_PX: f64 = 80.0;
 
 #[repr(C)]
 #[derive(Default, Clone, Copy, Debug)]
@@ -179,12 +180,15 @@ pub fn focus_codex_app_input_field() -> Result<(), AppError> {
         }),
     );
 
-    // 4. 模拟鼠标左键点击。
+    // 4. 等待 Codex.app UI 切换到该 thread 完成（thread URL 跳转后 webview 重渲染要时间）。
+    sleep(Duration::from_millis(200));
+
+    // 5. 模拟鼠标左键点击。
     click_at(click_x, click_y).map_err(|detail| {
         inject_error("模拟鼠标点击失败", detail, None)
     })?;
 
-    // 5. 让 Electron 处理 focus 事件。
+    // 6. 让 Electron 处理 focus 事件。
     sleep(Duration::from_millis(120));
 
     Ok(())
@@ -251,10 +255,37 @@ fn copy_attribute(el: AXUIElementRef, attr_name: &str) -> Option<CFTypeRef> {
     }
 }
 
+extern "C" {
+    fn CGWarpMouseCursorPosition(point: CGPoint) -> i32;
+    fn CGAssociateMouseAndMouseCursorPosition(connected: u8) -> i32;
+}
+
+/// 抓取当前鼠标位置（屏幕坐标）。失败返回 None。
+pub fn capture_cursor_position() -> Option<(f64, f64)> {
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+    let event = CGEvent::new(source).ok()?;
+    let loc = event.location();
+    Some((loc.x, loc.y))
+}
+
+/// 把鼠标光标移动回指定位置。
+pub fn restore_cursor_position(x: f64, y: f64) {
+    let point = CGPoint::new(x, y);
+    unsafe {
+        let _ = CGWarpMouseCursorPosition(point);
+        let _ = CGAssociateMouseAndMouseCursorPosition(1);
+    }
+}
+
 fn click_at(x: f64, y: f64) -> Result<(), String> {
+    let point = CGPoint::new(x, y);
+    unsafe {
+        let _ = CGWarpMouseCursorPosition(point);
+        let _ = CGAssociateMouseAndMouseCursorPosition(1);
+    }
+
     let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
         .map_err(|_| "CGEventSource::new failed".to_string())?;
-    let point = CGPoint::new(x, y);
 
     // 左键 down。
     let down = CGEvent::new_mouse_event(
@@ -269,7 +300,7 @@ fn click_at(x: f64, y: f64) -> Result<(), String> {
     down.post(CGEventTapLocation::HID);
 
     // down 和 up 之间留一点间隔，Chromium 的事件处理才认。
-    std::thread::sleep(Duration::from_millis(20));
+    std::thread::sleep(Duration::from_millis(40));
 
     // 左键 up。
     let up = CGEvent::new_mouse_event(

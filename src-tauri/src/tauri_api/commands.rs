@@ -14,8 +14,8 @@ use crate::adapters::codex_app::{
     CodexAppThreadMetadata, CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget,
 };
 use crate::adapters::codex_app_inject::{
-    default_codex_app_injector, ensure_accessibility_trusted,
-    open_accessibility_settings, CodexAppInjector,
+    capture_cursor_position, default_codex_app_injector, ensure_accessibility_trusted,
+    open_accessibility_settings, restore_cursor_position, CodexAppInjector,
 };
 use crate::adapters::codex_cli_hook::{start_codex_cli_bridge_server, CodexCliHookRuntime};
 use crate::adapters::config_file::JsonSettingsStore;
@@ -653,6 +653,27 @@ const INJECT_EMIT_LOCAL_USER_MESSAGE: bool = false;
 /// 等待 Codex.app 成为前台的最大毫秒数。
 const INJECT_FRONTMOST_TIMEOUT_MS: u64 = 2000;
 
+/// 注入流程结束时把光标还原到原始位置的 RAII guard。
+struct CursorRestoreGuard {
+    origin: Option<(f64, f64)>,
+}
+
+impl CursorRestoreGuard {
+    fn capture() -> Self {
+        Self {
+            origin: capture_cursor_position(),
+        }
+    }
+}
+
+impl Drop for CursorRestoreGuard {
+    fn drop(&mut self) {
+        if let Some((x, y)) = self.origin {
+            restore_cursor_position(x, y);
+        }
+    }
+}
+
 fn inject_codex_app_followup_with<O, I>(
     request: &CodexAppFollowupRequest,
     opener: &mut O,
@@ -671,6 +692,9 @@ where
         "Codex APP 注入开始",
         json!({"thread_id": thread_id, "prompt_chars": prompt.chars().count()}),
     );
+
+    // 捕获原始光标位置；函数无论如何结束都会还原。
+    let _cursor_guard = CursorRestoreGuard::capture();
 
     // 1. 权限检查。
     if let Err(error) = ensure_accessibility_trusted() {

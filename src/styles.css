@@ -397,6 +397,12 @@ button:disabled {
   font-size: 12px;
 }
 
+.session-row-main > .session-project {
+  max-width: min(22ch, 24vw);
+  color: var(--text);
+  font-size: 12px;
+}
+
 .session-row-main > .session-thread {
   max-width: min(26ch, 28vw);
   color: var(--muted);

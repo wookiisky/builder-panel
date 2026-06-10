@@ -1461,7 +1461,12 @@ const SessionRow = ({
           {session.status_label}
         </span>
         <span className="session-source">{sourceTag(session)}</span>
-        <strong title={session.project_label}>{session.project_label}</strong>
+        <MarkdownTooltip
+          className="session-project"
+          content={session.project_label}
+        >
+          <strong>{session.project_label}</strong>
+        </MarkdownTooltip>
         <MarkdownTooltip
           className="session-thread"
           content={session.thread_label}

@@ -54,6 +54,17 @@ mod permission;
 pub use permission::{ensure_accessibility_trusted, open_accessibility_settings};
 
 #[cfg(target_os = "macos")]
+pub use ax::{capture_cursor_position, restore_cursor_position};
+
+#[cfg(not(target_os = "macos"))]
+pub fn capture_cursor_position() -> Option<(f64, f64)> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn restore_cursor_position(_x: f64, _y: f64) {}
+
+#[cfg(target_os = "macos")]
 mod imp {
     use super::{ax, inject_error, keyboard, CodexAppInjector};
     use crate::domain::app_error::AppError;
