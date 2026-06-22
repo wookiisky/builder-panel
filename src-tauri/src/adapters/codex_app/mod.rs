@@ -1448,12 +1448,10 @@ impl CodexAppRuntime {
             ));
             changed = true;
         }
-        if should_apply_rollout_summary(session) {
-            if let Some(summary) = snapshot.summary {
-                if session.summary.as_ref() != Some(&summary) {
-                    session.summary = Some(summary);
-                    changed = true;
-                }
+        if let Some(summary) = rollout_summary_update(session, &snapshot).cloned() {
+            if session.summary.as_ref() != Some(&summary) {
+                session.summary = Some(summary);
+                changed = true;
             }
         }
         if changed {
@@ -3405,11 +3403,22 @@ fn is_unresolved_session_key(session_key: &SessionKey) -> bool {
     session_key.project_id.value == UNRESOLVED_CODEX_APP_PROJECT_ID
 }
 
-fn should_apply_rollout_summary(session: &crate::domain::agent_session::AgentSession) -> bool {
-    matches!(
+fn rollout_summary_update<'a>(
+    session: &crate::domain::agent_session::AgentSession,
+    snapshot: &'a CodexRolloutSnapshot,
+) -> Option<&'a String> {
+    if matches!(
         session.status,
         SessionStatus::Completed | SessionStatus::Failed
     ) || session.summary.is_none()
+    {
+        return snapshot.summary.as_ref();
+    }
+    if session.status == SessionStatus::Running {
+        return snapshot.last_agent_message.as_ref();
+    }
+
+    None
 }
 
 fn session_update_notification(event: &AgentEvent) -> Option<SessionUpdateNotification> {
@@ -5298,6 +5307,91 @@ mod tests {
 
         assert_eq!(session.status, SessionStatus::Running);
         assert_eq!(session.summary.as_deref(), Some("运行中"));
+    }
+
+    #[test]
+    fn running_session_rollout_snapshot_updates_latest_agent_summary() {
+        let sink = Arc::new(RecordingSessionUpdateSink::default());
+        let mut runtime = CodexAppRuntime::with_update_sink(sink.clone());
+        let key = session_key("/tmp/builder-panel", "thread-1");
+        runtime
+            .apply_event_direct(AgentEvent::SessionStarted(SessionStartedEvent {
+                session_key: key.clone(),
+                project_label: "builder-panel".to_string(),
+                conversation_label: "thread-1".to_string(),
+                title: Some("Thread 1".to_string()),
+                summary: Some("旧摘要".to_string()),
+                capabilities: codex_app_capabilities(),
+                usage: UsageSnapshot::unavailable(),
+                updated_at: UnixMillis::new(1),
+            }))
+            .expect("running session should apply");
+        let notification_count = sink.notifications().len();
+
+        runtime
+            .apply_rollout_snapshot(CodexRolloutSnapshot {
+                session_id: "thread-1".to_string(),
+                cwd: "/tmp/builder-panel".to_string(),
+                summary: Some("最新 Agent 输出".to_string()),
+                last_agent_message: Some("最新 Agent 输出".to_string()),
+                path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
+                updated_at: UnixMillis::new(2),
+            })
+            .expect("rollout should update running summary");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("session should exist");
+        let notifications = sink.notifications();
+        assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.summary.as_deref(), Some("最新 Agent 输出"));
+        assert!(notifications.len() > notification_count);
+        assert!(notifications
+            .iter()
+            .any(|notification| notification.session_key == key
+                && notification.updated_at == UnixMillis::new(2)));
+    }
+
+    #[test]
+    fn running_session_rollout_snapshot_without_agent_output_keeps_current_summary() {
+        let sink = Arc::new(RecordingSessionUpdateSink::default());
+        let mut runtime = CodexAppRuntime::with_update_sink(sink.clone());
+        let key = session_key("/tmp/builder-panel", "thread-1");
+        runtime
+            .apply_event_direct(AgentEvent::SessionStarted(SessionStartedEvent {
+                session_key: key.clone(),
+                project_label: "builder-panel".to_string(),
+                conversation_label: "thread-1".to_string(),
+                title: Some("Thread 1".to_string()),
+                summary: Some("当前 Agent 输出".to_string()),
+                capabilities: codex_app_capabilities(),
+                usage: UsageSnapshot::unavailable(),
+                updated_at: UnixMillis::new(1),
+            }))
+            .expect("running session should apply");
+        let notification_count = sink.notifications().len();
+
+        runtime
+            .apply_rollout_snapshot(CodexRolloutSnapshot {
+                session_id: "thread-1".to_string(),
+                cwd: "/tmp/builder-panel".to_string(),
+                summary: Some("继续处理".to_string()),
+                last_agent_message: None,
+                path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
+                updated_at: UnixMillis::new(2),
+            })
+            .expect("rollout should not overwrite with user summary");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("session should exist");
+        assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.summary.as_deref(), Some("当前 Agent 输出"));
+        assert_eq!(sink.notifications().len(), notification_count);
     }
 
     #[test]

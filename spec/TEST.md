@@ -134,6 +134,8 @@ Rust Codex APP adapter 测试验证缺 cwd 或空白 cwd 但带 path 的 thread 
 
 Rust Codex APP adapter 测试验证 rollout 快照可迁移待识别 session 到真实 cwd。
 
+Rust Codex APP adapter 测试验证 rollout 快照可用最近 Agent 输出刷新运行中 session 摘要，且不会用仅来自用户输入的摘要覆盖当前 Agent 摘要。
+
 Rust Codex APP adapter 测试验证 permissions approval、legacy approval enum、JSON-RPC id 类型保留和 follow-up 成功前不写 activity。
 
 Rust Codex APP adapter 测试验证 server request id 与本端 pending request id 碰撞时仍进入 runtime。

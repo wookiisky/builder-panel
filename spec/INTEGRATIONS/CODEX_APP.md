@@ -110,6 +110,8 @@ Codex rollout 读取只在 adapter 边界清洗 `session_meta`、`event_msg` 和
 
 Codex rollout 中 `event_msg.agent_message`、`task_complete.last_agent_message`、`turn_complete.last_agent_message` 和 assistant `response_item` 的 `output_text` 可作为最新 Agent 输出摘要。
 
+Codex APP rollout snapshot 可用已清洗的最近 Agent 输出刷新已知运行中 session 摘要；运行中已有摘要时不得用仅来自用户输入的 rollout 摘要覆盖当前摘要。
+
 Codex APP 最终 Agent 输出按 65535 字符上限保留多段内容。
 
 Codex rollout 中的用户输入和 Agent 输出只展示原文，不拼接 `用户输入` 或 `Codex 回复` 前缀。
