@@ -20,7 +20,7 @@ Settings Service 不直接读写文件系统，不决定具体配置路径，不
 
 设置模型显式分为 General、Display、Panel、Agents、Replies、Presets、Terminal 和 Advanced。
 
-Display 设置控制用量展示、浅色或深色主题、UI 密度和动画等级。
+Display 设置控制用量展示、浅色或深色主题、UI 密度、动画等级和 session 摘要悬浮提示段数。
 
 Panel 设置保留 `collapsed` 字段、上次窗口位置和上次窗口尺寸。
 

@@ -515,6 +515,37 @@ describe("BuilderPanelApp session refresh", () => {
     expect(display.tooltipText).toBe("短文本但可能被行宽省略");
   });
 
+  it("builds tooltip from the most recent paragraphs while showing only the last", () => {
+    const display = textDisplayParagraph(
+      {
+        text: "第三段",
+        full_text: "第一段\n\n第二段\n\n第三段",
+        truncated: false,
+        max_chars: 100,
+      },
+      2,
+    );
+
+    expect(display.visibleText).toBe("第三段");
+    expect(display.fullParagraph).toBe("第三段");
+    expect(display.tooltipText).toBe("第二段\n\n第三段");
+  });
+
+  it("returns all paragraphs when fewer than the requested tooltip count", () => {
+    const display = textDisplayParagraph(
+      {
+        text: "第二段",
+        full_text: "第一段\n\n第二段",
+        truncated: false,
+        max_chars: 100,
+      },
+      5,
+    );
+
+    expect(display.visibleText).toBe("第二段");
+    expect(display.tooltipText).toBe("第一段\n\n第二段");
+  });
+
   it("parses tooltip markdown blocks for rendered session tooltips", () => {
     expect(
       parseTooltipMarkdown(

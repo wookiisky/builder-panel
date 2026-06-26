@@ -176,6 +176,27 @@ export const SettingsPanel = ({
             });
           }}
         />
+        <label className="select-row">
+          <span>摘要悬浮段数</span>
+          <input
+            min={1}
+            step={1}
+            type="number"
+            value={settings.display.summary_tooltip_paragraphs}
+            onChange={(event) => {
+              const parsed = Number.parseInt(event.target.value, 10);
+              const next =
+                Number.isFinite(parsed) && parsed >= 1 ? parsed : 1;
+              update({
+                ...settings,
+                display: {
+                  ...settings.display,
+                  summary_tooltip_paragraphs: next,
+                },
+              });
+            }}
+          />
+        </label>
       </SettingsGroup>
       <SettingsGroup title="Agents">
         <ToggleRow

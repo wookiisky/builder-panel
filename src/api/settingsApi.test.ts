@@ -8,6 +8,7 @@ describe("settingsApi", () => {
 
     expect(settings.display.show_usage).toBe(true);
     expect(settings.display.theme).toBe("light");
+    expect(settings.display.summary_tooltip_paragraphs).toBe(5);
     expect(settings.panel.collapsed).toBe(false);
     expect(settings.panel.window_position).toBeNull();
     expect(settings.panel.window_size).toBeNull();
@@ -68,11 +69,35 @@ describe("settingsApi", () => {
     expect(normalizedSettings?.display.theme).toBe("light");
     expect(normalizedSettings?.display.show_usage).toBe(false);
     expect(normalizedSettings?.display.density).toBe("compact");
+    expect(normalizedSettings?.display.summary_tooltip_paragraphs).toBe(5);
     expect(normalizedSettings?.panel.collapsed).toBe(false);
     expect(normalizedSettings?.agents.codex_app_enabled).toBe(true);
     expect("mock_agent_enabled" in (normalizedSettings?.agents ?? {})).toBe(
       false,
     );
+  });
+
+  it("normalizes summary tooltip paragraphs by flooring and rejecting invalid counts", () => {
+    const base = defaultSettings();
+    const cases: Array<[unknown, number]> = [
+      [3, 3],
+      [2.9, 2],
+      [0, 5],
+      [-4, 5],
+      ["7", 5],
+      [Number.NaN, 5],
+    ];
+
+    for (const [input, expected] of cases) {
+      const normalized = normalizeFallbackSettings({
+        ...base,
+        display: {
+          ...base.display,
+          summary_tooltip_paragraphs: input,
+        },
+      });
+      expect(normalized?.display.summary_tooltip_paragraphs).toBe(expected);
+    }
   });
 
   it("normalizes custom shortcuts by dropping invalid rows and duplicate ids", () => {

@@ -262,6 +262,7 @@ mod tests {
         assert_eq!(settings.display.show_usage, false);
         assert_eq!(settings.display.theme, Default::default());
         assert_eq!(settings.display.density, Default::default());
+        assert_eq!(settings.display.summary_tooltip_paragraphs, 5);
         assert_eq!(settings.general, Default::default());
         assert_eq!(settings.agents, Default::default());
         let _ = fs::remove_file(path);

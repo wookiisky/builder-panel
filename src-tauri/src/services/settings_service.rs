@@ -92,6 +92,14 @@ pub struct DisplaySettings {
     pub density: UiDensity,
     /// 动画等级。
     pub animation_level: AnimationLevel,
+    /// session 行摘要悬浮提示展示的最近段落数（界面仍只展示最后一段）。
+    #[serde(default = "default_summary_tooltip_paragraphs")]
+    pub summary_tooltip_paragraphs: u32,
+}
+
+/// session 摘要悬浮提示段落数默认值。
+pub fn default_summary_tooltip_paragraphs() -> u32 {
+    5
 }
 
 /// panel 窗口位置。
@@ -143,6 +151,7 @@ impl Default for DisplaySettings {
             theme: UiTheme::Light,
             density: UiDensity::Comfortable,
             animation_level: AnimationLevel::Full,
+            summary_tooltip_paragraphs: default_summary_tooltip_paragraphs(),
         }
     }
 }

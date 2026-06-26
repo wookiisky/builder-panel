@@ -1531,7 +1531,10 @@ const SessionRow = ({
   );
   const showActionSummary = shouldAutoShowSessionActionRow(session.status_kind);
   const shortcuts = sortedEnabledShortcuts(settings.replies.custom_shortcuts);
-  const summaryParagraph = textDisplayParagraph(session.summary);
+  const summaryParagraph = textDisplayParagraph(
+    session.summary,
+    settings.display.summary_tooltip_paragraphs,
+  );
   const actionSummary = interaction.summary ?? summaryParagraph.visibleText;
   const actionSummaryTooltip =
     interaction.summary ?? summaryParagraph.tooltipText;
@@ -1799,13 +1802,22 @@ export const sourceTag = (session: PanelSessionListItem): string => {
   }
 };
 
-/// 返回最后一段文本。
-const lastParagraph = (text: string): string => {
-  const paragraphs = text
+/// 按空行分段并去除空白段。
+const splitParagraphs = (text: string): string[] =>
+  text
     .split(/\n\s*\n/)
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
-  return paragraphs.at(-1) ?? "";
+
+/// 返回最后一段文本。
+const lastParagraph = (text: string): string =>
+  splitParagraphs(text).at(-1) ?? "";
+
+/// 返回最近 count 段文本（不足则全部），以空行重新拼接。
+const recentParagraphs = (text: string, count: number): string => {
+  const paragraphs = splitParagraphs(text);
+  const take = Math.max(1, Math.floor(count));
+  return paragraphs.slice(-take).join("\n\n");
 };
 
 /// 单段文本展示模型。
@@ -1821,19 +1833,23 @@ export interface ParagraphDisplay {
 }
 
 /// 从 TextDisplay 中生成当前段落展示。
+///
+/// 界面始终只展示最后一段，tooltip 展示最近 tooltipParagraphs 段（默认 1）。
 export const textDisplayParagraph = (
   display: TextDisplay,
+  tooltipParagraphs = 1,
 ): ParagraphDisplay => {
   const fullParagraph = lastParagraph(display.full_text);
   const visibleText = truncateText(fullParagraph, display.max_chars);
   const paragraphTruncated =
     Array.from(fullParagraph).length > display.max_chars;
+  const tooltipText = recentParagraphs(display.full_text, tooltipParagraphs);
 
   return {
     visibleText,
     fullParagraph,
     paragraphTruncated,
-    tooltipText: fullParagraph.length > 0 ? fullParagraph : null,
+    tooltipText: tooltipText.length > 0 ? tooltipText : null,
   };
 };
 

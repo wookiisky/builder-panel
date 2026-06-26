@@ -27,6 +27,8 @@ export interface DisplaySettings {
   readonly density: UiDensity;
   /// 动画等级。
   readonly animation_level: AnimationLevel;
+  /// session 行摘要悬浮提示展示的最近段落数（界面仍只展示最后一段）。
+  readonly summary_tooltip_paragraphs: number;
 }
 
 /// panel 窗口位置。

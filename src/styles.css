@@ -925,7 +925,8 @@ button:disabled {
   background: var(--panel);
 }
 
-.select-row select {
+.select-row select,
+.select-row input[type="number"] {
   min-height: 24px;
   min-width: 0;
   border: 1px solid var(--line-soft);
@@ -936,6 +937,11 @@ button:disabled {
 
 .select-row select {
   max-width: 58%;
+}
+
+.select-row input[type="number"] {
+  width: 64px;
+  text-align: right;
 }
 
 .shortcut-editor {

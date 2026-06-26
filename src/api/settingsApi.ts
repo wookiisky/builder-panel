@@ -21,6 +21,7 @@ export const defaultSettings = (): BuilderPanelSettings => ({
     theme: "light",
     density: "comfortable",
     animation_level: "full",
+    summary_tooltip_paragraphs: 5,
   },
   panel: {
     collapsed: false,
@@ -267,6 +268,10 @@ const normalizeDisplaySettings = (
     defaults.animation_level,
     ["full", "reduced"],
   );
+  const summaryTooltipParagraphs = normalizePositiveInteger(
+    candidate.summary_tooltip_paragraphs,
+    defaults.summary_tooltip_paragraphs,
+  );
 
   if (
     showUsage === null ||
@@ -282,7 +287,17 @@ const normalizeDisplaySettings = (
     theme,
     density,
     animation_level: animationLevel,
+    summary_tooltip_paragraphs: summaryTooltipParagraphs,
   };
+};
+
+/// 归一正整数（非法或缺省回退默认值，向下取整并夹到 >=1）。
+const normalizePositiveInteger = (value: unknown, defaults: number): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return defaults;
+  }
+  const floored = Math.floor(value);
+  return floored >= 1 ? floored : defaults;
 };
 
 /// 归一 panel 设置。
