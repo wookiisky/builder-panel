@@ -88,9 +88,13 @@ runtime 通过 session 更新端口发布轻量通知。
 
 Tauri 事件发布器按 session 合并更新，并在短节流窗口后向前端发送 `session_updated` 事件。
 
-`session_updated` 事件只包含 runtime source、session key、变更区域和更新时间。
+`session_updated` 事件只包含 runtime source、session key 和更新时间。
 
-前端订阅 `session_updated` 后节流刷新 session 列表。
+前端订阅 `session_updated` 后短延迟刷新 session 列表。
+
+前端 session 列表刷新进行中收到新的实时更新时，会在当前刷新结束后补一次刷新。
+
+前端连续收到高频实时更新时，必须周期性刷新列表，不等待事件完全停止。
 
 前端仍保留定时刷新作为实时事件缺失时的兜底。
 

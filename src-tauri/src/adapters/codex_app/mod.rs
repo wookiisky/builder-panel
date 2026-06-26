@@ -3545,7 +3545,9 @@ mod tests {
     use crate::domain::usage::{UnixMillis, UsageSnapshot};
     use crate::domain::view_model::UiAction;
     use crate::ports::agent_adapter_port::{ApprovalDecision, ChoiceSubmission};
-    use crate::ports::session_update_port::{SessionUpdateNotification, SessionUpdateSinkPort};
+    use crate::ports::session_update_port::{
+        SessionRuntimeSource, SessionUpdateNotification, SessionUpdateSinkPort,
+    };
 
     #[derive(Default)]
     struct RecordingSessionUpdateSink {
@@ -5536,6 +5538,40 @@ mod tests {
 
         assert_eq!(session.status, SessionStatus::Completed);
         assert_eq!(session.summary.as_deref(), Some("第一段，第二段"));
+    }
+
+    #[test]
+    fn agent_message_delta_updates_session_list_summary_and_publishes_update() {
+        let sink = Arc::new(RecordingSessionUpdateSink::default());
+        let mut runtime = CodexAppRuntime::with_update_sink(sink.clone());
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "列表摘要更新"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(2),
+            )
+            .expect("delta should apply");
+
+        let sessions = runtime.session_list();
+        let session = sessions
+            .iter()
+            .find(|session| session.session_key == session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+        let notifications = sink.notifications();
+
+        assert_eq!(session.summary.full_text, "列表摘要更新");
+        assert!(notifications.iter().any(|notification| {
+            notification.runtime_source == SessionRuntimeSource::CodexApp
+                && notification.session_key == session.session_key
+                && notification.updated_at == UnixMillis::new(2)
+        }));
     }
 
     #[test]

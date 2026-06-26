@@ -234,7 +234,11 @@ Tauri command 使用进程内 Codex APP runtime 锁收口 Codex APP 状态访问
 
 Codex APP 后台 metadata、session index 或 rollout 历史补齐已有 session 的可见字段时，后端必须发布 `session_updated` 事件。
 
-前端收到实时更新后必须节流刷新 session 列表。
+前端收到实时更新后必须短延迟刷新 session 列表。
+
+前端 session 列表刷新进行中收到新的实时更新时，必须在当前刷新结束后补一次刷新。
+
+连续实时更新不得让前端列表刷新无限后延。
 
 所有 coding agent session runtime 在 APP 进程启动时为空。
 

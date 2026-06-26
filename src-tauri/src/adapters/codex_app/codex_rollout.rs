@@ -524,15 +524,62 @@ fn live_event_from_response_item(
                 )
             })
         }
-        Some("function_call")
-        | Some("custom_tool_call")
-        | Some("local_shell_call")
-        | Some("tool_search_call")
-        | Some("web_search_call")
-        | Some("image_generation_call") => None,
+        Some("function_call") => function_call_activity(item)
+            .map(|summary| activity_event(state, &summary, updated_at)),
+        Some("local_shell_call") => Some(activity_event(state, "执行命令…", updated_at)),
+        Some("custom_tool_call") => None,
+        Some("tool_search_call") => {
+            Some(activity_event(state, "搜索工具中…", updated_at))
+        }
+        Some("web_search_call") => Some(activity_event(state, "联网检索中…", updated_at)),
+        Some("image_generation_call") => {
+            Some(activity_event(state, "生成图像中…", updated_at))
+        }
         Some("function_call_output") | Some("custom_tool_call_output") => None,
         _ => None,
     }
+}
+
+/// 根据 response_item.item 中的 function_call 字段，构造一条"正在执行什么"的简短摘要，
+/// 让长时间运行的工具调用（特别是 spawn_agent/wait_agent）期间，session 列表摘要不再卡住。
+///
+/// 出于安全考虑：未知工具名只暴露工具名本身，绝不读取 arguments，避免泄露未知工具中可能
+/// 含有的密钥等敏感字段。仅对显式白名单内的内置工具才解析 arguments。
+fn function_call_activity(item: &serde_json::Map<String, Value>) -> Option<String> {
+    let name = clean_string(item.get("name"))?;
+    let summary = match name.as_str() {
+        "exec_command" | "shell" | "local_shell" => item
+            .get("arguments")
+            .and_then(parse_function_call_arguments)
+            .as_ref()
+            .and_then(|value| {
+                clean_string(value.get("cmd")).or_else(|| clean_string(value.get("command")))
+            })
+            .map(|cmd| format!("执行: {}", cmd))
+            .unwrap_or_else(|| "执行命令…".to_string()),
+        "spawn_agent" => item
+            .get("arguments")
+            .and_then(parse_function_call_arguments)
+            .as_ref()
+            .and_then(|value| clean_string(value.get("agent_type")))
+            .map(|kind| format!("调用子 Agent: {}", kind))
+            .unwrap_or_else(|| "调用子 Agent…".to_string()),
+        "wait_agent" => "等待子 Agent 返回…".to_string(),
+        "close_agent" => "关闭子 Agent…".to_string(),
+        _ => return None,
+    };
+    Some(truncate(&summary, 240))
+}
+
+/// arguments 在 rollout 里通常是 JSON 字符串；先解析成 Value 方便逐字段读。
+fn parse_function_call_arguments(value: &Value) -> Option<Value> {
+    if let Some(text) = value.as_str() {
+        return serde_json::from_str(text).ok();
+    }
+    if value.is_object() {
+        return Some(value.clone());
+    }
+    None
 }
 
 /// 有界逐行读取，避免异常长行在分配后才被丢弃。
@@ -1241,6 +1288,7 @@ mod tests {
             .write_all(
                 br#"{"type":"event_msg","payload":{"type":"dynamic_tool_call_request","arguments":{"token":"secret"}}}
 {"type":"response_item","payload":{"item":{"type":"custom_tool_call","name":"unknown","arguments":{"token":"secret"}}}}
+{"type":"response_item","payload":{"item":{"type":"function_call","name":"unknown_tool","arguments":"{\"token\":\"secret\"}"}}}
 "#,
             )
             .expect("rollout should append");
@@ -1248,6 +1296,58 @@ mod tests {
         let events = tailer.poll_events(UnixMillis::new(20));
 
         assert!(events.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollout_tailer_emits_activity_for_function_call_intermediate_steps() {
+        let root = test_root("rollout-tail-fn-call");
+        let file = root.join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(&root).expect("root should create");
+        std::fs::write(&file, "").expect("rollout should write");
+        let session_key = SessionKey::new(
+            AgentKind::CodexApp,
+            ProjectId::new("/tmp/builder-panel"),
+            ConversationId::new("thread-1"),
+        );
+        let mut tailer = CodexRolloutTailer::new(root.clone());
+        tailer.sync_targets(vec![CodexRolloutWatchTarget {
+            session_key,
+            path: file.clone(),
+        }]);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .expect("rollout should open")
+            .write_all(
+                br#"{"type":"response_item","payload":{"item":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"ls -la\"}"}}}
+{"type":"response_item","payload":{"item":{"type":"function_call","name":"spawn_agent","arguments":"{\"agent_type\":\"plan_reviewer\"}"}}}
+{"type":"response_item","payload":{"item":{"type":"function_call","name":"wait_agent","arguments":"{}"}}}
+"#,
+            )
+            .expect("rollout should append");
+
+        let events = tailer.poll_events(UnixMillis::new(20));
+
+        assert_eq!(events.len(), 3);
+        for event in &events {
+            match event {
+                AgentEvent::ActivityUpdated(updated) => {
+                    assert!(!updated.summary.is_empty());
+                }
+                other => panic!("expected ActivityUpdated, got {:?}", other),
+            }
+        }
+        let summaries: Vec<_> = events
+            .iter()
+            .map(|event| match event {
+                AgentEvent::ActivityUpdated(updated) => updated.summary.clone(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(summaries[0], "执行: ls -la");
+        assert_eq!(summaries[1], "调用子 Agent: plan_reviewer");
+        assert_eq!(summaries[2], "等待子 Agent 返回…");
         let _ = std::fs::remove_dir_all(root);
     }
 

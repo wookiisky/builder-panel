@@ -26,11 +26,13 @@ Codex APP 后台 thread metadata、session index 或 rollout 历史补齐已有 
 
 运行时来源当前只包含 Codex CLI 和 Codex APP。
 
-
 后端发布器按 session 合并高频更新，并在短节流窗口后发送事件。
 
-前端收到事件后节流刷新 session 列表。
+前端收到事件后短延迟刷新 session 列表。
 
+前端刷新进行中收到新事件时，必须在当前刷新结束后补一次列表刷新。
+
+前端连续收到高频事件时，不得用无限后延的纯防抖阻塞列表更新。
 
 ## 代码入口
 

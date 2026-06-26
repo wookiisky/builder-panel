@@ -97,8 +97,8 @@ export type PanelSessionListItem = SessionListItemViewModel & {
 
 /// Codex CLI hook 写入 runtime 后，前端刷新 session 的间隔。
 export const SESSION_REFRESH_INTERVAL_MS = 1000;
-/// 后端实时更新触发前端刷新时的节流间隔。
-const SESSION_UPDATE_REFRESH_DEBOUNCE_MS = 180;
+/// 后端实时更新触发前端刷新时的短延迟。
+export const SESSION_UPDATE_REFRESH_DELAY_MS = 350;
 
 /// Builder Panel 首屏应用。
 export const BuilderPanelApp = () => {
@@ -126,7 +126,6 @@ export const BuilderPanelApp = () => {
   const settingsSaveVersion = useRef(0);
   const panelWindowPreferencesApplied = useRef(false);
   const panelGeometrySaveTimer = useRef<number | null>(null);
-  const sessionUpdateRefreshTimer = useRef<number | null>(null);
   const pendingPanelWindowUpdate = useRef<PanelWindowStateUpdate>({});
 
   const applySessionRefresh = (
@@ -246,70 +245,36 @@ export const BuilderPanelApp = () => {
 
   useEffect(() => {
     let disposed = false;
-    let refreshing = false;
-
-    const refresh = () => {
-      if (refreshing) {
-        return;
-      }
-
-      refreshing = true;
-      fetchAllSessions(settingsView.settings)
-        .then((items) => {
-          if (disposed) {
-            return;
-          }
-          applySessionRefresh(items);
-        })
-        .catch((error: unknown) => {
-          if (!disposed) {
-            setMockUiState((current) =>
-              endSubmit(current, readableError(error, "读取 session 失败")),
-            );
-          }
-        })
-        .finally(() => {
-          refreshing = false;
-        });
-    };
-
-    refresh();
-    const timer = window.setInterval(refresh, SESSION_REFRESH_INTERVAL_MS);
-
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [settingsView.settings]);
-
-  useEffect(() => {
-    let disposed = false;
     let unsubscribe: (() => void) | null = null;
+    const scheduler = createSessionRefreshScheduler({
+      eventDelayMs: SESSION_UPDATE_REFRESH_DELAY_MS,
+      refresh: async () => {
+        const items = await fetchAllSessions(settingsView.settings);
+        if (!disposed) {
+          applySessionRefresh(items);
+        }
+      },
+      reportError: (error) => {
+        if (!disposed) {
+          setMockUiState((current) =>
+            endSubmit(current, readableError(error, "读取 session 失败")),
+          );
+        }
+      },
+      scheduleTimeout: (handler, delayMs) =>
+        window.setTimeout(handler, delayMs),
+      clearTimeout: (timerId) => {
+        window.clearTimeout(timerId);
+      },
+    });
 
-    const scheduleSessionsRefresh = (): void => {
-      if (sessionUpdateRefreshTimer.current !== null) {
-        window.clearTimeout(sessionUpdateRefreshTimer.current);
-      }
-      sessionUpdateRefreshTimer.current = window.setTimeout(() => {
-        void fetchAllSessions(settingsView.settings)
-          .then((items) => {
-            if (disposed) {
-              return;
-            }
-            applySessionRefresh(items);
-          })
-          .catch((error: unknown) => {
-            if (!disposed) {
-              setMockUiState((current) =>
-                endSubmit(current, readableError(error, "读取 session 失败")),
-              );
-            }
-          });
-      }, SESSION_UPDATE_REFRESH_DEBOUNCE_MS);
-    };
+    scheduler.requestImmediate();
+    const timer = window.setInterval(() => {
+      scheduler.requestImmediate();
+    }, SESSION_REFRESH_INTERVAL_MS);
 
     subscribeSessionUpdates(() => {
-      scheduleSessionsRefresh();
+      scheduler.requestEvent();
     })
       .then((unlisten) => {
         if (disposed) {
@@ -326,11 +291,10 @@ export const BuilderPanelApp = () => {
 
     return () => {
       disposed = true;
+      scheduler.dispose();
+      window.clearInterval(timer);
       if (unsubscribe !== null) {
         unsubscribe();
-      }
-      if (sessionUpdateRefreshTimer.current !== null) {
-        window.clearTimeout(sessionUpdateRefreshTimer.current);
       }
     };
   }, [settingsView.settings]);
@@ -833,6 +797,102 @@ const forceExpandedPanelSettings = (
   },
 });
 
+/// Session 刷新调度器依赖。
+interface SessionRefreshSchedulerOptions<TimerId> {
+  /// 后端事件到前端刷新之间的短延迟。
+  readonly eventDelayMs: number;
+  /// 执行一次真实 session 刷新。
+  readonly refresh: () => Promise<void>;
+  /// 刷新失败收敛。
+  readonly reportError: (error: unknown) => void;
+  /// 注册延迟任务。
+  readonly scheduleTimeout: (handler: () => void, delayMs: number) => TimerId;
+  /// 取消延迟任务。
+  readonly clearTimeout: (timerId: TimerId) => void;
+}
+
+/// Session 刷新调度器。
+export interface SessionRefreshScheduler {
+  /// 立即请求刷新，用于启动和定时兜底。
+  readonly requestImmediate: () => void;
+  /// 后端事件触发的短延迟刷新。
+  readonly requestEvent: () => void;
+  /// 释放未执行的延迟任务。
+  readonly dispose: () => void;
+}
+
+/// 创建 session 列表刷新调度器。
+export const createSessionRefreshScheduler = <TimerId,>({
+  eventDelayMs,
+  refresh,
+  reportError,
+  scheduleTimeout,
+  clearTimeout,
+}: SessionRefreshSchedulerOptions<TimerId>): SessionRefreshScheduler => {
+  let disposed = false;
+  let running = false;
+  let queued = false;
+  let eventTimer: TimerId | null = null;
+
+  const clearEventTimer = (): void => {
+    if (eventTimer === null) {
+      return;
+    }
+    clearTimeout(eventTimer);
+    eventTimer = null;
+  };
+
+  const run = (): void => {
+    if (disposed) {
+      return;
+    }
+    if (running) {
+      queued = true;
+      return;
+    }
+
+    running = true;
+    void refresh()
+      .catch(reportError)
+      .finally(() => {
+        running = false;
+        if (!queued || disposed) {
+          return;
+        }
+        queued = false;
+        run();
+      });
+  };
+
+  return {
+    requestImmediate: () => {
+      clearEventTimer();
+      run();
+    },
+    requestEvent: () => {
+      if (disposed) {
+        return;
+      }
+      if (running) {
+        queued = true;
+        return;
+      }
+      if (eventTimer !== null) {
+        return;
+      }
+      eventTimer = scheduleTimeout(() => {
+        eventTimer = null;
+        run();
+      }, eventDelayMs);
+    },
+    dispose: () => {
+      disposed = true;
+      clearEventTimer();
+      queued = false;
+    },
+  };
+};
+
 /// 读取所有当前可展示 session。
 const fetchAllSessions = async (
   settings: BuilderPanelSettings,
@@ -1117,8 +1177,7 @@ export const shouldAutoShowSessionActionRow = (
   statusKind: PanelSessionListItem["status_kind"],
 ): boolean => {
   return (
-    statusKind === "waiting_for_approval" ||
-    statusKind === "waiting_for_answer"
+    statusKind === "waiting_for_approval" || statusKind === "waiting_for_answer"
   );
 };
 
@@ -1235,7 +1294,7 @@ interface SessionStreamProps {
 }
 
 /// Session 流。
-const SessionStream = ({
+export const SessionStream = ({
   sessions,
   selectedSessionId,
   settings,
@@ -1459,7 +1518,8 @@ const SessionRow = ({
     interaction.can_create_followup_turn,
   );
   const followupExpanded =
-    canToggleFollowup && isFollowupSessionExpanded(mockUiState, session.session_key);
+    canToggleFollowup &&
+    isFollowupSessionExpanded(mockUiState, session.session_key);
   const expanded = shouldShowSessionActionRow(
     session.status_kind,
     interaction.can_create_followup_turn,

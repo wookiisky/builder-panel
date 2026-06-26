@@ -164,6 +164,12 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证合并后的 session 首次捕捉顺序稳定、新 session 插入顶部、统计数量和动作标签。
 
+前端 Builder Panel 测试验证已有 session 摘要刷新后不改变首次捕捉顺序。
+
+前端 Builder Panel 测试验证列表刷新调度器在刷新中收到实时事件时会补刷，且连续事件不会无限后延。
+
+前端 Builder Panel 测试验证同一 session 摘要刷新后列表行展示新摘要。
+
 前端 Builder Panel 测试验证 session 行点击只有在存在 jump action 且跳回设置开启时才触发跳回。
 
 前端 Builder Panel 测试验证具备 jump action 的 session 在全局跳回关闭时仍可被点击选中。

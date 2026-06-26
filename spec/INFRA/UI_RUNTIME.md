@@ -20,6 +20,12 @@ Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
 
 前端读取 session 时按来源独立收敛失败；单一来源失败不会阻断其它来源展示。
 
+前端 session 列表刷新由统一调度器收口定时刷新和实时事件刷新。
+
+刷新进行中收到新的实时事件时，调度器会在当前刷新结束后补一次刷新。
+
+连续实时事件不会无限后延列表刷新。
+
 顶部状态区显示运行中数量和 session 总数。
 
 顶部状态区按工具展示整体用量摘要。
@@ -43,7 +49,6 @@ session 来源徽章按运行时来源派生：来自 Codex APP 的 session 显�
 当前输出文本 tooltip 由前端自绘，hover 或 focus 后立即展示，保留段内换行并按 Markdown 渲染。
 
 当前输出文本 tooltip 通过视口 fixed 浮层展示，并在下方空间不足时翻到触发文本上方，避免被 session 列表和 panel 容器裁剪。
-
 
 等待审批和等待用户回复的 session 会自动展示第二行。
 
@@ -132,7 +137,6 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
 `src/api/hookInstallApi.ts` 是前端 hook 状态查询和安装 command 调用入口。
-
 
 `src/styles.css` 是阶段 7 扩展模式布局入口。
 

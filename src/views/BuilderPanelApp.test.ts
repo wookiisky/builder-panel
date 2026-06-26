@@ -11,6 +11,7 @@ import {
   canJumpOnSessionClick,
   canSelectOnSessionClick,
   countSessionsByStatus,
+  createSessionRefreshScheduler,
   fetchSessionsForSource,
   isLatestSettingsSaveResponse,
   isCodexCliRuntime,
@@ -25,6 +26,7 @@ import {
   selectPanelSession,
   selectFirstSessionWhenMissing,
   SessionDetail,
+  SessionStream,
   sessionActionRowClassName,
   shouldAutoShowSessionActionRow,
   shouldShowSessionActionRow,
@@ -236,6 +238,149 @@ describe("BuilderPanelApp session refresh", () => {
       "running",
       "older-waiting",
     ]);
+  });
+
+  it("updates an existing session summary without changing capture order", () => {
+    const running = sessionItem(
+      sessionKey("project-a", "running"),
+      "codex_app",
+      "running",
+      "运行中",
+      1000,
+    );
+    const waiting = sessionItem(
+      sessionKey("project-a", "waiting"),
+      "codex_app",
+      "waiting_for_answer",
+      "等待回复",
+      1000,
+    );
+    const captured = mergePanelSessionsByCaptureOrder([], [running, waiting]);
+    const refreshed = mergePanelSessionsByCaptureOrder(captured, [
+      {
+        ...waiting,
+        summary: textDisplay("新的 Agent 摘要"),
+      },
+      {
+        ...running,
+        summary: textDisplay("运行中 Agent 摘要"),
+      },
+    ]);
+
+    expect(refreshed.map((session) => session.conversation_label)).toEqual([
+      "running",
+      "waiting",
+    ]);
+    expect(refreshed[1].summary.full_text).toBe("新的 Agent 摘要");
+  });
+
+  it("renders the refreshed list row summary for the same session", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = {
+      ...sessionItem(codexAppSessionKey, "codex_app", "running", "运行中"),
+      summary: textDisplay("旧摘要"),
+      actions: ["jump"] as const,
+    };
+    const refreshed = {
+      ...session,
+      summary: textDisplay("新的 Agent 摘要"),
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const renderStream = (items: readonly PanelSessionListItem[]) =>
+      createElement(SessionStream, {
+        mockUiState: createDefaultMockPanelUiState(),
+        sessions: items,
+        settings: defaultSettings(),
+        selectedSessionId: null,
+        onCreateFollowupTurn: () => undefined,
+        onDraftChange: () => undefined,
+        onJump: () => undefined,
+        onResolveApproval: () => undefined,
+        onSendReply: () => undefined,
+        onSubmitChoice: () => undefined,
+        onToggleChoice: () => undefined,
+        onToggleFollowupExpansion: () => undefined,
+      });
+
+    await act(async () => {
+      root.render(renderStream([session]));
+    });
+    expect(container.textContent).toContain("旧摘要");
+
+    await act(async () => {
+      root.render(renderStream([refreshed]));
+    });
+    expect(container.textContent).toContain("新的 Agent 摘要");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("runs a queued refresh after the current refresh finishes", async () => {
+    const resolvers: Array<() => void> = [];
+    const refresh = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const scheduler = createSessionRefreshScheduler({
+      eventDelayMs: 350,
+      refresh,
+      reportError: () => undefined,
+      scheduleTimeout: window.setTimeout,
+      clearTimeout: window.clearTimeout,
+    });
+
+    scheduler.requestImmediate();
+    scheduler.requestEvent();
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    resolvers.shift()?.();
+    await flushPromises();
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    resolvers.shift()?.();
+    await flushPromises();
+    scheduler.dispose();
+  });
+
+  it("throttles continuous session update events without waiting for silence", async () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn<() => Promise<void>>(async () => undefined);
+    const scheduler = createSessionRefreshScheduler({
+      eventDelayMs: 350,
+      refresh,
+      reportError: () => undefined,
+      scheduleTimeout: window.setTimeout,
+      clearTimeout: window.clearTimeout,
+    });
+
+    scheduler.requestEvent();
+    vi.advanceTimersByTime(100);
+    scheduler.requestEvent();
+    vi.advanceTimersByTime(100);
+    scheduler.requestEvent();
+    expect(refresh).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(150);
+    await flushPromises();
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    scheduler.requestEvent();
+    vi.advanceTimersByTime(100);
+    scheduler.requestEvent();
+    vi.advanceTimersByTime(250);
+    await flushPromises();
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    scheduler.dispose();
+    vi.useRealTimers();
   });
 
   it("counts waiting and running sessions for the expanded panel summary", () => {
@@ -756,4 +901,16 @@ const verifiedUsage = (
     scope,
     updated_at: { value: updatedAt },
   };
+};
+
+const textDisplay = (text: string): PanelSessionListItem["summary"] => ({
+  text,
+  full_text: text,
+  truncated: false,
+  max_chars: 120,
+});
+
+const flushPromises = async (): Promise<void> => {
+  await Promise.resolve();
+  await Promise.resolve();
 };
