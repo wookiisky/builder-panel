@@ -321,6 +321,65 @@ describe("BuilderPanelApp session refresh", () => {
     });
   });
 
+  it("renders full tooltip paragraph even when the row summary is truncated", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = {
+      ...sessionItem(codexAppSessionKey, "codex_app", "running", "运行中"),
+      summary: {
+        text: "截断",
+        full_text: "第一段完整内容\n\n第二段完整内容很长",
+        truncated: true,
+        max_chars: 3,
+      },
+    };
+    const settings = {
+      ...defaultSettings(),
+      display: {
+        ...defaultSettings().display,
+        summary_tooltip_paragraphs: 1,
+      },
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          sessions: [session],
+          settings,
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+          onToggleFollowupExpansion: () => undefined,
+        }),
+      );
+    });
+
+    const summaryTooltip = container.querySelector(".session-summary-tooltip");
+    expect(summaryTooltip?.textContent).toBe("第二段");
+
+    await act(async () => {
+      summaryTooltip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+
+    expect(document.body.textContent).toContain("第二段完整内容很长");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("runs a queued refresh after the current refresh finishes", async () => {
     const resolvers: Array<() => void> = [];
     const refresh = vi.fn(
@@ -475,21 +534,24 @@ describe("BuilderPanelApp session refresh", () => {
     expect(shouldSubmitReplyOnKeyDown(true, "A", false)).toBe(false);
   });
 
-  it("builds paragraph tooltip from the currently visible paragraph", () => {
+  it("builds default tooltip from the most recent five full paragraphs", () => {
     const display = textDisplayParagraph({
-      text: "第一段",
-      full_text: "第一段\n\n第二段内容很长",
+      text: "第六段",
+      full_text:
+        "第一段\n\n第二段\n\n第三段\n\n第四段\n\n第五段\n\n第六段内容很长",
       truncated: false,
       max_chars: 4,
     });
 
-    expect(display.visibleText).toBe("第二段内");
-    expect(display.fullParagraph).toBe("第二段内容很长");
+    expect(display.visibleText).toBe("第六段内");
+    expect(display.fullParagraph).toBe("第六段内容很长");
     expect(display.paragraphTruncated).toBe(true);
-    expect(display.tooltipText).toBe("第二段内容很长");
+    expect(display.tooltipText).toBe(
+      "第二段\n\n第三段\n\n第四段\n\n第五段\n\n第六段内容很长",
+    );
   });
 
-  it("keeps line breaks inside the visible tooltip paragraph", () => {
+  it("keeps line breaks inside the full tooltip paragraphs", () => {
     const display = textDisplayParagraph({
       text: "第一段",
       full_text: "第一段\n\n- 第一项\n- **第二项**\n继续说明",
@@ -499,7 +561,22 @@ describe("BuilderPanelApp session refresh", () => {
 
     expect(display.visibleText).toBe("- 第一项\n- ");
     expect(display.fullParagraph).toBe("- 第一项\n- **第二项**\n继续说明");
-    expect(display.tooltipText).toBe("- 第一项\n- **第二项**\n继续说明");
+    expect(display.tooltipText).toBe(
+      "第一段\n\n- 第一项\n- **第二项**\n继续说明",
+    );
+  });
+
+  it("keeps tooltip text independent from display text and max-char truncation", () => {
+    const display = textDisplayParagraph({
+      text: "截断展示",
+      full_text: "第一段完整内容\n\n第二段完整内容很长",
+      truncated: true,
+      max_chars: 3,
+    });
+
+    expect(display.visibleText).toBe("第二段");
+    expect(display.paragraphTruncated).toBe(true);
+    expect(display.tooltipText).toBe("第一段完整内容\n\n第二段完整内容很长");
   });
 
   it("keeps tooltip text even when the paragraph is not max-char truncated", () => {

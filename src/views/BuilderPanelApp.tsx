@@ -1828,16 +1828,16 @@ export interface ParagraphDisplay {
   readonly fullParagraph: string;
   /// 当前段落是否被截断。
   readonly paragraphTruncated: boolean;
-  /// 当前完整段落 tooltip 文本。
+  /// 最近完整段落 tooltip 文本。
   readonly tooltipText: string | null;
 }
 
 /// 从 TextDisplay 中生成当前段落展示。
 ///
-/// 界面始终只展示最后一段，tooltip 展示最近 tooltipParagraphs 段（默认 1）。
+/// 界面始终只展示最后一段，tooltip 展示最近 tooltipParagraphs 段（默认 5）。
 export const textDisplayParagraph = (
   display: TextDisplay,
-  tooltipParagraphs = 1,
+  tooltipParagraphs = 5,
 ): ParagraphDisplay => {
   const fullParagraph = lastParagraph(display.full_text);
   const visibleText = truncateText(fullParagraph, display.max_chars);

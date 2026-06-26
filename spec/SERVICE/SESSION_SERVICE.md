@@ -42,7 +42,9 @@ Session Service 调用 Domain view model 纯转换。
 
 Session view model 的 `TextDisplay` 同时提供截断展示文本和当前 view model 可用的完整清洗文本。
 
-前端 session 行按当前段落截断展示；当前段过长时可用完整当前段作为 tooltip。
+前端 session 行可见摘要只展示最后一段，并按列表展示上限截断。
+
+前端 session 行摘要 tooltip 使用 `TextDisplay.full_text` 最近若干段完整文本，段数由展示设置决定。
 
 Session 详情可使用 `TextDisplay` 的完整清洗文本展示多段摘要。
 
