@@ -65,6 +65,8 @@ export interface AgentSettings {
   readonly claude_cli_enabled: boolean;
   /// 是否启用 Claude Code APP。
   readonly claude_app_enabled: boolean;
+  /// Codex 内部任务提示词过滤模式（命中者不计入 session 列表）。
+  readonly codex_internal_prompt_patterns: readonly string[];
 }
 
 /// 回复设置。

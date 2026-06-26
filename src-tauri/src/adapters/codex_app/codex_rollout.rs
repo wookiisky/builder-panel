@@ -13,6 +13,7 @@ use std::os::windows::fs::MetadataExt;
 
 use serde_json::Value;
 
+use super::internal_prompt::is_codex_internal_prompt;
 use crate::domain::agent_event::{
     ActivityUpdatedEvent, AgentEvent, TurnCompletedEvent, UserMessageUpdatedEvent,
 };
@@ -458,6 +459,8 @@ fn live_event_from_event_msg(
         Some("user_message") => {
             state.completed = false;
             clean_string(payload.get("message"))
+                // 过滤 Codex 内部生成的隐藏 turn，只保留真实用户任务。
+                .filter(|message| !is_codex_internal_prompt(message))
                 .map(|message| user_message_event(state, &message, updated_at))
         }
         Some("agent_message") => clean_string(payload.get("message")).map(|message| {
@@ -789,7 +792,10 @@ fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRo
                 state.completed = false;
             }
             if let Some(message) = clean_string(payload.get("message")) {
-                state.summary = Some(truncate(&message, 120));
+                // 过滤 Codex 内部生成的隐藏 turn，避免内部任务覆盖真实用户摘要。
+                if !is_codex_internal_prompt(&message) {
+                    state.summary = Some(truncate(&message, 120));
+                }
             }
         }
         Some("exec_command_begin")
@@ -1197,6 +1203,54 @@ mod tests {
         };
         assert_eq!(event.session_key, session_key);
         assert_eq!(event.summary, "继续处理");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollout_snapshot_ignores_codex_internal_prompt() {
+        // 内部建议任务的 user_message 不应覆盖此前真实用户摘要。
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"重构旅游规划提示词"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"Generate 0 to 3 hyperpersonalized suggestions for the user."}}"#,
+        ]);
+
+        assert_eq!(snapshot.summary.as_deref(), Some("重构旅游规划提示词"));
+    }
+
+    #[test]
+    fn rollout_tailer_skips_codex_internal_prompt() {
+        let root = test_root("rollout-tail-internal");
+        let file = root.join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(&root).expect("root should create");
+        std::fs::write(&file, "").expect("rollout should write");
+        let session_key = SessionKey::new(
+            AgentKind::CodexCli,
+            ProjectId::new("/tmp/builder-panel"),
+            ConversationId::new("thread-1"),
+        );
+        let mut tailer = CodexRolloutTailer::new(root.clone());
+        tailer.sync_targets(vec![CodexRolloutWatchTarget {
+            session_key: session_key.clone(),
+            path: file.clone(),
+        }]);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .expect("rollout should open")
+            .write_all(
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"Generate 0 to 3 hyperpersonalized suggestions for the user."}}
+"#
+                .as_bytes(),
+            )
+            .expect("rollout should append");
+
+        let events = tailer.poll_events(UnixMillis::new(2));
+
+        assert!(
+            events.is_empty(),
+            "internal suggestion prompt should not emit user-message event"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -159,6 +159,19 @@ pub struct AgentSettings {
     pub claude_cli_enabled: bool,
     /// 是否启用 Claude Code APP。
     pub claude_app_enabled: bool,
+    /// Codex 内部任务提示词过滤模式。
+    ///
+    /// 命中（大小写不敏感、忽略连字符/空白差异的子串匹配）的 Codex 隐藏 turn
+    /// 不写入 session 摘要、不发出用户消息事件，从而让 session 列表只保留真实用户任务。
+    #[serde(default = "default_codex_internal_prompt_patterns")]
+    pub codex_internal_prompt_patterns: Vec<String>,
+}
+
+/// Codex 内部任务提示词过滤模式默认值。
+///
+/// 与适配器内 `DEFAULT_INTERNAL_PROMPT_PATTERNS` 保持一致；分层上两者各自独立持有同一字面量。
+pub fn default_codex_internal_prompt_patterns() -> Vec<String> {
+    vec!["hyperpersonalized suggestions".to_string()]
 }
 
 impl Default for AgentSettings {
@@ -169,6 +182,7 @@ impl Default for AgentSettings {
             codex_app_enabled: true,
             claude_cli_enabled: false,
             claude_app_enabled: false,
+            codex_internal_prompt_patterns: default_codex_internal_prompt_patterns(),
         }
     }
 }

@@ -1,6 +1,7 @@
 //! Codex APP adapter。
 
 mod codex_rollout;
+mod internal_prompt;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -51,6 +52,9 @@ use crate::ports::session_update_port::{
 };
 
 pub use self::codex_rollout::{CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget};
+pub use self::internal_prompt::{
+    is_codex_internal_prompt, set_internal_prompt_patterns, DEFAULT_INTERNAL_PROMPT_PATTERNS,
+};
 
 use self::codex_rollout::CodexRolloutSnapshot;
 
@@ -198,6 +202,14 @@ impl CodexAppAdapter {
                 ]);
             }
             BridgeHookEventName::UserPromptSubmit => {
+                // 过滤 Codex 内部生成的隐藏 turn（如建议生成任务），只保留真实用户任务。
+                if payload
+                    .prompt
+                    .as_deref()
+                    .is_some_and(is_codex_internal_prompt)
+                {
+                    return Ok(Vec::new());
+                }
                 let Some(prompt) = prompt_summary(payload) else {
                     return Ok(Vec::new());
                 };
@@ -3758,6 +3770,37 @@ mod tests {
                 .expect("payload should map");
 
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn hook_user_prompt_submit_emits_user_message() {
+        let mut payload = hook_payload(BridgeHookEventName::UserPromptSubmit);
+        payload.prompt = Some("重构旅游规划提示词".to_string());
+
+        let events =
+            CodexAppAdapter::events_from_hook_payload("request-1", &payload, UnixMillis::new(1))
+                .expect("payload should map");
+
+        let AgentEvent::UserMessageUpdated(event) = &events[0] else {
+            panic!("event should be user message");
+        };
+        assert_eq!(event.summary, "重构旅游规划提示词");
+    }
+
+    #[test]
+    fn hook_user_prompt_submit_filters_codex_internal_prompt() {
+        let mut payload = hook_payload(BridgeHookEventName::UserPromptSubmit);
+        payload.prompt =
+            Some("Generate 0 to 3 hyperpersonalized suggestions for the user.".to_string());
+
+        let events =
+            CodexAppAdapter::events_from_hook_payload("request-1", &payload, UnixMillis::new(1))
+                .expect("payload should map");
+
+        assert!(
+            events.is_empty(),
+            "internal suggestion prompt should not emit user-message event"
+        );
     }
 
     #[test]

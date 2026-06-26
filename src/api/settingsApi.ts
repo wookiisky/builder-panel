@@ -32,6 +32,7 @@ export const defaultSettings = (): BuilderPanelSettings => ({
     codex_app_enabled: true,
     claude_cli_enabled: false,
     claude_app_enabled: false,
+    codex_internal_prompt_patterns: ["hyperpersonalized suggestions"],
   },
   replies: {
     enter_to_send: true,
@@ -419,12 +420,17 @@ const normalizeAgentSettings = (
     candidate.claude_app_enabled,
     defaults.claude_app_enabled,
   );
+  const codexInternalPromptPatterns = normalizeStringList(
+    candidate.codex_internal_prompt_patterns,
+    defaults.codex_internal_prompt_patterns,
+  );
 
   if (
     codexCliEnabled === null ||
     codexAppEnabled === null ||
     claudeCliEnabled === null ||
-    claudeAppEnabled === null
+    claudeAppEnabled === null ||
+    codexInternalPromptPatterns === null
   ) {
     return null;
   }
@@ -434,7 +440,33 @@ const normalizeAgentSettings = (
     codex_app_enabled: codexAppEnabled,
     claude_cli_enabled: claudeCliEnabled,
     claude_app_enabled: claudeAppEnabled,
+    codex_internal_prompt_patterns: codexInternalPromptPatterns,
   };
+};
+
+/// 归一字符串列表：丢弃非字符串与空白项，缺省回退默认值。
+const normalizeStringList = (
+  value: unknown,
+  defaults: readonly string[],
+): readonly string[] | null => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const items: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+    const trimmed = entry.trim();
+    if (trimmed.length > 0) {
+      items.push(trimmed);
+    }
+  }
+  return items;
 };
 
 /// 归一回复设置。

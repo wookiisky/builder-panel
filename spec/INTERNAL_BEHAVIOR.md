@@ -98,6 +98,8 @@ Codex APP adapter 写入最后消息时，只能使用用户输入原文、assis
 
 Codex CLI 和 Codex APP adapter 不为工具 hook 事件、工具参数或工具结束事件写活动摘要。
 
+Codex APP adapter 过滤 Codex 内部生成的隐藏 turn（如建议生成任务），不为命中内部提示词模式的用户提示词写 session 摘要或发出用户消息事件，从而让 session 列表只保留真实用户任务。内部提示词模式可由设置项 `agents.codex_internal_prompt_patterns` 配置，匹配时对提示词与模式做大小写折叠、连字符/下划线删除、连续空白折叠后做子串包含判断。
+
 Codex CLI 和 Codex APP adapter 使用可信 cwd 派生项目展示名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
 
 Codex rollout adapter 不得把未知工具 JSON arguments 作为 preview 写入 Domain。

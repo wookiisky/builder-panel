@@ -12,6 +12,7 @@ pub mod tauri_api;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     initialize_event_logger();
+    initialize_codex_internal_prompt_patterns();
     tauri::Builder::default()
         .setup(|app| {
             tauri_api::commands::configure_session_update_sink(Arc::new(
@@ -60,4 +61,15 @@ fn initialize_event_logger() {
         .map(|settings| settings.logging.enabled)
         .unwrap_or(false);
     event_logger().configure(enabled, Some(default_log_path()));
+}
+
+/// 按持久化设置初始化 Codex 内部任务提示词过滤模式。
+fn initialize_codex_internal_prompt_patterns() {
+    use adapters::codex_app::set_internal_prompt_patterns;
+    use adapters::config_file::JsonSettingsStore;
+    use ports::config_store_port::SettingsStorePort;
+
+    if let Ok(Some(settings)) = JsonSettingsStore::default_path().load_settings() {
+        set_internal_prompt_patterns(settings.agents.codex_internal_prompt_patterns.iter());
+    }
 }

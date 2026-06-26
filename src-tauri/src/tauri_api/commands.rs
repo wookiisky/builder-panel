@@ -9,9 +9,10 @@ use serde_json::json;
 
 use crate::adapters::codex_app::{
     apply_session_index_thread_titles, default_codex_session_index_path,
-    ensure_codex_app_thread_loaded, load_codex_session_index_titles, CodexAppAdapter,
-    CodexAppFollowupRpcClient, CodexAppRuntime, CodexAppSchemaProbe, CodexAppServerClient,
-    CodexAppThreadMetadata, CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget,
+    ensure_codex_app_thread_loaded, load_codex_session_index_titles, set_internal_prompt_patterns,
+    CodexAppAdapter, CodexAppFollowupRpcClient, CodexAppRuntime, CodexAppSchemaProbe,
+    CodexAppServerClient, CodexAppThreadMetadata, CodexRolloutDiscovery, CodexRolloutTailer,
+    CodexRolloutWatchTarget,
 };
 use crate::adapters::codex_app_inject::{
     capture_cursor_position, default_codex_app_injector, ensure_accessibility_trusted,
@@ -107,6 +108,7 @@ pub fn get_panel_settings() -> SettingsViewModel {
     let view = service.read_settings();
 
     refresh_logger(&view.settings);
+    refresh_codex_internal_prompt_patterns(&view.settings);
     view
 }
 
@@ -119,6 +121,7 @@ pub fn save_panel_settings(settings: BuilderPanelSettings) -> Result<SettingsVie
     match service.save_settings(settings) {
         Ok(view) => {
             refresh_logger(&view.settings);
+            refresh_codex_internal_prompt_patterns(&view.settings);
             log_info(
                 "设置已保存",
                 json!({
@@ -206,6 +209,11 @@ fn open_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
 /// 根据设置刷新全局 logger 配置。
 fn refresh_logger(settings: &BuilderPanelSettings) {
     event_logger().configure(settings.logging.enabled, Some(default_log_path()));
+}
+
+/// 根据设置刷新 Codex 内部任务提示词过滤模式。
+fn refresh_codex_internal_prompt_patterns(settings: &BuilderPanelSettings) {
+    set_internal_prompt_patterns(settings.agents.codex_internal_prompt_patterns.iter());
 }
 
 /// 保存 panel 窗口局部状态。

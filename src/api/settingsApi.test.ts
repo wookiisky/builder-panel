@@ -17,6 +17,30 @@ describe("settingsApi", () => {
     expect("auto_update" in settings).toBe(false);
   });
 
+  it("defaults codex internal prompt patterns to the suggestion task", () => {
+    const settings = defaultSettings();
+
+    expect(settings.agents.codex_internal_prompt_patterns).toEqual([
+      "hyperpersonalized suggestions",
+    ]);
+  });
+
+  it("normalizes codex internal prompt patterns by trimming and dropping blanks", () => {
+    const settings = {
+      ...defaultSettings(),
+      agents: {
+        ...defaultSettings().agents,
+        codex_internal_prompt_patterns: ["  custom task  ", "", "   "],
+      },
+    };
+
+    const normalized = normalizeFallbackSettings(settings);
+
+    expect(normalized?.agents.codex_internal_prompt_patterns).toEqual([
+      "custom task",
+    ]);
+  });
+
   it("normalizes legacy fallback settings and drops mock agent flag", () => {
     const legacySettings = {
       ...defaultSettings(),
