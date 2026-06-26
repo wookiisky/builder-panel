@@ -28,13 +28,15 @@ Vite 前端渲染基础 panel。
 
 panel 窗口状态局部保存 command 不持久化 `collapsed`。
 
-Tauri 环境读取设置后尝试恢复上次窗口位置和尺寸。
+Tauri 环境读取设置后尝试恢复上次窗口位置、尺寸和置顶偏好。
 
 Tauri 环境监听窗口移动和尺寸变化。
 
 窗口位置或尺寸变化后，前端通过 panel 窗口状态局部保存 command 持久化几何信息。
 
-浏览器开发环境不执行 Tauri 窗口几何恢复。
+设置保存成功且响应仍是最新请求时，前端按保存响应应用当前窗口置顶偏好。
+
+浏览器开发环境不执行 Tauri 窗口偏好应用和几何恢复。
 
 用户点击关闭按钮时，前端通过窗口 API 请求关闭当前 Tauri 窗口。
 
@@ -516,7 +518,7 @@ Codex APP 回复回写失败时前端不清理草稿。
 
 `src/api/sessionUpdateApi.ts` 是前端 session 更新事件订阅入口。
 
-`src/api/panelWindowApi.ts` 是前端窗口关闭调用入口。
+`src/api/panelWindowApi.ts` 是前端窗口偏好应用、几何恢复和关闭调用入口。
 
 `src-tauri/src/services/notification_service.rs` 是通知计划流程入口。
 

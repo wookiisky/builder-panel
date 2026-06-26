@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   actionLabel,
+  applyLatestSavedPanelWindowPreferences,
   aggregateToolUsage,
   applyPanelWindowControlError,
   canToggleFollowupRow,
@@ -480,6 +481,59 @@ describe("BuilderPanelApp session refresh", () => {
   it("ignores stale settings save responses", () => {
     expect(isLatestSettingsSaveResponse(1, 2)).toBe(false);
     expect(isLatestSettingsSaveResponse(2, 2)).toBe(true);
+  });
+
+  it("applies window preferences for the latest settings save response", async () => {
+    const applyPreferences = vi.fn<() => Promise<void>>();
+    const settings = {
+      ...defaultSettings(),
+      general: {
+        ...defaultSettings().general,
+        keep_panel_on_top: false,
+      },
+    };
+
+    const applied = await applyLatestSavedPanelWindowPreferences(
+      true,
+      2,
+      2,
+      settings,
+      applyPreferences,
+    );
+
+    expect(applied).toBe(true);
+    expect(applyPreferences).toHaveBeenCalledTimes(1);
+    expect(applyPreferences).toHaveBeenCalledWith(settings);
+  });
+
+  it("does not apply window preferences for stale settings save responses", async () => {
+    const applyPreferences = vi.fn<() => Promise<void>>();
+
+    const applied = await applyLatestSavedPanelWindowPreferences(
+      true,
+      1,
+      2,
+      defaultSettings(),
+      applyPreferences,
+    );
+
+    expect(applied).toBe(false);
+    expect(applyPreferences).not.toHaveBeenCalled();
+  });
+
+  it("keeps window preferences untouched when settings save fails", async () => {
+    const applyPreferences = vi.fn<() => Promise<void>>();
+
+    const applied = await applyLatestSavedPanelWindowPreferences(
+      false,
+      2,
+      2,
+      defaultSettings(),
+      applyPreferences,
+    );
+
+    expect(applied).toBe(false);
+    expect(applyPreferences).not.toHaveBeenCalled();
   });
 
   it("creates default hook install statuses for the settings list", () => {

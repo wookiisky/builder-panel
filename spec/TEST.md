@@ -392,7 +392,7 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 
 `src/api/settingsApi.test.ts` 是前端设置默认值和自定义快捷输入清洗测试入口。
 
-`src/api/panelWindowApi.ts` 是前端 panel 窗口状态恢复、局部保存和关闭窗口入口。
+`src/api/panelWindowApi.test.ts` 覆盖前端 panel 窗口置顶偏好应用、状态恢复、局部保存和关闭窗口入口。
 
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 

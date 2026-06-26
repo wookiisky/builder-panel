@@ -5,7 +5,7 @@ import {
   PhysicalSize,
 } from "@tauri-apps/api/window";
 
-import type { PanelSettings } from "./settingsContract";
+import type { BuilderPanelSettings, PanelSettings } from "./settingsContract";
 
 /// panel 窗口状态局部保存请求。
 export interface PanelWindowStateUpdate {
@@ -39,7 +39,37 @@ export const applyPanelWindowGeometry = async (
     return;
   }
 
+  await applyPanelWindowGeometryToWindow(getCurrentWindow(), panel);
+};
+
+/// 应用已持久化的窗口偏好。
+export const applyPanelWindowPreferences = async (
+  settings: BuilderPanelSettings,
+): Promise<void> => {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
   const appWindow = getCurrentWindow();
+  let alwaysOnTopError: unknown = null;
+  try {
+    await appWindow.setAlwaysOnTop(settings.general.keep_panel_on_top);
+  } catch (error) {
+    alwaysOnTopError = error;
+  }
+
+  await applyPanelWindowGeometryToWindow(appWindow, settings.panel);
+
+  if (alwaysOnTopError !== null) {
+    throw errorWithCause(alwaysOnTopError, "应用 panel 窗口设置失败");
+  }
+};
+
+/// 对指定窗口应用已持久化的窗口几何。
+const applyPanelWindowGeometryToWindow = async (
+  appWindow: ReturnType<typeof getCurrentWindow>,
+  panel: PanelSettings,
+): Promise<void> => {
   if (panel.window_size !== null) {
     await appWindow.setSize(
       new PhysicalSize(panel.window_size.width, panel.window_size.height),

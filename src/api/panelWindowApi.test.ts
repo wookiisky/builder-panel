@@ -4,6 +4,9 @@ const tauriWindowMocks = vi.hoisted(() => ({
   close: vi.fn<() => Promise<void>>(),
   getCurrentWindow: vi.fn(),
   minimize: vi.fn<() => Promise<void>>(),
+  setAlwaysOnTop: vi.fn<(alwaysOnTop: boolean) => Promise<void>>(),
+  setPosition: vi.fn<(position: unknown) => Promise<void>>(),
+  setSize: vi.fn<(size: unknown) => Promise<void>>(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -38,7 +41,12 @@ vi.mock("@tauri-apps/api/window", () => ({
   },
 }));
 
-import { closePanelWindow, minimizePanelWindow } from "./panelWindowApi";
+import { defaultSettings } from "./settingsApi";
+import {
+  applyPanelWindowPreferences,
+  closePanelWindow,
+  minimizePanelWindow,
+} from "./panelWindowApi";
 
 describe("panelWindowApi", () => {
   afterEach(() => {
@@ -50,6 +58,7 @@ describe("panelWindowApi", () => {
   it("ignores window commands outside Tauri runtime", async () => {
     await minimizePanelWindow();
     await closePanelWindow();
+    await applyPanelWindowPreferences(defaultSettings());
 
     expect(tauriWindowMocks.getCurrentWindow).not.toHaveBeenCalled();
   });
@@ -83,6 +92,84 @@ describe("panelWindowApi", () => {
       expect((error as Error).cause).toBe(failure);
     }
   });
+
+  it("applies the saved always-on-top preference to the Tauri window", async () => {
+    enableTauriRuntime();
+    tauriWindowMocks.getCurrentWindow.mockReturnValue(currentWindowMock());
+    const settings = {
+      ...defaultSettings(),
+      general: {
+        ...defaultSettings().general,
+        keep_panel_on_top: false,
+      },
+    };
+
+    await applyPanelWindowPreferences(settings);
+
+    expect(tauriWindowMocks.setAlwaysOnTop).toHaveBeenCalledTimes(1);
+    expect(tauriWindowMocks.setAlwaysOnTop).toHaveBeenCalledWith(false);
+  });
+
+  it("applies always-on-top and saved geometry together", async () => {
+    enableTauriRuntime();
+    tauriWindowMocks.getCurrentWindow.mockReturnValue(currentWindowMock());
+    const settings = {
+      ...defaultSettings(),
+      panel: {
+        collapsed: false,
+        window_position: { x: 12, y: 20 },
+        window_size: { width: 860, height: 640 },
+      },
+    };
+
+    await applyPanelWindowPreferences(settings);
+
+    expect(tauriWindowMocks.setAlwaysOnTop).toHaveBeenCalledWith(true);
+    expect(tauriWindowMocks.setSize).toHaveBeenCalledWith({
+      width: 860,
+      height: 640,
+    });
+    expect(tauriWindowMocks.setPosition).toHaveBeenCalledWith({
+      x: 12,
+      y: 20,
+    });
+  });
+
+  it("keeps applying geometry when always-on-top fails", async () => {
+    enableTauriRuntime();
+    const failure = new Error("permission denied");
+    tauriWindowMocks.setAlwaysOnTop.mockRejectedValueOnce(failure);
+    tauriWindowMocks.getCurrentWindow.mockReturnValue(currentWindowMock());
+    const settings = {
+      ...defaultSettings(),
+      general: {
+        ...defaultSettings().general,
+        keep_panel_on_top: false,
+      },
+      panel: {
+        collapsed: false,
+        window_position: { x: 12, y: 20 },
+        window_size: { width: 860, height: 640 },
+      },
+    };
+
+    try {
+      await applyPanelWindowPreferences(settings);
+      throw new Error("expected window preferences to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("permission denied");
+      expect((error as Error).cause).toBe(failure);
+    }
+    expect(tauriWindowMocks.setSize).toHaveBeenCalledWith({
+      width: 860,
+      height: 640,
+    });
+    expect(tauriWindowMocks.setPosition).toHaveBeenCalledWith({
+      x: 12,
+      y: 20,
+    });
+  });
 });
 
 /// 模拟 Tauri 运行时标记。
@@ -92,3 +179,12 @@ const enableTauriRuntime = (): void => {
     value: {},
   });
 };
+
+/// 创建当前窗口 mock。
+const currentWindowMock = () => ({
+  close: tauriWindowMocks.close,
+  minimize: tauriWindowMocks.minimize,
+  setAlwaysOnTop: tauriWindowMocks.setAlwaysOnTop,
+  setPosition: tauriWindowMocks.setPosition,
+  setSize: tauriWindowMocks.setSize,
+});

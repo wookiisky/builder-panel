@@ -228,7 +228,7 @@
 
 `src/api/settingsContract.ts` 是前端设置契约入口。
 
-`src/api/panelWindowApi.ts` 是前端 panel 窗口状态恢复、监听、局部保存和关闭窗口入口。
+`src/api/panelWindowApi.ts` 是前端 panel 窗口偏好应用、状态恢复、监听、局部保存和关闭窗口入口。
 
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 

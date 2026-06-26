@@ -46,7 +46,7 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 阶段 8 设置页已接入 hook 状态查询、安装和卸载入口。
 
-阶段 8 设置已保存 panel 窗口位置和窗口尺寸。
+阶段 8 设置已保存 panel 窗口位置、窗口尺寸和置顶偏好。
 
 当前主界面固定为展开工作台，不提供收缩入口。
 
@@ -159,7 +159,7 @@ Builder Panel APP 启动后仍在运行并继续发出实时事件的任务可�
 
 `src/components/SettingsPanel.tsx` 是设置页组件入口。
 
-`src/api/panelWindowApi.ts` 是前端 panel 窗口状态恢复和局部保存入口。
+`src/api/panelWindowApi.ts` 是前端 panel 窗口偏好应用、状态恢复和局部保存入口。
 
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 

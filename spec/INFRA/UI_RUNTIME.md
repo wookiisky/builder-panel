@@ -65,13 +65,15 @@ session 来源徽章按运行时来源派生：来自 Codex APP 的 session 显�
 
 设置中的 Panel `collapsed` 字段会被归一化为 `false`，不再作为主界面布局状态。
 
-Tauri 环境会在设置读取后尝试恢复上次窗口位置和尺寸。
+Tauri 环境会在设置读取后尝试恢复上次窗口位置、尺寸和置顶偏好。
 
 Tauri 环境会监听主窗口移动和尺寸变化，并以局部保存 command 持久化窗口几何。
 
 Tauri 环境依赖 `core:window:allow-start-dragging` 允许顶部拖动区移动窗口。
 
 Tauri 环境依赖 `core:window:allow-minimize` 允许前端最小化主窗口。
+
+Tauri 环境依赖 `core:window:allow-set-always-on-top` 允许前端应用面板置顶设置。
 
 浏览器开发环境不执行 Tauri 窗口几何恢复。
 
@@ -98,6 +100,8 @@ Hook Install 分组不因 agent 开关变化自动写入第三方配置。
 设置修改后立即请求保存；保存失败时保留用户当前 UI 选择并显示错误。
 
 设置保存响应带有前端请求版本保护，旧响应不覆盖较新的 UI 设置状态。
+
+面板置顶设置保存成功后，前端按最新保存响应应用当前窗口置顶状态。
 
 当前 UI 启用 Codex CLI 和 Codex APP 开关。
 

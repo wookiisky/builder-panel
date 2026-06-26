@@ -26,7 +26,7 @@ import {
   type HookInstallAgentStatus,
 } from "../api/hookInstallApi";
 import {
-  applyPanelWindowGeometry,
+  applyPanelWindowPreferences,
   closePanelWindow,
   minimizePanelWindow,
   savePanelWindowState,
@@ -124,7 +124,7 @@ export const BuilderPanelApp = () => {
   );
   const [logPath, setLogPath] = useState<string | null>(null);
   const settingsSaveVersion = useRef(0);
-  const panelGeometryApplied = useRef(false);
+  const panelWindowPreferencesApplied = useRef(false);
   const panelGeometrySaveTimer = useRef<number | null>(null);
   const sessionUpdateRefreshTimer = useRef<number | null>(null);
   const pendingPanelWindowUpdate = useRef<PanelWindowStateUpdate>({});
@@ -192,20 +192,20 @@ export const BuilderPanelApp = () => {
   }, [settingsView.settings.logging.enabled]);
 
   useEffect(() => {
-    if (!settingsHydrated || panelGeometryApplied.current) {
+    if (!settingsHydrated || panelWindowPreferencesApplied.current) {
       return;
     }
 
-    panelGeometryApplied.current = true;
-    applyPanelWindowGeometry(settingsView.settings.panel).catch(
+    panelWindowPreferencesApplied.current = true;
+    applyPanelWindowPreferences(settingsView.settings).catch(
       (error: unknown) => {
         setSettingsView((current) => ({
           ...current,
-          status_message: readableError(error, "恢复 panel 窗口状态失败"),
+          status_message: readableError(error, "应用 panel 窗口设置失败"),
         }));
       },
     );
-  }, [settingsHydrated, settingsView.settings.panel]);
+  }, [settingsHydrated, settingsView.settings]);
 
   useEffect(() => {
     if (!settingsHydrated) {
@@ -357,6 +357,18 @@ export const BuilderPanelApp = () => {
       ) {
         setSettingsView(nextView);
       }
+      void applyLatestSavedPanelWindowPreferences(
+        true,
+        saveVersion,
+        settingsSaveVersion.current,
+        nextView.settings,
+        applyPanelWindowPreferences,
+      ).catch((error: unknown) => {
+        setSettingsView((current) => ({
+          ...current,
+          status_message: readableError(error, "应用 panel 窗口设置失败"),
+        }));
+      });
     } catch (error: unknown) {
       if (
         isLatestSettingsSaveResponse(saveVersion, settingsSaveVersion.current)
@@ -915,6 +927,25 @@ export const isLatestSettingsSaveResponse = (
   currentVersion: number,
 ): boolean => {
   return responseVersion === currentVersion;
+};
+
+/// 保存响应仍是最新请求时，应用当前窗口偏好。
+export const applyLatestSavedPanelWindowPreferences = async (
+  saveSucceeded: boolean,
+  responseVersion: number,
+  currentVersion: number,
+  settings: BuilderPanelSettings,
+  applyPreferences: (settings: BuilderPanelSettings) => Promise<void>,
+): Promise<boolean> => {
+  if (!saveSucceeded) {
+    return false;
+  }
+  if (!isLatestSettingsSaveResponse(responseVersion, currentVersion)) {
+    return false;
+  }
+
+  await applyPreferences(settings);
+  return true;
 };
 
 /// 创建默认 hook 安装状态。
