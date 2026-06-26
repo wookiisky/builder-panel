@@ -48,6 +48,10 @@ session 列表展示等待审批、等待回复、运行中、完成和失败状
 
 每个 session 行从左到右展示状态、来源标签、项目名、thread 名和当前输出文本。
 
+session 行和详情区展示完整 thread 名。
+
+长 thread 名在面板布局内换行展示，不横向撑破面板。
+
 session 来源标签按运行时来源派生：来自 Codex APP 的 session 显示为 `Codex`，来自 Codex CLI 的 session 显示为 `Codex CLI`。
 
 当前输出文本超过行宽时截断展示。
@@ -72,7 +76,6 @@ session 详情可展示当前 view model 可用的完整多段摘要。
 
 两行 session 的第一行展示最后一段输出文本。
 
-
 Codex APP thread 名可由 Codex session index、app-server thread metadata 或 app-server 实时改名通知补齐。
 
 Codex CLI hook 的模型字段和 Codex APP 中形似模型名的值不展示为 thread 名。
@@ -90,8 +93,6 @@ Builder Panel 可为 Codex APP 读取 app-server 已加载 thread id、`thread/l
 Builder Panel 可在已知 Codex CLI session 的 rollout path 后展示新增追加行产生的用户文本和 assistant 文本。
 
 Builder Panel 可在已知 Codex APP session 的 rollout path 后展示新增追加行产生的用户文本和 assistant 文本。
-
-
 
 Codex CLI 和 Codex APP session 最后消息不展示 hook 工具调用、命令预览或其它工具调用参数。
 
@@ -127,15 +128,6 @@ APP 打开前已经结束且不再发出实时事件的 Codex CLI 或未接入 a
 
 自定义快捷输入发送失败后，快捷输入内容保留在当前草稿中。
 
-
-
-
-
-
-
-
-
-
 mock agent 不再作为产品运行时 session 来源。
 
 会话列表可展示 Codex CLI hook 产生的真实 session。
@@ -147,8 +139,6 @@ Codex CLI 请求权限时，用户可在 panel 中点击允许或拒绝。
 Codex CLI 审批决策会通过 hook stdout directive 返回给 Codex CLI。
 
 Codex CLI 的允许并记住入口当前按允许 directive 返回，不声明真实记忆规则已支持。
-
-
 
 Codex APP 开关默认开启。开关开启后，panel 会尝试启动 Codex APP app-server 并接收启动后的 Codex APP 实时事件。
 
@@ -175,8 +165,6 @@ Codex APP app-server 实时事件缺少可信项目路径且历史补齐尚未�
 Codex APP 待识别项目 session 不提供跳回行为。
 
 Codex CLI 和 Codex APP session 使用可信 cwd 派生项目名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
-
-
 
 Codex APP session 最后消息不展示 hook 工具调用、命令预览或其它工具调用参数。
 
@@ -276,8 +264,6 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 阶段 2 不承诺 Windows Named Pipe 已在 Windows 本机验收。
 
-
-
 阶段 4 当前不声明 Claude Code 真实闭环已完成。
 
 阶段 4 当前不声明 Codex APP WebSocket transport 已接入。
@@ -300,8 +286,6 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 阶段 8 性能预算脚本不替代 10 分钟空闲 CPU 人工采样。
 
-
-
 阶段 3 不执行 Windows 本机人工验证。
 
 当前窗口位置和尺寸恢复只在 Tauri 环境自动执行。
@@ -320,7 +304,6 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook 状态和 directive 入口。
 
-
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server、runtime、schema 探针和 notification 转换入口。
 
 `src-tauri/src/adapters/bridge/hook_output.rs` 是 hook stdout directive 编码入口。
@@ -328,7 +311,6 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 `src/views/BuilderPanelApp.tsx` 是 Codex CLI 和 Codex APP session 前端行为入口。
 
 `src/api/codexCliPanelApi.ts` 和 `src/api/codexAppPanelApi.ts` 是前端真实 Codex command 调用入口。
-
 
 `src-tauri/src/services/shortcut_reply_service.rs` 是快捷回复过滤入口。
 

@@ -1,3 +1,5 @@
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -22,6 +24,7 @@ import {
   positionTooltipPanel,
   selectPanelSession,
   selectFirstSessionWhenMissing,
+  SessionDetail,
   sessionActionRowClassName,
   shouldAutoShowSessionActionRow,
   shouldShowSessionActionRow,
@@ -32,7 +35,10 @@ import {
   textDisplayParagraph,
   type PanelSessionListItem,
 } from "./BuilderPanelApp";
-import type { SessionKey } from "../api/mockPanelContract";
+import type {
+  SessionDetailViewModel,
+  SessionKey,
+} from "../api/mockPanelContract";
 import { defaultSettings } from "../api/settingsApi";
 import { createDefaultMockPanelUiState } from "../stores/mockPanelStore";
 
@@ -133,9 +139,7 @@ describe("BuilderPanelApp session refresh", () => {
   });
 
   it("shows runtime source labels with Codex app branding", () => {
-    expect(sourceTag(sessionItem(codexSessionKey, "codex_app"))).toBe(
-      "Codex",
-    );
+    expect(sourceTag(sessionItem(codexSessionKey, "codex_app"))).toBe("Codex");
     expect(sourceTag(sessionItem(codexSessionKey, "codex_cli"))).toBe(
       "Codex CLI",
     );
@@ -438,6 +442,88 @@ describe("BuilderPanelApp session refresh", () => {
     stopTooltipPortalEvent({ stopPropagation });
 
     expect(stopPropagation).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders full thread label in session detail", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const longThreadLabel = "一二三四五六七八九十十一完整线程标题";
+    const selectedSession = {
+      ...sessionItem(codexAppSessionKey, "codex_app"),
+      thread_label: longThreadLabel,
+    };
+    const detail: SessionDetailViewModel = {
+      header: longThreadLabel,
+      identity: `/tmp/builder-panel-app / ${longThreadLabel}`,
+      usage: "5H --，本周 --",
+      summary: {
+        text: "摘要",
+        full_text: "摘要",
+        truncated: false,
+        max_chars: 240,
+      },
+      execution_info: "完成",
+      pending_interaction: null,
+      pending_interaction_id: null,
+      pending_interaction_kind: null,
+      reply_box: {
+        enabled: false,
+        disabled_reason: "当前会话不支持回复",
+      },
+      choice_box: {
+        enabled: false,
+        allows_multiple: false,
+        choices: [],
+        disabled_reason: "当前会话没有选项交互",
+      },
+      toolbar_actions: [],
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionDetail, {
+          detail,
+          selectedSession,
+          draft: "",
+          selectedChoiceValues: [],
+          settings: defaultSettings(),
+          submittingInteractionId: null,
+          onDraftChange: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onUseShortcutReply: () => undefined,
+          onToggleChoice: () => undefined,
+          onSubmitChoice: () => undefined,
+          onCreateFollowupTurn: () => undefined,
+        }),
+      );
+    });
+
+    expect(container.querySelector(".session-detail strong")?.textContent).toBe(
+      longThreadLabel,
+    );
+    expect(container.querySelector(".session-detail p")?.textContent).toBe(
+      `/tmp/builder-panel-app / ${longThreadLabel}`,
+    );
+
+    const detailButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "详情",
+    );
+    await act(async () => {
+      detailButton?.click();
+    });
+
+    expect(
+      container.querySelector(".session-detail-overlay p")?.textContent,
+    ).toBe(`Codex / ${longThreadLabel}`);
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("only auto-shows action rows for waiting sessions", () => {

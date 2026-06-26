@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use accessibility_sys::{
     kAXErrorSuccess, kAXFocusedWindowAttribute, kAXMainWindowAttribute, kAXPositionAttribute,
-    kAXSizeAttribute, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
-    AXUIElementRef, AXValueGetValue, AXValueRef,
+    kAXSizeAttribute, AXUIElementCopyAttributeValue, AXUIElementCreateApplication, AXUIElementRef,
+    AXValueGetValue, AXValueRef,
 };
 use core_foundation::base::{CFTypeRef, TCFType};
 use core_foundation::string::CFString;
@@ -93,9 +93,7 @@ mod ns {
             let app: Retained<NSRunningApplication> = unsafe { apps.objectAtIndex(i) };
             if let Some(bid) = unsafe { app.bundleIdentifier() } {
                 if unsafe { bid.isEqualToString(&target) } {
-                    let _ok: bool = unsafe {
-                        msg_send![&app, activateWithOptions: 0u64]
-                    };
+                    let _ok: bool = unsafe { msg_send![&app, activateWithOptions: 0u64] };
                     return;
                 }
             }
@@ -184,9 +182,7 @@ pub fn focus_codex_app_input_field() -> Result<(), AppError> {
     sleep(Duration::from_millis(200));
 
     // 5. 模拟鼠标左键点击。
-    click_at(click_x, click_y).map_err(|detail| {
-        inject_error("模拟鼠标点击失败", detail, None)
-    })?;
+    click_at(click_x, click_y).map_err(|detail| inject_error("模拟鼠标点击失败", detail, None))?;
 
     // 6. 让 Electron 处理 focus 事件。
     sleep(Duration::from_millis(120));
@@ -245,9 +241,7 @@ fn read_focused_window_frame() -> Option<(f64, f64, f64, f64)> {
 fn copy_attribute(el: AXUIElementRef, attr_name: &str) -> Option<CFTypeRef> {
     let attr = CFString::new(attr_name);
     let mut value: CFTypeRef = ptr::null();
-    let err = unsafe {
-        AXUIElementCopyAttributeValue(el, attr.as_concrete_TypeRef(), &mut value)
-    };
+    let err = unsafe { AXUIElementCopyAttributeValue(el, attr.as_concrete_TypeRef(), &mut value) };
     if err == kAXErrorSuccess && !value.is_null() {
         Some(value)
     } else {
@@ -303,13 +297,8 @@ fn click_at(x: f64, y: f64) -> Result<(), String> {
     std::thread::sleep(Duration::from_millis(40));
 
     // 左键 up。
-    let up = CGEvent::new_mouse_event(
-        source,
-        CGEventType::LeftMouseUp,
-        point,
-        CGMouseButton::Left,
-    )
-    .map_err(|_| "create LeftMouseUp failed".to_string())?;
+    let up = CGEvent::new_mouse_event(source, CGEventType::LeftMouseUp, point, CGMouseButton::Left)
+        .map_err(|_| "create LeftMouseUp failed".to_string())?;
     up.set_integer_value_field(1, 1);
     up.post(CGEventTapLocation::HID);
 

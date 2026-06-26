@@ -86,8 +86,9 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 Session 列表 view model 暴露项目标签、thread 标签、对话标签、状态、摘要、更新时间、用量、动作和行内交互。
 
-Thread 标签优先来自 `AgentSession.title`，最长展示 10 个字符。
+Thread 标签优先来自 `AgentSession.title`，输出完整清洗后的标题；空标题展示为未命名。
 
+Thread 标签不在 Domain 层按展示宽度截断，视觉换行和布局约束由前端负责。
 
 ## 排序规则
 
@@ -107,4 +108,4 @@ Session 列表按首次捕捉顺序保持稳定。
 
 `src-tauri/src/domain/session_state.rs` 覆盖 reducer 分支、多项目多对话隔离、pending 清理和排序。
 
-`src-tauri/src/domain/view_model.rs` 覆盖 capability 到 UI action、截断策略和基础展示映射。
+`src-tauri/src/domain/view_model.rs` 覆盖 capability 到 UI action、文本展示策略和基础展示映射。

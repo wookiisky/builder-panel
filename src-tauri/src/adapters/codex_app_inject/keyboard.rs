@@ -3,9 +3,7 @@
 use std::thread::sleep;
 use std::time::Duration;
 
-use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode,
-};
+use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
 use objc2::msg_send;
@@ -33,18 +31,32 @@ pub fn paste_text_and_return(prompt: &str) -> Result<(), AppError> {
     let backup = read_pasteboard_string(&pasteboard);
 
     // 2. 写入 prompt。
-    write_pasteboard_string(&pasteboard, prompt).map_err(|detail| {
-        inject_error("写入剪贴板失败", detail, None)
-    })?;
+    write_pasteboard_string(&pasteboard, prompt)
+        .map_err(|detail| inject_error("写入剪贴板失败", detail, None))?;
 
     // 3. 发 Cmd+V。
-    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
-        .map_err(|_| inject_error("无法创建 CGEventSource", "CGEventSource::new failed".to_string(), None))?;
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| {
+        inject_error(
+            "无法创建 CGEventSource",
+            "CGEventSource::new failed".to_string(),
+            None,
+        )
+    })?;
 
-    post_key(&source, KEY_CODE_V, true, Some(CGEventFlags::CGEventFlagCommand))
-        .map_err(|d| inject_error("发送 Cmd+V (down) 失败", d, None))?;
-    post_key(&source, KEY_CODE_V, false, Some(CGEventFlags::CGEventFlagCommand))
-        .map_err(|d| inject_error("发送 Cmd+V (up) 失败", d, None))?;
+    post_key(
+        &source,
+        KEY_CODE_V,
+        true,
+        Some(CGEventFlags::CGEventFlagCommand),
+    )
+    .map_err(|d| inject_error("发送 Cmd+V (down) 失败", d, None))?;
+    post_key(
+        &source,
+        KEY_CODE_V,
+        false,
+        Some(CGEventFlags::CGEventFlagCommand),
+    )
+    .map_err(|d| inject_error("发送 Cmd+V (up) 失败", d, None))?;
 
     // 4. 让 Electron 处理粘贴。
     sleep(Duration::from_millis(60));

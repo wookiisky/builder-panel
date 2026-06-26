@@ -42,9 +42,8 @@ fn with_prompt_check() -> bool {
     let value = CFBoolean::true_value();
     let pairs = vec![(key, value.as_CFType())];
     let dict = CFDictionary::from_CFType_pairs(&pairs);
-    let result = unsafe {
-        AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef() as *mut c_void)
-    };
+    let result =
+        unsafe { AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef() as *mut c_void) };
     result != 0
 }
 

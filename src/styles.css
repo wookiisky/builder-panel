@@ -446,6 +446,14 @@ button:disabled {
   white-space: nowrap;
 }
 
+.session-row-main > .session-thread .markdown-tooltip-label {
+  overflow: visible;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
 .markdown-tooltip-panel {
   position: fixed;
   z-index: 80;
@@ -675,6 +683,16 @@ button:disabled {
 .session-row small {
   display: block;
   color: var(--faint);
+}
+
+.session-detail > header strong,
+.session-detail > header p,
+.session-detail-overlay > header strong,
+.session-detail-overlay > header p {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .session-actions {

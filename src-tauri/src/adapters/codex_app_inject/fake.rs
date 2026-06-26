@@ -74,11 +74,9 @@ impl CodexAppInjector for FakeCodexAppInjector {
     }
 
     fn paste_and_return(&self, prompt: &str) -> Result<(), AppError> {
-        self.calls
-            .borrow_mut()
-            .push(FakeCall::PasteAndReturn {
-                prompt: prompt.to_string(),
-            });
+        self.calls.borrow_mut().push(FakeCall::PasteAndReturn {
+            prompt: prompt.to_string(),
+        });
         self.maybe_fail(FakeStep::PasteAndReturn)
     }
 }

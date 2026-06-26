@@ -736,7 +736,10 @@ where
             error.user_message
         ));
     }
-    log_info("Codex APP 注入：Codex.app 已前台", json!({"thread_id": thread_id}));
+    log_info(
+        "Codex APP 注入：Codex.app 已前台",
+        json!({"thread_id": thread_id}),
+    );
 
     // 4. 设焦点（最佳努力，失败不致命）。
     if let Err(error) = injector.focus_input_field() {
@@ -773,7 +776,10 @@ where
         ));
     }
 
-    log_info("Codex APP 注入：消息已发送", json!({"thread_id": thread_id}));
+    log_info(
+        "Codex APP 注入：消息已发送",
+        json!({"thread_id": thread_id}),
+    );
 
     // 6. 可选：本地立即回显（依赖编译期常量，运行时不开销）。
     if INJECT_EMIT_LOCAL_USER_MESSAGE {

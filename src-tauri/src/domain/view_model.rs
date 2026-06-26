@@ -320,7 +320,7 @@ fn thread_label(session: &AgentSession) -> String {
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| truncate(value, 10))
+        .map(ToString::to_string)
         .unwrap_or_else(|| "未命名".to_string())
 }
 
@@ -382,17 +382,6 @@ pub fn text_display(value: &str, max_chars: usize) -> TextDisplay {
         truncated: true,
         max_chars,
     }
-}
-
-/// 按字符数截断文本。
-fn truncate(value: &str, max_chars: usize) -> String {
-    let mut chars = value.chars();
-    let truncated = chars.by_ref().take(max_chars).collect::<String>();
-    if chars.next().is_none() {
-        return value.to_string();
-    }
-
-    truncated
 }
 
 /// 返回 pending interaction 标签。
@@ -533,12 +522,18 @@ mod tests {
     }
 
     #[test]
-    fn list_view_model_exposes_truncated_thread_label_from_session_title() {
+    fn view_models_expose_full_thread_label_from_session_title() {
         let mut session = base_session(SessionCapabilities::none(), UsageSnapshot::unavailable());
         session.title = Some("一二三四五六七八九十十一".to_string());
-        let view_model = session_list_item_view_model(&session);
+        let list_view_model = session_list_item_view_model(&session);
+        let detail_view_model = session_detail_view_model(&session);
 
-        assert_eq!(view_model.thread_label, "一二三四五六七八九十");
+        assert_eq!(list_view_model.thread_label, "一二三四五六七八九十十一");
+        assert_eq!(detail_view_model.header, "一二三四五六七八九十十一");
+        assert_eq!(
+            detail_view_model.identity,
+            "project / 一二三四五六七八九十十一"
+        );
     }
 
     #[test]
