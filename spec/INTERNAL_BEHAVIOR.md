@@ -100,6 +100,10 @@ Codex CLI 和 Codex APP adapter 不为工具 hook 事件、工具参数或工具
 
 Codex APP adapter 过滤 Codex 内部生成的隐藏 turn（如建议生成任务），不为命中内部提示词模式的用户提示词写 session 摘要或发出用户消息事件，从而让 session 列表只保留真实用户任务。内部提示词模式可由设置项 `agents.codex_internal_prompt_patterns` 配置，匹配时对提示词与模式做大小写折叠、连字符/下划线删除、连续空白折叠后做子串包含判断。
 
+Codex APP runtime 对只由启动信号创建且尚未出现真实标题、摘要、pending、失败或失联原因的 session 维护内部空壳候选；真实用户输入、assistant 输出、审批、回复、失败或真实标题会移除候选标记。
+
+Codex APP runtime 在内部提示词到达时只清理仍带空壳候选标记的同 thread session；清理时必须同步移除对应 cwd、metadata、rollout path、当前 turn 输出和 pending 缓存，避免后续归属判定或 rollout watcher 再次带回空白 session。
+
 Codex CLI 和 Codex APP adapter 使用可信 cwd 派生项目展示名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
 
 Codex rollout adapter 不得把未知工具 JSON arguments 作为 preview 写入 Domain。
@@ -107,6 +111,8 @@ Codex rollout adapter 不得把未知工具 JSON arguments 作为 preview 写入
 没有原文或 preview 的 session start、turn start、turn complete、idle 和工具开始事件不得覆盖已有 session 摘要。
 
 Codex APP app-server `thread/loaded/list` 只提供当前已加载 thread id；当前已加载 thread 需要通过 `thread/list` 元数据补齐 cwd、标题、状态、预览和 rollout path。metadata 状态只应用于新建 session，若 session 已存在，只能补齐缺失信息，不得用后台 metadata 折叠实时运行状态。
+
+Codex APP app-server `thread/list` 元数据对未知 thread 创建 session 时，必须具备真实标题、预览文本或 `systemError` 状态；无可展示内容的 `active`、`idle` 和 `notLoaded` metadata 只允许补齐已有同 thread session，不得扩大 cwd 兜底认领范围。
 
 Codex APP session index 标题可直接补齐当前已知 session；只允许替换缺失标题或形似模型名的标题，不得覆盖已有真实标题，不得创建新 session。
 

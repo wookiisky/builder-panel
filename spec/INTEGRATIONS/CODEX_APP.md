@@ -86,6 +86,10 @@ Codex APP thread 元数据中的空白名称在 adapter 边界归一为缺失名
 
 Codex APP thread metadata 状态只用于创建新的已加载 session；已有实时 session 只补齐缺失信息，不用后台 metadata 覆盖运行状态或最新摘要。
 
+Codex APP thread metadata 对未知 thread 创建 session 时，必须至少有真实标题、预览文本或 `systemError` 状态；只有 cwd、id、空白标题、模型名标题或空预览的 `active`、`idle`、`notLoaded` metadata 不创建列表 session。
+
+Codex APP `notLoaded` metadata 只折叠已有 session 或待识别 session，不为未知无内容 thread 创建失联 session。
+
 Codex APP path-only thread metadata 不创建新 session；runtime 已有该 thread 可信 cwd 时，path-only metadata 可补齐标题和 rollout path。
 
 Codex APP thread metadata 或 rollout 历史补齐已有 session 的标题、项目、跳回目标、能力或摘要时，会发布轻量 `session_updated` 事件。
@@ -129,6 +133,10 @@ Codex APP session 最后消息只使用用户输入原文、assistant 输出原�
 Codex APP hook 工具事件和 app-server 权限请求仍可创建 pending interaction，但不写工具调用正文作为最后消息。
 
 Codex APP hook 权限请求可在 pending approval 摘要中保留清洗后的审批上下文。
+
+Codex APP hook `SessionStart` 若只创建了无标题、无摘要、无 pending 的空壳 session，且随后同 thread 的 `UserPromptSubmit` 命中内部提示词模式，该空壳 session 会被清理，不进入 session 列表。
+
+Codex APP 清理内部提示词空壳 session 时，会同步清理该 thread 的 runtime 缓存和 rollout tail 目标，并发布轻量 `session_updated` 事件。
 
 Codex APP app-server 实时事件可以为当前进程创建 session，即使对应 thread 早于 Builder Panel APP 启动。
 

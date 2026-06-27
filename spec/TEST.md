@@ -86,7 +86,11 @@ Rust Codex APP adapter 测试验证无可信 cwd 的 app-server 实时事件不�
 
 Rust Codex APP adapter 测试验证 app-server thread 元数据可迁移待识别 session，且不覆盖 pending、summary 或状态。
 
-Rust Codex APP adapter 测试验证 app-server `thread/list` 元数据可创建当前 session。
+Rust Codex APP adapter 测试验证 app-server `thread/list` 元数据可在存在真实标题、预览文本或系统错误时创建当前 session。
+
+Rust Codex APP adapter 测试验证无标题、无预览的 `active`、`idle` 或 `notLoaded` thread metadata 不创建空白 session，且不扩大 cwd 兜底认领范围。
+
+Rust Codex APP adapter 测试验证内部建议提示词会清理 `SessionStart` 留下的空壳 session 和相关 runtime 缓存，真实用户提示词会保留 session。
 
 Rust Codex APP adapter 测试验证 `thread/loaded/list` 响应只清洗 loaded thread id，空白 id 被跳过，重复 id 去重，缺失 `data` 或非字符串 id 会被拒绝。
 
@@ -94,7 +98,7 @@ Rust Codex APP adapter 测试验证同步刷新专用 try-RPC 在 request id、p
 
 Rust Codex APP adapter 测试验证 `thread/name/updated` 可把模型名标题更新为真实 thread 标题，且不覆盖摘要或状态。
 
-Rust Codex APP runtime 测试验证 session index 可直接补齐当前已知但缺标题或标题形似模型名的 session，且不创建无关 session。
+Rust Codex APP runtime 测试验证 session index 可直接补齐当前已知但缺标题或标题形似模型名的 session，且不创建无关 session；模型名标题被过滤后不会单独创建空白 session。
 
 Rust Codex APP runtime 测试验证 path-only thread metadata 只补齐已有可信 cwd 的 session，不创建无关历史 session。
 

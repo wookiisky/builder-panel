@@ -50,6 +50,10 @@ Codex CLI session 列表只来自当前 APP 进程内已经捕捉到的实时 ho
 
 Codex APP session 列表可来自当前 APP 进程内实时状态、app-server 已加载 thread id 对应的 `thread/list` 元数据和 Codex rollout 历史补齐。
 
+Codex APP 内部建议生成等隐藏 turn 不进入 session 列表；若隐藏 turn 只留下启动空壳，runtime 会清理该空壳并刷新列表。
+
+Codex APP 已加载 thread 的 `thread/list` 元数据没有真实标题、预览文本、实时事件、待处理交互或系统错误时，不创建 session 列表项。
+
 APP 启动时首次读取仍可返回空列表，因为 Codex APP app-server 或历史补齐可能不可用。
 
 APP 启动后仍在运行的任务如果继续发出 hook、notification 或 server request，会在后续刷新中进入 session 列表。
@@ -83,6 +87,8 @@ Codex CLI hook、Codex APP hook、Codex APP app-server 和 Codex rollout tailer 
 adapter 清洗 Codex APP 最后消息时只保留用户输入原文、assistant 输出原文和完成时最后 assistant 输出；工具调用、hook 工具事件和工具参数不写最后消息。
 
 工具输出结束事件不写活动摘要。
+
+Codex APP runtime 会跟踪只由启动信号创建的空壳候选；后续命中内部提示词的 `UserPromptSubmit` 会清理仍为空壳的 session 及相关 runtime 缓存。
 
 runtime 通过 session 更新端口发布轻量通知。
 
@@ -323,6 +329,8 @@ app-server 启动后，后端发送 `initialize` 并写入 `initialized` notific
 session 列表和详情 command 先返回当前 runtime 状态；Codex APP app-server loaded thread id、thread 元数据和 rollout 补齐通过后台同步线程执行。
 
 app-server 启动后，后台同步可按节流窗口调用 `thread/loaded/list` 获取当前已加载 thread id，再用有限数量 `thread/list` 元数据按 id 创建或补齐当前已加载 thread。
+
+后台 `thread/list` 元数据只有在未知 thread 具备真实标题、预览文本或 `systemError` 状态时才创建新 session；`active`、`idle` 或 `notLoaded` 的无内容 metadata 只补齐已有同 thread session。
 
 后台 thread metadata 的状态只用于创建新的已加载 session；已有实时 session 只补齐缺失信息，不用 metadata 覆盖运行状态或最新摘要。
 

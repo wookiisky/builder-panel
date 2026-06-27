@@ -84,6 +84,10 @@ Codex APP thread 名可由 Codex session index、app-server thread metadata 或 
 
 Codex CLI hook 的模型字段和 Codex APP 中形似模型名的值不展示为 thread 名。
 
+Codex APP 内部建议生成等隐藏 turn 不展示为 session；这类 turn 只产生空白启动行时，列表会移除对应空壳 session。
+
+Codex APP 已加载 thread 只有在存在真实标题、预览文本、实时事件、待处理交互或系统错误时才展示；只有 cwd、id、模型名标题或空预览的 thread metadata 不展示为空白 session。
+
 两行 session 的第二行展示快捷输入和输入区。
 
 session 列表合并 Codex CLI 和 Codex APP session 后按首次捕捉顺序保持稳定。
@@ -91,6 +95,8 @@ session 列表合并 Codex CLI 和 Codex APP session 后按首次捕捉顺序保
 新捕捉到的 session 展示在列表顶部。
 
 每次打开 Builder Panel APP 时，session 列表先从进程内空状态开始；Codex APP 可随后通过当前已加载 thread id 和 `thread/list` 元数据补出当前 APP thread。
+
+Codex APP 通过已加载 thread id 和 `thread/list` 元数据补出当前 APP thread 时，不补出无可展示内容的空白 thread。
 
 Builder Panel 可为 Codex APP 读取 app-server 已加载 thread id、`thread/list` 元数据和 Codex rollout 历史，用于补齐项目名、跳回目标和最新 Agent 输出。
 
