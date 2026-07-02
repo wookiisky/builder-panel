@@ -20,6 +20,14 @@ Project Runtime 不记录业务状态，不替代 CI 配置。
 
 `pnpm dev:web` 只启动前端 Vite 开发服务，并作为 Tauri `beforeDevCommand` 使用。
 
+`pnpm tauri:build` 执行 Tauri release 构建并生成正式桌面程序产物。
+
+`pnpm package` 是正式桌面程序打包入口，等价于 `pnpm tauri:build`。
+
+Tauri release 构建会通过 `beforeBuildCommand` 先执行 `pnpm build`。
+
+正式打包产物位于 `src-tauri/target/release/bundle/`。
+
 `.github/workflows/ci.yml` 定义 CI 验证入口。
 
 `scripts/check-spec-docs.mjs` 定义 spec 文档质量门禁入口。
@@ -61,6 +69,8 @@ Codex APP app-server schema 探针需要本机可执行 `codex` CLI。
 `pnpm lint` 验证前端 lint 和架构检查。
 
 `pnpm build` 验证前端构建。
+
+`pnpm package` 验证当前平台正式桌面程序打包，不属于常规快速验证入口。
 
 `pnpm spec:check` 验证 spec 文档质量门禁。
 

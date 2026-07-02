@@ -98,6 +98,35 @@ pnpm build
 
 Tauri 配置中的前端开发地址为 `http://127.0.0.1:1420`。
 
+## 正式打包和运行
+
+打包正式桌面程序：
+
+```bash
+pnpm package
+```
+
+等价命令：
+
+```bash
+pnpm tauri:build
+pnpm tauri build
+```
+
+正式打包会通过 Tauri 配置先执行 `pnpm build`，再按当前操作系统生成对应平台的桌面程序产物。
+
+打包产物目录：
+
+```bash
+src-tauri/target/release/bundle/
+```
+
+正式程序运行不依赖 Vite dev server。开发运行仍使用 `pnpm dev`，只查看前端仍使用 `pnpm dev:web`。
+
+在 macOS 本机打包时，常见产物是 `.app` 或 `.dmg`，可直接打开 `.app` 或安装 `.dmg` 后运行。未签名的本地构建首次运行时，可能需要在系统安全设置中允许打开。
+
+Windows 和 Linux 产物需要在对应平台本机打包和验收，当前文档不声明跨平台打包、签名、公证或发布渠道能力。
+
 ## 验证命令
 
 前端单元测试：

@@ -352,6 +352,10 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 `pnpm dev:web` 只启动前端 Vite 服务，不启动桌面程序。
 
+`pnpm package` 用于生成当前平台的正式桌面程序 bundle 或 installer。
+
+正式程序通过打包产物运行，不依赖 Vite dev server。
+
 `pnpm test` 用于验证前端状态转换。
 
 `cargo test --manifest-path src-tauri/Cargo.toml` 用于验证 Rust 纯规则。

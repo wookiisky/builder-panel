@@ -430,4 +430,6 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 
 `pnpm dev` 启动人工验证空 panel。
 
+`pnpm package` 运行当前平台正式桌面程序打包验证，不属于常规快速验证或默认 CI 入口。
+
 当用户级 Cargo mirror 缺少 lockfile 依赖时，可用命令级 Cargo mirror 配置运行 Rust 测试，不把 mirror 缺包记录为代码失败。

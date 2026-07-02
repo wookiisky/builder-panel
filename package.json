@@ -14,6 +14,8 @@
     "format": "prettier --check package.json pnpm-workspace.yaml index.html eslint.config.js tsconfig.json vite.config.ts \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.mjs\" \"spec/**/*.md\" \".github/**/*.yml\"",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "package": "pnpm tauri:build",
     "architecture:check": "node scripts/check-architecture.mjs",
     "spec:check": "node scripts/check-spec-docs.mjs",
     "performance:check": "node scripts/check-performance-budget.mjs"
