@@ -43,6 +43,8 @@ pub struct CodexRolloutSnapshot {
     pub path: PathBuf,
     /// 最近更新时间。
     pub updated_at: UnixMillis,
+    /// 当前 rollout 是否已经完成或中止。
+    pub completed: bool,
 }
 
 /// Codex rollout 实时 tail 目标。
@@ -527,17 +529,14 @@ fn live_event_from_response_item(
                 )
             })
         }
-        Some("function_call") => function_call_activity(item)
-            .map(|summary| activity_event(state, &summary, updated_at)),
+        Some("function_call") => {
+            function_call_activity(item).map(|summary| activity_event(state, &summary, updated_at))
+        }
         Some("local_shell_call") => Some(activity_event(state, "执行命令…", updated_at)),
         Some("custom_tool_call") => None,
-        Some("tool_search_call") => {
-            Some(activity_event(state, "搜索工具中…", updated_at))
-        }
+        Some("tool_search_call") => Some(activity_event(state, "搜索工具中…", updated_at)),
         Some("web_search_call") => Some(activity_event(state, "联网检索中…", updated_at)),
-        Some("image_generation_call") => {
-            Some(activity_event(state, "生成图像中…", updated_at))
-        }
+        Some("image_generation_call") => Some(activity_event(state, "生成图像中…", updated_at)),
         Some("function_call_output") | Some("custom_tool_call_output") => None,
         _ => None,
     }
@@ -736,6 +735,7 @@ impl CodexRolloutState {
             last_agent_message: self.last_agent_message,
             path: self.path,
             updated_at: self.updated_at,
+            completed: self.completed,
         })
     }
 }
@@ -791,6 +791,7 @@ fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRo
             if state.completed {
                 state.completed = false;
             }
+            state.last_agent_message = None;
             if let Some(message) = clean_string(payload.get("message")) {
                 // 过滤 Codex 内部生成的隐藏 turn，避免内部任务覆盖真实用户摘要。
                 if !is_codex_internal_prompt(&message) {
@@ -970,7 +971,41 @@ mod tests {
         assert_eq!(snapshot.cwd, "/tmp/builder-panel");
         assert_eq!(snapshot.summary.as_deref(), Some("实现已完成。"));
         assert_eq!(snapshot.last_agent_message.as_deref(), Some("实现已完成。"));
+        assert!(snapshot.completed);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollout_active_snapshot_is_not_completed() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"正在检查实现。"}}"#,
+        ]);
+
+        assert!(!snapshot.completed);
+    }
+
+    #[test]
+    fn rollout_completion_marks_snapshot_completed() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete","last_agent_message":"完成"}}"#,
+        ]);
+
+        assert!(snapshot.completed);
+    }
+
+    #[test]
+    fn rollout_user_message_after_completion_reopens_snapshot() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete","last_agent_message":"上一轮完成"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"继续处理"}}"#,
+        ]);
+
+        assert!(!snapshot.completed);
+        assert_eq!(snapshot.summary.as_deref(), Some("继续处理"));
+        assert_eq!(snapshot.last_agent_message, None);
     }
 
     #[test]

@@ -86,7 +86,13 @@ Codex CLI hook 的模型字段和 Codex APP 中形似模型名的值不展示为
 
 Codex APP 内部建议生成等隐藏 turn 不展示为 session；这类 turn 只产生空白启动行时，列表会移除对应空壳 session。
 
-Codex APP 已加载 thread 只有在存在真实标题、预览文本、实时事件、待处理交互或系统错误时才展示；只有 cwd、id、模型名标题或空预览的 thread metadata 不展示为空白 session。
+Codex APP 当前已加载且 `active` 的 thread 可展示为运行中 session；没有标题或预览文本时先展示为空内容运行中行。
+
+Codex APP 最近未完成且处于活跃窗口内的 rollout 可展示为运行中 session；活跃窗口可通过 `BUILDER_PANEL_CODEX_APP_ACTIVE_ROLLOUT_WINDOW_MINUTES` 配置，默认 5 分钟。
+
+只有 `session_meta`、没有用户输入或 assistant 输出的近期 Codex APP rollout 不展示为空运行中行。
+
+Codex APP 历史 thread 只有在存在真实标题、预览文本、实时事件、待处理交互或系统错误时才展示；只有 cwd、id、模型名标题或空预览的历史 thread metadata 不展示为空白 session。
 
 两行 session 的第二行展示快捷输入和输入区。
 
@@ -94,11 +100,11 @@ session 列表合并 Codex CLI 和 Codex APP session 后按首次捕捉顺序保
 
 新捕捉到的 session 展示在列表顶部。
 
-每次打开 Builder Panel APP 时，session 列表先从进程内空状态开始；Codex APP 可随后通过当前已加载 thread id 和 `thread/list` 元数据补出当前 APP thread。
+每次打开 Builder Panel APP 时，session 列表先从进程内空状态开始；Codex APP 可随后通过当前已加载 thread id、`thread/read` 或 `thread/list` 元数据以及 recent active rollout 补出当前 APP thread。
 
-Codex APP 通过已加载 thread id 和 `thread/list` 元数据补出当前 APP thread 时，不补出无可展示内容的空白 thread。
+Codex APP 通过已加载 thread id 和 thread 元数据补出当前 APP thread 时，可补出当前 loaded active 空内容运行中 thread；不补出无可信 cwd 的空白 thread。
 
-Builder Panel 可为 Codex APP 读取 app-server 已加载 thread id、`thread/list` 元数据和 Codex rollout 历史，用于补齐项目名、跳回目标和最新 Agent 输出。
+Builder Panel 可为 Codex APP 读取 app-server 已加载 thread id、`thread/read` 或 `thread/list` 元数据和 Codex rollout 历史，用于补齐项目名、跳回目标和最新 Agent 输出。
 
 Builder Panel 可在已知 Codex CLI session 的 rollout path 后展示新增追加行产生的用户文本和 assistant 文本。
 
@@ -111,6 +117,8 @@ Codex CLI 和 Codex APP session 最后消息不展示 hook 工具调用、命令
 APP 打开后仍在运行并继续发出实时事件的任务会进入 session 列表。
 
 APP 打开前已经结束且不再发出实时事件的 Codex CLI 或未接入 agent 历史任务不会进入 session 列表。
+
+APP 打开前已经结束或超过活跃窗口的 Codex APP rollout 不会因 recent active rollout 扫描进入 session 列表。
 
 不支持的动作不展示为可点击按钮。
 

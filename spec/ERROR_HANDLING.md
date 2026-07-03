@@ -152,6 +152,8 @@ Codex APP app-server `notLoaded` 会清理 pending interaction 和对应 RPC 回
 
 Codex APP app-server `thread/loaded/list` 与 `thread/list` 读取使用短超时；读取失败不写 session 失败状态。
 
+Codex APP app-server `thread/read` 作为机会能力使用；不可用、超时或单个 thread 读取失败时不写 session 失败状态，并可降级为一次有限数量 `thread/list` 读取。
+
 Codex APP app-server `thread/list` 单条 thread 清洗失败时跳过该条，保留同批其它有效 thread。
 
 Codex APP app-server `thread/list` 中缺 cwd 但带 path 的 thread 不直接写 session 状态；若后续 rollout 读取失败，则保持待识别项目。
@@ -159,6 +161,8 @@ Codex APP app-server `thread/list` 中缺 cwd 但带 path 的 thread 不直接�
 Codex APP app-server `thread/list` 中 `status.type` 类型错误时跳过该条，避免把脏数据折叠成完成态。
 
 Codex APP rollout 历史读取失败不写 session 失败状态。
+
+Codex APP recent active rollout 读取失败、超过活跃窗口、已完成、缺 cwd、缺可展示内容或命中内部提示词过滤规则时丢弃该快照，不写 session 失败状态。
 
 Codex rollout tail 读取失败不写 session 失败状态。
 
@@ -176,7 +180,7 @@ Tauri session 更新事件发送失败时不写 session 失败状态，前端继
 
 Codex APP rollout 命中不存在且不可迁移的 session 时丢弃该快照，不创建新的当前 session。
 
-Codex APP recent rollout 命中非候选 thread 时丢弃该历史快照，不创建新的当前 session。
+Codex APP recent rollout 命中非候选 thread 时丢弃该历史快照，不创建新的当前 session；recent active rollout 只在未完成且处于配置活跃窗口内时例外创建运行中 session。
 
 Codex APP thread path 读取到错配 session ID 时丢弃该快照，不创建新的当前 session。
 
@@ -269,6 +273,8 @@ Codex APP rollout 读取不可用时，不补齐历史项目名或历史输出�
 Codex APP rollout 读取遇到超长 JSONL 行时跳过该行，继续读取后续有效行。
 
 Codex APP recent rollout 目录遍历达到硬上限时停止本轮发现，已发现的候选仍可继续补齐。
+
+Codex APP active rollout 窗口配置缺失、为 0 或无法解析时回退到 5 分钟。
 
 Codex APP 待识别项目不提供跳回；用户点击该 session 行无反应。
 

@@ -12,7 +12,7 @@ Codex APP app-server schema 通过本机 `codex app-server generate-json-schema 
 
 当前探针验证 thread/turn request 与 response、thread/turn notification、thread name updated、agent message delta、token usage、status changed、审批 response、用户输入 response 和 MCP elicitation response 相关 schema 存在；具体文件清单以 `src-tauri/src/adapters/codex_app/mod.rs` 的 `REQUIRED_SCHEMA_FILES` 为准。
 
-Codex APP adapter 可编码 `initialize`、`initialized`、`thread/start`、`thread/resume`、`turn/start`、`thread/loaded/list` 和 `thread/list` JSON-RPC 消息。
+Codex APP adapter 可编码 `initialize`、`initialized`、`thread/start`、`thread/resume`、`turn/start`、`thread/loaded/list`、`thread/read` 和 `thread/list` JSON-RPC 消息。
 
 Codex APP adapter 可把 `thread/started`、`thread/name/updated`、`turn/started`、`item/agentMessage/delta`、`thread/status/changed`、`thread/tokenUsage/updated` 和 `turn/completed` notification 转换为归一事件。
 
@@ -66,7 +66,7 @@ Codex APP runtime 维护 `thread_id -> cwd` 映射；hook payload 的 `cwd` 和 
 
 Codex APP runtime 在事件入口拒绝 `agent_kind` 不是 Codex APP 的归一事件和 hook payload；非 Codex APP payload 不会进入 Codex APP runtime 状态。
 
-Codex APP runtime 只把可信 cwd 写入 session key；可信 cwd 来源包括 hook payload、app-server message 的 `params.cwd`、`params.thread.cwd`、app-server `thread/list` 元数据和 Codex rollout 的 `session_meta.payload.cwd`。
+Codex APP runtime 只把可信 cwd 写入 session key；可信 cwd 来源包括 hook payload、app-server message 的 `params.cwd`、`params.thread.cwd`、app-server `thread/read` 或 `thread/list` 元数据和 Codex rollout 的 `session_meta.payload.cwd`。
 
 Codex APP runtime 不使用 Builder Panel 进程 cwd 冒充 Codex thread cwd。
 
@@ -74,7 +74,13 @@ Codex APP app-server 实时事件缺少可信 cwd 时，会创建待识别项目
 
 Codex APP 使用可信 cwd 派生项目展示名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
 
-Codex APP session 列表和详情读取会尝试通过 app-server `thread/loaded/list` 获取当前已加载 thread id，再通过有限数量的 `thread/list` 元数据按 id 补齐当前已加载 thread 的 cwd、预览、状态和跳回目标；需要补齐待识别 session 或已知但缺标题的 session 时，也可通过 `thread/list` 读取有限数量 thread 历史。
+Codex APP session 列表和详情读取会尝试通过 app-server `thread/loaded/list` 获取当前已加载 thread id，再优先通过机会能力 `thread/read` 按 id 精确补齐当前已加载 thread 的 cwd、预览、状态和跳回目标；`thread/read` 不可用、超时或出现方法/协议类错误时降级为一次有限数量 `thread/list` 读取。
+
+Codex APP `thread/read` 只作为机会能力；schema 探针发现 `ThreadReadParams` 和 `ThreadReadResponse` 时记录为已验证文件，缺失时不让 Codex APP 整体不可用。
+
+Codex APP `thread/list` response 的当前 schema 字段为 `data`；adapter 仍保留 legacy `threads` 字段读取作为旧版本降级。
+
+Codex APP 需要补齐待识别 session 或已知但缺标题的 session 时，也可通过 `thread/list` 读取有限数量 thread 历史。
 
 Codex APP thread 标题可来自 `~/.codex/session_index.jsonl` 中同 ID 的 `thread_name`，app-server `thread/started.thread.name`、thread metadata，或 app-server `thread/name/updated` 实时通知。
 
@@ -86,9 +92,15 @@ Codex APP thread 元数据中的空白名称在 adapter 边界归一为缺失名
 
 Codex APP thread metadata 状态只用于创建新的已加载 session；已有实时 session 只补齐缺失信息，不用后台 metadata 覆盖运行状态或最新摘要。
 
-Codex APP thread metadata 对未知 thread 创建 session 时，必须至少有真实标题、预览文本或 `systemError` 状态；只有 cwd、id、空白标题、模型名标题或空预览的 `active`、`idle`、`notLoaded` metadata 不创建列表 session。
+Codex APP 当前已加载 thread metadata 对未知 thread 创建 session 时，必须至少有可信 cwd，并满足真实标题、预览文本、`systemError` 状态，或 `active` 状态之一；无标题、无预览的当前已加载 `active` thread 会创建运行中 session。
 
-Codex APP `notLoaded` metadata 只折叠已有 session 或待识别 session，不为未知无内容 thread 创建失联 session。
+Codex APP 历史 thread metadata 对未知 thread 创建 session 时，必须至少有真实标题、预览文本或 `systemError` 状态；只有 cwd、id、空白标题、模型名标题或空预览的历史 `active`、`idle`、`notLoaded` metadata 不创建列表 session。
+
+Codex APP thread metadata 的预览文本命中内部提示词过滤规则时，不创建新的可见 session，也不写入 session 摘要。
+
+Codex APP 不恢复 `ephemeral` thread metadata。
+
+Codex APP `notLoaded` metadata 只折叠已有 session 或待识别 session，不为未知无内容 thread 创建失联 session；已有运行中 session 不因后台 `notLoaded` metadata 降级为失联。
 
 Codex APP path-only thread metadata 不创建新 session；runtime 已有该 thread 可信 cwd 时，path-only metadata 可补齐标题和 rollout path。
 
@@ -100,7 +112,15 @@ Codex APP `thread/list` 中缺少 cwd 但带 path 的 thread 可作为 rollout �
 
 Codex APP thread status 缺失时可按 idle 处理；`status.type` 类型错误时必须跳过该条 thread。
 
-Codex APP session 列表和详情读取可读取 Codex rollout JSONL 补齐 cwd 和最新 Agent 输出，但 rollout 不单独创建当前 session。
+Codex APP session 列表和详情读取可读取 Codex rollout JSONL 补齐 cwd 和最新 Agent 输出；普通 rollout 历史不单独创建当前 session。
+
+Codex APP 后台同步可扫描最近活跃 rollout，捕捉 app-server 标记为 `notLoaded` 但本地 rollout 仍在追加的运行中 thread。
+
+Codex APP 最近活跃 rollout 创建 session 必须同时满足未完成、处于活跃窗口内、具备 `session_meta` 中的可信 cwd 和可展示用户摘要或 Agent 输出；只有 `session_meta`、无可展示内容或命中内部提示词过滤规则的 rollout 不创建 session。
+
+Codex APP 最近活跃 rollout 恢复窗口由 `BUILDER_PANEL_CODEX_APP_ACTIVE_ROLLOUT_WINDOW_MINUTES` 配置，未配置、为 0 或非法时默认 5 分钟。
+
+Codex APP 最近活跃 rollout 创建 session 时会记录 `thread_id -> cwd` 和 rollout path，并触发 Codex CLI 同 `(cwd, thread_id)` 孤儿 session 清理。
 
 Codex APP thread 元数据或候选快照携带 rollout path 后，可作为已知 session 的实时 tail 目标。
 
@@ -172,7 +192,7 @@ Codex APP 当前不从 app-server 原始 JSON 直接污染 Domain。
 
 当前不持久化 Codex APP session。
 
-当前不从未知或非候选 rollout 文件创建 Codex APP session。
+当前不从未知或非候选 rollout 文件创建 Codex APP session；最近未完成且处于活跃窗口内的 rollout 是受限例外。
 
 当前不声明 Codex APP app-server WebSocket transport 已接入。
 

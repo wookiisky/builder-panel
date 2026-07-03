@@ -51,12 +51,12 @@ use crate::ports::session_update_port::{
     NoopSessionUpdateSink, SessionRuntimeSource, SessionUpdateNotification, SessionUpdateSinkPort,
 };
 
-pub use self::codex_rollout::{CodexRolloutDiscovery, CodexRolloutTailer, CodexRolloutWatchTarget};
+pub use self::codex_rollout::{
+    CodexRolloutDiscovery, CodexRolloutSnapshot, CodexRolloutTailer, CodexRolloutWatchTarget,
+};
 pub use self::internal_prompt::{
     is_codex_internal_prompt, set_internal_prompt_patterns, DEFAULT_INTERNAL_PROMPT_PATTERNS,
 };
-
-use self::codex_rollout::CodexRolloutSnapshot;
 
 const REQUIRED_SCHEMA_FILES: [&str; 20] = [
     "v2/ThreadStartParams.json",
@@ -80,6 +80,9 @@ const REQUIRED_SCHEMA_FILES: [&str; 20] = [
     "ToolRequestUserInputResponse.json",
     "McpServerElicitationRequestResponse.json",
 ];
+
+const OPTIONAL_THREAD_READ_SCHEMA_FILES: [&str; 2] =
+    ["v2/ThreadReadParams.json", "v2/ThreadReadResponse.json"];
 
 const APP_SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const APP_SERVER_THREAD_LIST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -387,6 +390,18 @@ impl CodexAppAdapter {
         })
     }
 
+    /// 编码 thread/read request。
+    pub fn thread_read_request(id: u64, thread_id: &str) -> Value {
+        json!({
+            "id": id,
+            "method": "thread/read",
+            "params": {
+                "threadId": thread_id,
+                "includeTurns": false
+            }
+        })
+    }
+
     /// 清洗 app-server thread/loaded/list response。
     pub fn loaded_thread_ids_from_response(
         response: &Value,
@@ -418,9 +433,10 @@ impl CodexAppAdapter {
         response: &Value,
     ) -> Result<Vec<CodexAppThreadMetadata>, CodexAppAdapterError> {
         let threads = response
-            .get("threads")
+            .get("data")
+            .or_else(|| response.get("threads"))
             .and_then(Value::as_array)
-            .ok_or(CodexAppAdapterError::MissingField("threads"))?;
+            .ok_or(CodexAppAdapterError::MissingField("data"))?;
         let mut output = Vec::new();
         for thread in threads {
             if let Ok(metadata) = CodexAppThreadMetadata::from_value(thread) {
@@ -429,6 +445,16 @@ impl CodexAppAdapter {
         }
 
         Ok(output)
+    }
+
+    /// 清洗 app-server thread/read response。
+    pub fn thread_from_read_response(
+        response: &Value,
+    ) -> Result<CodexAppThreadMetadata, CodexAppAdapterError> {
+        let thread = response
+            .get("thread")
+            .ok_or(CodexAppAdapterError::MissingField("thread"))?;
+        CodexAppThreadMetadata::from_value(thread)
     }
 }
 
@@ -449,6 +475,15 @@ pub struct CodexAppThreadMetadata {
     pub status_type: String,
     /// 是否是临时 thread。
     pub ephemeral: bool,
+}
+
+/// Codex APP thread 元数据来源。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CodexAppThreadMetadataSource {
+    /// 当前 app-server 内存中已加载的 thread。
+    LoadedCurrent,
+    /// 只用于补齐已知 session 的历史候选。
+    HistoryCandidate,
 }
 
 impl CodexAppThreadMetadata {
@@ -1359,6 +1394,32 @@ impl CodexAppRuntime {
         metadata: CodexAppThreadMetadata,
         updated_at: UnixMillis,
     ) -> Result<(), AppError> {
+        self.apply_thread_metadata_from_source(
+            metadata,
+            CodexAppThreadMetadataSource::HistoryCandidate,
+            updated_at,
+        )
+    }
+
+    /// 合并当前已加载 thread 元数据，可受控创建运行中 session。
+    pub fn apply_loaded_thread_metadata(
+        &mut self,
+        metadata: CodexAppThreadMetadata,
+        updated_at: UnixMillis,
+    ) -> Result<(), AppError> {
+        self.apply_thread_metadata_from_source(
+            metadata,
+            CodexAppThreadMetadataSource::LoadedCurrent,
+            updated_at,
+        )
+    }
+
+    fn apply_thread_metadata_from_source(
+        &mut self,
+        metadata: CodexAppThreadMetadata,
+        source: CodexAppThreadMetadataSource,
+        updated_at: UnixMillis,
+    ) -> Result<(), AppError> {
         if metadata.ephemeral {
             return Ok(());
         }
@@ -1372,13 +1433,28 @@ impl CodexAppRuntime {
             return Ok(());
         };
         let target_key = session_key(&cwd, &thread_id);
-        let summary = metadata.preview.clone().filter(|value| !value.is_empty());
+        let preview = metadata.preview.clone().filter(|value| !value.is_empty());
+        let has_internal_preview = preview.as_deref().is_some_and(is_codex_internal_prompt);
+        let summary = preview.filter(|value| !is_codex_internal_prompt(value));
         let title = clean_optional_thread_title(&metadata.name);
         let session_exists = self.session_state.sessions.contains_key(&target_key);
         let has_thread_session = self.has_session_for_thread(&thread_id);
+        if has_internal_preview {
+            if session_exists {
+                self.remove_empty_shell_session(&target_key, updated_at);
+            } else if let Some(existing_key) = self.session_key_for_thread(&thread_id) {
+                self.remove_empty_shell_session(&existing_key, updated_at);
+            }
+            return Ok(());
+        }
         if !session_exists
             && !has_thread_session
-            && !thread_metadata_can_create_session(&metadata.status_type, &title, &summary)
+            && !thread_metadata_can_create_session_from_source(
+                source,
+                &metadata.status_type,
+                &title,
+                &summary,
+            )
         {
             return Ok(());
         }
@@ -1468,6 +1544,16 @@ impl CodexAppRuntime {
         })
     }
 
+    fn session_key_for_thread(&self, thread_id: &str) -> Option<SessionKey> {
+        self.session_state
+            .sessions
+            .keys()
+            .find(|key| {
+                key.agent_kind == AgentKind::CodexApp && key.conversation_id.value == thread_id
+            })
+            .cloned()
+    }
+
     /// 按 app-server thread 元数据受控折叠 session 状态。
     fn apply_thread_metadata_status(
         &mut self,
@@ -1476,6 +1562,15 @@ impl CodexAppRuntime {
         summary: Option<String>,
         updated_at: UnixMillis,
     ) -> Result<(), AppError> {
+        if status_type == "notLoaded"
+            && self
+                .session_state
+                .sessions
+                .get(target_key)
+                .is_some_and(|session| session.status == SessionStatus::Running)
+        {
+            return Ok(());
+        }
         match status_type {
             "idle" => self.apply_event_direct(AgentEvent::TurnCompleted(TurnCompletedEvent {
                 session_key: target_key.clone(),
@@ -1501,11 +1596,12 @@ impl CodexAppRuntime {
         &mut self,
         snapshot: CodexRolloutSnapshot,
     ) -> Result<(), AppError> {
-        self.thread_cwds
-            .insert(snapshot.session_id.clone(), snapshot.cwd.clone());
-        self.thread_rollout_paths
-            .insert(snapshot.session_id.clone(), snapshot.path.clone());
-        let migrated = self.migrate_codex_app_thread_to_cwd(&snapshot.session_id, &snapshot.cwd)?;
+        let migrated = self.record_thread_rollout_context(
+            &snapshot.session_id,
+            &snapshot.cwd,
+            snapshot.path.clone(),
+            snapshot.updated_at,
+        )?;
         let target_key = session_key(&snapshot.cwd, &snapshot.session_id);
         let Some(session) = self.session_state.sessions.get_mut(&target_key) else {
             return Ok(());
@@ -1541,6 +1637,97 @@ impl CodexAppRuntime {
         }
 
         Ok(())
+    }
+
+    /// 使用最近仍活跃的 rollout 快照创建或更新运行中 session。
+    pub fn apply_active_rollout_snapshot(
+        &mut self,
+        snapshot: CodexRolloutSnapshot,
+    ) -> Result<(), AppError> {
+        if snapshot.completed {
+            return Ok(());
+        }
+        let Some(summary) = active_rollout_summary(&snapshot).cloned() else {
+            return Ok(());
+        };
+
+        let migrated = self.record_thread_rollout_context(
+            &snapshot.session_id,
+            &snapshot.cwd,
+            snapshot.path.clone(),
+            snapshot.updated_at,
+        )?;
+        let target_key = session_key(&snapshot.cwd, &snapshot.session_id);
+        if let Some(session) = self.session_state.sessions.get_mut(&target_key) {
+            let mut changed = migrated;
+            let next_project_label = project_label(&snapshot.cwd);
+            if session.project_label != next_project_label {
+                session.project_label = next_project_label;
+                changed = true;
+            }
+            if session.conversation_label != snapshot.session_id {
+                session.conversation_label = snapshot.session_id.clone();
+                changed = true;
+            }
+            if session.capabilities == SessionCapabilities::none() {
+                let next_capabilities = codex_app_capabilities();
+                if session.capabilities != next_capabilities {
+                    session.capabilities = next_capabilities;
+                    changed = true;
+                }
+            }
+            if session.jump_target.is_none() {
+                session.jump_target = Some(codex_app_jump_target(
+                    &session.session_key.conversation_id.value,
+                ));
+                changed = true;
+            }
+            if session.summary.as_ref() != Some(&summary) {
+                session.summary = Some(summary.clone());
+                changed = true;
+            }
+            if changed {
+                self.publish_codex_app_session_update(&target_key, snapshot.updated_at);
+            }
+            return self.apply_event_direct(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+                session_key: target_key,
+                summary,
+                updated_at: snapshot.updated_at,
+            }));
+        }
+
+        self.apply_event_direct(AgentEvent::SessionStarted(SessionStartedEvent {
+            session_key: target_key.clone(),
+            project_label: project_label(&snapshot.cwd),
+            conversation_label: snapshot.session_id.clone(),
+            title: None,
+            summary: Some(summary.clone()),
+            capabilities: codex_app_capabilities(),
+            usage: UsageSnapshot::unavailable(),
+            updated_at: snapshot.updated_at,
+        }))?;
+        self.apply_event_direct(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+            session_key: target_key,
+            summary,
+            updated_at: snapshot.updated_at,
+        }))
+    }
+
+    fn record_thread_rollout_context(
+        &mut self,
+        thread_id: &str,
+        cwd: &str,
+        path: PathBuf,
+        updated_at: UnixMillis,
+    ) -> Result<bool, AppError> {
+        self.thread_cwds
+            .insert(thread_id.to_string(), cwd.to_string());
+        self.thread_rollout_paths
+            .insert(thread_id.to_string(), path);
+        if let Some(callback) = self.orphan_eviction_callback.clone() {
+            callback(cwd, thread_id, updated_at);
+        }
+        self.migrate_codex_app_thread_to_cwd(thread_id, cwd)
     }
 
     fn reserve_rpc_submission(&mut self, interaction_id: &InteractionId) -> Result<(), AppError> {
@@ -2362,6 +2549,39 @@ impl CodexAppServerClient {
         self.list_threads_with_timeout(limit, APP_SERVER_THREAD_LIST_TIMEOUT)
     }
 
+    /// 读取单个 Codex APP thread 元数据。
+    pub fn read_thread(&self, thread_id: &str) -> Result<CodexAppThreadMetadata, AppError> {
+        self.read_thread_with_timeout(thread_id, APP_SERVER_THREAD_LIST_TIMEOUT)
+    }
+
+    /// 在指定超时内读取单个 Codex APP thread 元数据。
+    pub fn read_thread_with_timeout(
+        &self,
+        thread_id: &str,
+        timeout: Duration,
+    ) -> Result<CodexAppThreadMetadata, AppError> {
+        let response = self.send_request_value_with_timeout(
+            CodexAppAdapter::thread_read_request(self.next_request_id()?, thread_id),
+            timeout,
+        )?;
+        CodexAppAdapter::thread_from_read_response(&response)
+            .map_err(|_| app_server_error("Codex APP thread 详情格式无效", String::new()))
+    }
+
+    /// 使用非阻塞锁读取单个 Codex APP thread 元数据。
+    pub fn try_read_thread_with_timeout(
+        &self,
+        thread_id: &str,
+        timeout: Duration,
+    ) -> Result<CodexAppThreadMetadata, AppError> {
+        let response = self.try_send_request_value_with_timeout(
+            CodexAppAdapter::thread_read_request(self.try_next_request_id()?, thread_id),
+            timeout,
+        )?;
+        CodexAppAdapter::thread_from_read_response(&response)
+            .map_err(|_| app_server_error("Codex APP thread 详情格式无效", String::new()))
+    }
+
     /// 在指定超时内读取 Codex APP thread 历史。
     pub fn list_threads_with_timeout(
         &self,
@@ -2820,6 +3040,11 @@ fn schema_probe_from_dir(out_dir: &Path) -> CodexAppSchemaProbe {
             verified_schema_files.push(file.to_string());
         } else {
             missing_schema_files.push(file.to_string());
+        }
+    }
+    for file in OPTIONAL_THREAD_READ_SCHEMA_FILES {
+        if out_dir.join(file).is_file() {
+            verified_schema_files.push(file.to_string());
         }
     }
 
@@ -3514,6 +3739,19 @@ fn rollout_summary_update<'a>(
     None
 }
 
+fn active_rollout_summary(snapshot: &CodexRolloutSnapshot) -> Option<&String> {
+    snapshot
+        .last_agent_message
+        .as_ref()
+        .filter(|value| !value.trim().is_empty() && !is_codex_internal_prompt(value))
+        .or_else(|| {
+            snapshot
+                .summary
+                .as_ref()
+                .filter(|value| !value.trim().is_empty() && !is_codex_internal_prompt(value))
+        })
+}
+
 fn event_makes_session_visible(event: &AgentEvent) -> bool {
     match event {
         AgentEvent::ActivityUpdated(event) => !event.summary.trim().is_empty(),
@@ -3569,6 +3807,19 @@ fn thread_metadata_can_create_session(
             .as_ref()
             .is_some_and(|summary| !summary.trim().is_empty())
         || status_type == "systemError"
+}
+
+fn thread_metadata_can_create_session_from_source(
+    source: CodexAppThreadMetadataSource,
+    status_type: &str,
+    title: &Option<String>,
+    summary: &Option<String>,
+) -> bool {
+    if thread_metadata_can_create_session(status_type, title, summary) {
+        return true;
+    }
+
+    source == CodexAppThreadMetadataSource::LoadedCurrent && status_type == "active"
 }
 
 fn session_update_notification(event: &AgentEvent) -> Option<SessionUpdateNotification> {
@@ -4236,6 +4487,31 @@ mod tests {
     }
 
     #[test]
+    fn thread_list_response_reads_data_field() {
+        let response = json!({
+            "data": [
+                {
+                    "id": "thread-1",
+                    "cwd": "/tmp/builder-panel",
+                    "name": "Thread 1",
+                    "preview": "最新输出",
+                    "status": {"type": "active"}
+                }
+            ]
+        });
+
+        let threads =
+            CodexAppAdapter::threads_from_response(&response).expect("response should clean");
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].id, "thread-1");
+        assert_eq!(threads[0].cwd.as_deref(), Some("/tmp/builder-panel"));
+        assert_eq!(threads[0].name.as_deref(), Some("Thread 1"));
+        assert_eq!(threads[0].preview.as_deref(), Some("最新输出"));
+        assert_eq!(threads[0].status_type, "active");
+    }
+
+    #[test]
     fn thread_response_skips_invalid_items() {
         let response = json!({
             "threads": [
@@ -4286,6 +4562,45 @@ mod tests {
         );
         assert_eq!(threads[2].id, "blank-preview-thread");
         assert_eq!(threads[2].preview, None);
+    }
+
+    #[test]
+    fn thread_read_request_uses_schema_wire_fields() {
+        let request = CodexAppAdapter::thread_read_request(7, "thread-1");
+
+        assert_eq!(
+            request,
+            json!({
+                "id": 7,
+                "method": "thread/read",
+                "params": {
+                    "threadId": "thread-1",
+                    "includeTurns": false
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn thread_read_response_reads_thread_field() {
+        let response = json!({
+            "thread": {
+                "id": "thread-1",
+                "cwd": "/tmp/builder-panel",
+                "name": "Thread 1",
+                "preview": "最新输出",
+                "status": {"type": "active"}
+            }
+        });
+
+        let thread = CodexAppAdapter::thread_from_read_response(&response)
+            .expect("thread/read response should clean");
+
+        assert_eq!(thread.id, "thread-1");
+        assert_eq!(thread.cwd.as_deref(), Some("/tmp/builder-panel"));
+        assert_eq!(thread.name.as_deref(), Some("Thread 1"));
+        assert_eq!(thread.preview.as_deref(), Some("最新输出"));
+        assert_eq!(thread.status_type, "active");
     }
 
     #[test]
@@ -5462,6 +5777,7 @@ mod tests {
                 last_agent_message: Some("最新输出".to_string()),
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
+                completed: false,
             })
             .expect("snapshot should apply");
 
@@ -5485,7 +5801,7 @@ mod tests {
         let mut runtime = CodexAppRuntime::empty();
 
         runtime
-            .apply_thread_metadata(
+            .apply_loaded_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
                     cwd: Some("/tmp/builder-panel".to_string()),
@@ -5516,6 +5832,167 @@ mod tests {
                 .map(|target| target.location.as_str()),
             Some("codex://threads/thread-1")
         );
+    }
+
+    #[test]
+    fn loaded_active_thread_metadata_without_content_creates_running_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: None,
+                    preview: None,
+                    path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("loaded active metadata should apply");
+
+        let key = session_key("/tmp/builder-panel", "thread-1");
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("loaded active thread should create running session");
+
+        assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.summary, None);
+        assert_eq!(session.title, None);
+        assert_eq!(session.capabilities, codex_app_capabilities());
+        assert_eq!(
+            session
+                .jump_target
+                .as_ref()
+                .map(|target| target.location.as_str()),
+            Some("codex://threads/thread-1")
+        );
+        assert_eq!(
+            runtime.rollout_watch_targets(),
+            vec![CodexRolloutWatchTarget {
+                session_key: key,
+                path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
+            }]
+        );
+    }
+
+    #[test]
+    fn history_active_thread_metadata_without_content_does_not_create_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: None,
+                    preview: None,
+                    path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("history metadata should apply");
+
+        assert!(runtime.session_state().sessions.is_empty());
+        assert!(runtime.rollout_watch_targets().is_empty());
+    }
+
+    #[test]
+    fn loaded_thread_metadata_with_internal_preview_does_not_create_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: Some("Suggestions".to_string()),
+                    preview: Some(
+                        "Generate 0 to 3 hyperpersonalized suggestions for the user.".to_string(),
+                    ),
+                    path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("internal metadata should be ignored");
+
+        assert!(runtime.session_state().sessions.is_empty());
+        assert!(runtime.rollout_watch_targets().is_empty());
+    }
+
+    #[test]
+    fn internal_preview_removes_existing_loaded_empty_shell_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        let key = session_key("/tmp/builder-panel", "thread-1");
+
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: None,
+                    preview: None,
+                    path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("empty loaded active metadata should create shell");
+        assert!(runtime.session_state().sessions.contains_key(&key));
+        assert!(runtime.claims_codex_app_thread("thread-1", "/tmp/builder-panel"));
+        assert!(!runtime.rollout_watch_targets().is_empty());
+
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: None,
+                    preview: Some(
+                        "Generate 0 to 3 hyperpersonalized suggestions for the user.".to_string(),
+                    ),
+                    path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(2),
+            )
+            .expect("internal metadata should remove shell");
+
+        assert!(runtime.session_state().sessions.is_empty());
+        assert!(!runtime.claims_codex_app_thread("thread-1", "/tmp/builder-panel"));
+        assert!(runtime.rollout_watch_targets().is_empty());
+    }
+
+    #[test]
+    fn loaded_ephemeral_thread_metadata_does_not_create_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: Some("Thread 1".to_string()),
+                    preview: Some("最新输出".to_string()),
+                    path: None,
+                    status_type: "active".to_string(),
+                    ephemeral: true,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("ephemeral metadata should be ignored");
+
+        assert!(runtime.session_state().sessions.is_empty());
     }
 
     #[test]
@@ -5686,6 +6163,7 @@ mod tests {
                 last_agent_message: Some("最新 Agent 输出".to_string()),
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
+                completed: false,
             })
             .expect("rollout should update running summary");
 
@@ -5731,6 +6209,7 @@ mod tests {
                 last_agent_message: None,
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
+                completed: false,
             })
             .expect("rollout should not overwrite with user summary");
 
@@ -5756,10 +6235,166 @@ mod tests {
                 last_agent_message: Some("历史输出".to_string()),
                 path: PathBuf::from("/tmp/rollout-history.jsonl"),
                 updated_at: UnixMillis::new(1),
+                completed: false,
             })
             .expect("rollout should be ignored without candidate");
 
         assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn active_rollout_snapshot_creates_running_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_active_rollout_snapshot(active_rollout_snapshot(
+                "thread-1",
+                "/tmp/builder-panel",
+                "正在处理",
+                UnixMillis::new(2),
+            ))
+            .expect("active rollout should apply");
+
+        let key = session_key("/tmp/builder-panel", "thread-1");
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("active rollout should create session");
+
+        assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.summary.as_deref(), Some("正在处理"));
+        assert_eq!(session.capabilities, codex_app_capabilities());
+        assert_eq!(
+            runtime.rollout_watch_targets(),
+            vec![CodexRolloutWatchTarget {
+                session_key: key,
+                path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
+            }]
+        );
+    }
+
+    #[test]
+    fn active_rollout_snapshot_requires_unfinished_visible_content() {
+        let mut runtime = CodexAppRuntime::empty();
+        let mut completed = active_rollout_snapshot(
+            "thread-1",
+            "/tmp/builder-panel",
+            "已完成",
+            UnixMillis::new(2),
+        );
+        completed.completed = true;
+        let mut empty =
+            active_rollout_snapshot("thread-2", "/tmp/builder-panel", "   ", UnixMillis::new(3));
+        empty.summary = None;
+        empty.last_agent_message = None;
+        let internal = active_rollout_snapshot(
+            "thread-3",
+            "/tmp/builder-panel",
+            "Generate 0 to 3 hyperpersonalized suggestions for the user.",
+            UnixMillis::new(4),
+        );
+
+        runtime
+            .apply_active_rollout_snapshot(completed)
+            .expect("completed rollout should be ignored");
+        runtime
+            .apply_active_rollout_snapshot(empty)
+            .expect("empty rollout should be ignored");
+        runtime
+            .apply_active_rollout_snapshot(internal)
+            .expect("internal rollout should be ignored");
+
+        assert!(runtime.session_state().sessions.is_empty());
+        assert!(runtime.rollout_watch_targets().is_empty());
+    }
+
+    #[test]
+    fn active_rollout_snapshot_after_new_user_message_uses_current_summary() {
+        let mut runtime = CodexAppRuntime::empty();
+        let mut snapshot = active_rollout_snapshot(
+            "thread-1",
+            "/tmp/builder-panel",
+            "继续处理",
+            UnixMillis::new(2),
+        );
+        snapshot.last_agent_message = None;
+
+        runtime
+            .apply_active_rollout_snapshot(snapshot)
+            .expect("active rollout should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+        assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.summary.as_deref(), Some("继续处理"));
+    }
+
+    #[test]
+    fn active_rollout_snapshot_triggers_orphan_eviction_callback() {
+        let mut runtime = CodexAppRuntime::empty();
+        let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let calls_clone = Arc::clone(&calls);
+        runtime.set_orphan_eviction_callback(Arc::new(move |cwd, thread_id, _| {
+            calls_clone
+                .lock()
+                .expect("lock")
+                .push((cwd.to_string(), thread_id.to_string()));
+        }));
+
+        runtime
+            .apply_active_rollout_snapshot(active_rollout_snapshot(
+                "thread-app",
+                "/tmp/builder-panel",
+                "正在处理",
+                UnixMillis::new(2),
+            ))
+            .expect("active rollout should apply");
+
+        let calls = calls.lock().expect("lock");
+        assert_eq!(
+            calls.as_slice(),
+            [("/tmp/builder-panel".to_string(), "thread-app".to_string())]
+        );
+    }
+
+    #[test]
+    fn not_loaded_metadata_does_not_detach_active_rollout_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        runtime
+            .apply_active_rollout_snapshot(active_rollout_snapshot(
+                "thread-1",
+                "/tmp/builder-panel",
+                "正在处理",
+                UnixMillis::new(2),
+            ))
+            .expect("active rollout should apply");
+
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: Some("Thread 1".to_string()),
+                    preview: Some("正在处理".to_string()),
+                    path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
+                    status_type: "notLoaded".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(3),
+            )
+            .expect("notLoaded metadata should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+        assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.title.as_deref(), Some("Thread 1"));
     }
 
     #[test]
@@ -5792,6 +6427,7 @@ mod tests {
                 last_agent_message: Some("历史输出".to_string()),
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
+                completed: false,
             })
             .expect("rollout should migrate unresolved session");
 
@@ -5816,6 +6452,23 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
             }]
         );
+    }
+
+    fn active_rollout_snapshot(
+        session_id: &str,
+        cwd: &str,
+        message: &str,
+        updated_at: UnixMillis,
+    ) -> CodexRolloutSnapshot {
+        CodexRolloutSnapshot {
+            session_id: session_id.to_string(),
+            cwd: cwd.to_string(),
+            summary: Some(message.to_string()),
+            last_agent_message: Some(message.to_string()),
+            path: PathBuf::from(format!("/tmp/rollout-{session_id}.jsonl")),
+            updated_at,
+            completed: false,
+        }
     }
 
     #[test]

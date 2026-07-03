@@ -168,13 +168,33 @@
 
 约束：双通道事件必须通过 `thread_id -> cwd` 映射折叠到同一个 `SessionKey`，禁止用 Builder Panel 自身 cwd 代替 Codex thread cwd。
 
-约束：Codex APP 可通过 app-server `thread/list` 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；该补齐不得覆盖实时 pending、失败、完成状态。
+约束：Codex APP 可通过 app-server `thread/read`、`thread/list` 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；该补齐不得覆盖实时 pending、失败、完成状态。
 
 代码影响：`src-tauri/src/adapters/bridge/hook_payload.rs` 将 `terminal_app` 归一化后等于 `codexapp` 的 Codex hook payload 分流为 Codex APP；`src-tauri/src/adapters/codex_app/mod.rs` 保存 Codex APP runtime 和 app-server stdio 客户端；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 Codex rollout 历史；`src/views/BuilderPanelApp.tsx` 按 runtime source 路由 Codex APP session。
 
 测试影响：Rust 测试覆盖 Codex APP hook 分流、stdout directive、schema 探针、可信 cwd、rollout 输出清洗和完整能力 capability；前端测试覆盖 Codex APP runtime source 路由。
 
 排障影响：若 Codex APP session 不出现，先检查 Codex hook 是否启用、`terminal_app` 归一化后是否等于 `codexapp`、app-server 是否可启动，再检查前端设置开关。
+
+状态：生效。
+
+## 决策 11B
+
+决策：Codex APP 启动恢复只扩大到当前 app-server 已 loaded 的 active thread 和最近未完成且仍活跃的 rollout，不从普通历史 metadata 恢复空白 session。
+
+原因：当前 loaded active thread 代表 Codex APP 内存中仍在运行或可见的任务，应在 Builder Panel 启动后可被捕捉；部分 Codex 入口会把仍在写入 rollout 的运行中 thread 暴露为 app-server `notLoaded`，因此需要 recent active rollout 作为受限例外；普通历史 metadata 可能包含大量旧任务，不能因为有 cwd 或 path 就进入当前工作台。
+
+约束：当前 loaded thread 优先通过 `thread/read` 按 id 精确补齐；`thread/read` 不可用或失败时降级为一次有限数量 `thread/list` 读取。
+
+约束：recent active rollout 必须未完成、处于 `BUILDER_PANEL_CODEX_APP_ACTIVE_ROLLOUT_WINDOW_MINUTES` 指定窗口内、具备可信 cwd 和可展示摘要或 Agent 输出；配置缺失、为 0 或非法时默认 5 分钟。
+
+约束：历史候选 metadata 仍必须有真实标题、预览文本或 `systemError` 才能创建 session；metadata 预览命中内部提示词过滤规则时不得创建可见 session。
+
+代码影响：`src-tauri/src/adapters/codex_app/mod.rs` 区分 loaded thread metadata、历史候选 metadata 与 recent active rollout；`src-tauri/src/tauri_api/commands.rs` 使用 loaded id 精确读取当前 thread 并保留 thread/list 降级，同时对最近 rollout 做节流扫描和活跃窗口过滤。
+
+测试影响：Rust 测试覆盖 `thread/list.data`、`thread/read` 编码和清洗、loaded active 空内容恢复、recent active rollout 恢复、历史 active 空内容不恢复、内部提示词过滤、活跃窗口配置和 `thread/read` 降级判定。
+
+排障影响：若 Codex APP 启动前运行任务不出现，先检查 `thread/loaded/list` 是否返回该 thread，再检查 `thread/read` 或 `thread/list.data` 是否返回可信 cwd 和非 ephemeral metadata；若 app-server 标记为 `notLoaded`，再检查 rollout 文件是否在活跃窗口内持续写入且包含可展示用户摘要或 Agent 输出。
 
 状态：生效。
 
@@ -224,7 +244,6 @@
 
 代码影响：`src-tauri/src/services/notification_service.rs` 负责通知计划，`src-tauri/src/adapters/notification/mod.rs` 提供记录型 adapter。
 
-
 排障影响：若用户没有看到系统通知，当前应先确认是否已有真实通知 adapter，而不是调整通知业务规则。
 
 状态：生效。
@@ -262,7 +281,6 @@
 决策：阶段 8 性能预算先建立可重复静态场景脚本，不把它声明为 Mac 或 Windows 人工性能验收。
 
 原因：静态脚本能防止基础容量规则回退，但空闲 CPU、系统内存和平台交互仍需要真实环境人工采样。
-
 
 测试影响：CI 执行性能预算静态场景。
 
@@ -304,7 +322,7 @@
 
 原因：用户打开面板时需要一个干净的当前观察窗口，不能把普通历史记录误当成本次 APP 状态；但 Codex APP app-server 和 rollout 已提供 thread 级项目与最新输出事实，读取这些事实可以修正待识别项目和输出摘要缺失。
 
-约束：rollout tailer 只接收当前 runtime 已知 session 的 path，从新增目标当前 EOF 后开始读取；未知或历史 rollout 不得用于创建无关当前 session。
+约束：rollout tailer 只接收当前 runtime 已知 session 的 path，从新增目标当前 EOF 后开始读取；未知或历史 rollout 不得用于创建无关当前 session，最近未完成且仍活跃的 Codex APP rollout 只作为受限启动恢复例外。
 
 代码影响：`src-tauri/src/tauri_api/commands.rs` 读取 Codex APP session 时可同步 app-server `thread/list` 元数据和 Codex rollout 历史，并启动 Codex rollout watcher；`src-tauri/src/adapters/codex_app/mod.rs` 编码 `thread/loaded/list`、`thread/list`、`thread/resume` 和 `turn/start`，并在实时事件首次到达时初始化 Codex APP session 交互能力；无可信 cwd 的 app-server 事件会先进入待识别项目，后续按 thread ID 迁移到真实 cwd session；`src-tauri/src/adapters/codex_cli_hook/mod.rs` 记录 Codex CLI 已知 rollout path；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 rollout 历史和已知 session 追加行。
 

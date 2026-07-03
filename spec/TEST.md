@@ -88,7 +88,15 @@ Rust Codex APP adapter 测试验证 app-server thread 元数据可迁移待识�
 
 Rust Codex APP adapter 测试验证 app-server `thread/list` 元数据可在存在真实标题、预览文本或系统错误时创建当前 session。
 
-Rust Codex APP adapter 测试验证无标题、无预览的 `active`、`idle` 或 `notLoaded` thread metadata 不创建空白 session，且不扩大 cwd 兜底认领范围。
+Rust Codex APP adapter 测试验证当前 loaded `active` thread metadata 即使无标题、无预览也可创建运行中 session、跳回目标和 rollout watch target。
+
+Rust Codex APP adapter 测试验证历史候选中无标题、无预览的 `active`、`idle` 或 `notLoaded` thread metadata 不创建空白 session，且不扩大 cwd 兜底认领范围。
+
+Rust Codex APP adapter 测试验证 `thread/list` response 支持当前 schema 的 `data` 字段和旧版 `threads` 字段。
+
+Rust Codex APP adapter 测试验证 `thread/read` request 使用 `threadId` 与 `includeTurns` wire 字段，并清洗 `thread` response 字段。
+
+Rust Codex APP adapter 测试验证 metadata 预览命中内部提示词时不创建可见 session，`ephemeral` metadata 不创建 session。
 
 Rust Codex APP adapter 测试验证内部建议提示词会清理 `SessionStart` 留下的空壳 session 和相关 runtime 缓存，真实用户提示词会保留 session。
 
@@ -118,13 +126,25 @@ Rust Tauri command 测试验证 Codex APP hook 分流同步刷新在 app-server 
 
 Rust Codex APP rollout 测试验证 `session_meta`、`agent_message`、`task_complete.last_agent_message` 和 assistant `output_text` 清洗。
 
+Rust Codex APP rollout 测试验证完成事件会标记快照完成，完成后新的用户输入会重置为未完成。
+
 Rust Codex APP rollout 测试验证范围外 path 被忽略，超长 JSONL 行被跳过且后续有效行仍可读取。
 
 Rust Codex APP rollout 测试验证 tailer 只读取已知 session 的新增追加行，并验证用户输入事件、工具 preview 不写最后消息、重复工具事件不生成摘要、未知 JSON arguments 不展示、工具结束不写摘要、超长追加行后继续读取有效行。
 
 Rust Codex APP adapter 测试验证孤立 rollout 快照不会单独创建当前 session。
 
+Rust Codex APP adapter 测试验证 recent active rollout 可从空 runtime 创建运行中 session，并验证完成、空内容或内部提示词快照不创建 session。
+
+Rust Codex APP adapter 测试验证 recent active rollout 创建 session 时触发 Codex CLI 孤儿清理回调。
+
+Rust Codex APP adapter 测试验证后台 `notLoaded` metadata 不把 recent active rollout 创建的运行中 session 降级为失联。
+
 Rust Tauri command 测试验证 rollout recent scan 候选集合只包含已加载、历史返回、当前待识别 thread 和当前已知但缺标题的 thread。
+
+Rust Tauri command 测试验证 recent active rollout 活跃窗口默认 5 分钟、支持正整数分钟配置，并过滤完成、过期或未来时间快照。
+
+Rust Tauri command 测试验证 `thread/read` 方法不可用时会触发 `thread/list` 降级判定，普通详情清洗错误不触发该降级。
 
 Rust Tauri command 测试验证 thread 历史元数据只应用到当前待识别 thread 或当前已知但缺标题的 thread，thread path 快照必须匹配 thread ID 和候选集合。
 

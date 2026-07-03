@@ -48,15 +48,21 @@ Tauri 环境监听窗口移动和尺寸变化。
 
 Codex CLI session 列表只来自当前 APP 进程内已经捕捉到的实时 hook 状态。
 
-Codex APP session 列表可来自当前 APP 进程内实时状态、app-server 已加载 thread id 对应的 `thread/list` 元数据和 Codex rollout 历史补齐。
+Codex APP session 列表可来自当前 APP 进程内实时状态、app-server 已加载 thread id 对应的 `thread/read` 或 `thread/list` 元数据和 Codex rollout 历史补齐。
 
 Codex APP 内部建议生成等隐藏 turn 不进入 session 列表；若隐藏 turn 只留下启动空壳，runtime 会清理该空壳并刷新列表。
 
-Codex APP 已加载 thread 的 `thread/list` 元数据没有真实标题、预览文本、实时事件、待处理交互或系统错误时，不创建 session 列表项。
+Codex APP 当前已加载且 `active` 的 thread 即使暂时没有真实标题或预览文本，也可创建运行中 session 列表项。
+
+Codex APP 已加载 thread 的元数据没有可信 cwd 时，不创建真实项目 session 列表项。
 
 APP 启动时首次读取仍可返回空列表，因为 Codex APP app-server 或历史补齐可能不可用。
 
-APP 启动后仍在运行的任务如果继续发出 hook、notification 或 server request，会在后续刷新中进入 session 列表。
+APP 启动前已经开始且当前仍在 Codex APP app-server 中 loaded/running 的任务，可通过 loaded thread 同步进入 session 列表。
+
+APP 启动前已经开始、app-server 标记为 `notLoaded` 但本地 rollout 在最近活跃窗口内仍未完成且有可展示内容的 Codex APP 任务，可通过 recent active rollout 同步进入 session 列表。
+
+APP 启动后仍在运行的任务如果继续发出 hook、notification 或 server request，也会在后续刷新中进入 session 列表。
 
 单一来源读取失败时，前端保留其它来源结果。
 
@@ -320,7 +326,7 @@ schema 探针确认当前 client request、client response、notification 和回
 
 schema 探针覆盖所有当前 adapter 已消费的 app-server notification schema。
 
-adapter 编码 `initialize`、`initialized`、`thread/start`、`thread/resume`、`turn/start`、`thread/loaded/list` 和 `thread/list` JSON-RPC 消息。
+adapter 编码 `initialize`、`initialized`、`thread/start`、`thread/resume`、`turn/start`、`thread/loaded/list`、`thread/read` 和 `thread/list` JSON-RPC 消息。
 
 Codex APP 开关开启后，后端尝试启动 `codex app-server --listen stdio://`。
 
@@ -328,9 +334,13 @@ app-server 启动后，后端发送 `initialize` 并写入 `initialized` notific
 
 session 列表和详情 command 先返回当前 runtime 状态；Codex APP app-server loaded thread id、thread 元数据和 rollout 补齐通过后台同步线程执行。
 
-app-server 启动后，后台同步可按节流窗口调用 `thread/loaded/list` 获取当前已加载 thread id，再用有限数量 `thread/list` 元数据按 id 创建或补齐当前已加载 thread。
+app-server 启动后，后台同步可按节流窗口调用 `thread/loaded/list` 获取当前已加载 thread id，再优先用 `thread/read` 按 id 精确创建或补齐当前已加载 thread；`thread/read` 不可用、超时或出现方法/协议类错误时降级为一次有限数量 `thread/list` 读取。
 
-后台 `thread/list` 元数据只有在未知 thread 具备真实标题、预览文本或 `systemError` 状态时才创建新 session；`active`、`idle` 或 `notLoaded` 的无内容 metadata 只补齐已有同 thread session。
+后台当前已加载 `active` thread metadata 在具备可信 cwd 时可创建运行中 session；历史 `active`、`idle` 或 `notLoaded` 的无内容 metadata 只补齐已有同 thread session。
+
+后台同步每轮最多按 rollout 扫描节流窗口读取一次 recent rollout；同一批快照同时服务历史候选补齐和 recent active rollout 恢复。
+
+后台 thread metadata 的预览文本命中内部提示词过滤规则时，不创建新的可见 session。
 
 后台 thread metadata 的状态只用于创建新的已加载 session；已有实时 session 只补齐缺失信息，不用 metadata 覆盖运行状态或最新摘要。
 
@@ -344,7 +354,9 @@ Codex APP session 列表和详情读取可通过 Codex rollout JSONL 补齐真�
 
 Codex rollout 历史补齐已有 session 的真实 cwd、跳回目标、能力或摘要时，会发布 `session_updated` 通知前端刷新列表。
 
-Codex APP recent rollout 扫描结果只补齐已知候选 thread，不从任意历史 rollout 创建当前 session。
+Codex APP recent rollout 扫描结果默认只补齐已知候选 thread，不从任意历史 rollout 创建当前 session。
+
+Codex APP recent active rollout 恢复是受限例外：快照必须未完成、处于配置的活跃窗口内、具备可信 cwd 和可展示摘要或 Agent 输出；窗口由 `BUILDER_PANEL_CODEX_APP_ACTIVE_ROLLOUT_WINDOW_MINUTES` 配置，默认 5 分钟。
 
 Codex APP thread 元数据携带的 rollout path 只有在快照 session ID 与 thread ID 一致且属于候选集合时才会应用。
 

@@ -65,6 +65,11 @@ const CODEX_APP_STARTUP_RETRY_DELAY: Duration = Duration::from_secs(30);
 const CODEX_APP_ROLLOUT_SYNC_INTERVAL: Duration = Duration::from_secs(10);
 const CODEX_APP_THREAD_METADATA_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const CODEX_ROLLOUT_WATCH_INTERVAL: Duration = Duration::from_millis(300);
+const CODEX_APP_THREAD_LIST_LIMIT: usize = 100;
+const CODEX_APP_MAX_LOADED_THREAD_READS: usize = 40;
+const CODEX_APP_ACTIVE_ROLLOUT_WINDOW_ENV: &str =
+    "BUILDER_PANEL_CODEX_APP_ACTIVE_ROLLOUT_WINDOW_MINUTES";
+const CODEX_APP_ACTIVE_ROLLOUT_DEFAULT_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 /// Codex APP app-server 启动失败退避记录。
 struct CodexAppStartupFailure {
@@ -1109,12 +1114,7 @@ fn synchronously_refresh_codex_app_thread_list(timeout: Duration) {
     if remaining.is_zero() {
         return;
     }
-    let threads = filter_history_threads_for_candidates(
-        server
-            .try_list_threads_with_timeout(40, remaining)
-            .unwrap_or_default(),
-        &loaded_thread_id_set,
-    );
+    let threads = try_read_loaded_codex_app_threads(&server, &loaded_thread_id_set, remaining);
     if threads.is_empty() {
         return;
     };
@@ -1131,7 +1131,7 @@ fn apply_codex_app_thread_metadata_without_blocking(threads: Vec<CodexAppThreadM
         return;
     };
     for thread in threads {
-        let _ = runtime.apply_thread_metadata(thread, command_unix_now());
+        let _ = runtime.apply_loaded_thread_metadata(thread, command_unix_now());
     }
 }
 
@@ -1272,21 +1272,15 @@ fn sync_codex_app_context_worker() {
     let session_index_titles = load_codex_session_index_titles(&default_codex_session_index_path());
     let loaded_thread_ids = server.list_loaded_thread_ids().unwrap_or_default();
     let loaded_thread_id_set = BTreeSet::from_iter(loaded_thread_ids);
-    let mut loaded_threads = if loaded_thread_id_set.is_empty() {
-        Vec::new()
-    } else {
-        filter_history_threads_for_candidates(
-            server.list_threads(40).unwrap_or_default(),
-            &loaded_thread_id_set,
-        )
-    };
+    let mut loaded_threads =
+        read_loaded_codex_app_threads(&server, &loaded_thread_id_set, Duration::from_secs(2));
     apply_session_index_thread_titles(&mut loaded_threads, &session_index_titles);
     let (unresolved_thread_ids, title_missing_thread_ids) = {
         let runtime = codex_app_runtime();
         let ids = match runtime.lock() {
             Ok(mut runtime) => {
                 for thread in loaded_threads.iter().cloned() {
-                    let _ = runtime.apply_thread_metadata(thread, command_unix_now());
+                    let _ = runtime.apply_loaded_thread_metadata(thread, command_unix_now());
                 }
                 runtime.apply_session_index_titles_to_known_sessions(
                     &session_index_titles,
@@ -1315,7 +1309,9 @@ fn sync_codex_app_context_worker() {
 
     let history_threads = if needs_history {
         let mut history_threads = filter_history_threads_for_candidates(
-            server.list_threads(40).unwrap_or_default(),
+            server
+                .list_threads(CODEX_APP_THREAD_LIST_LIMIT)
+                .unwrap_or_default(),
             &history_candidate_ids,
         );
         apply_session_index_thread_titles(&mut history_threads, &session_index_titles);
@@ -1337,14 +1333,129 @@ fn sync_codex_app_context_worker() {
     let mut candidate_thread_ids =
         rollout_candidate_thread_ids(&rollout_threads, &unresolved_thread_ids);
     candidate_thread_ids.extend(history_candidate_ids.iter().cloned());
-    sync_codex_rollout_history(&rollout_threads, &candidate_thread_ids, needs_history);
+    let allow_recent_rollout_scan = should_scan_recent_rollouts();
+    let recent_rollout_snapshots = if allow_recent_rollout_scan {
+        CodexRolloutDiscovery::default_root().discover_recent(SystemTime::now())
+    } else {
+        Vec::new()
+    };
+    sync_codex_rollout_history(
+        &rollout_threads,
+        &candidate_thread_ids,
+        needs_history && allow_recent_rollout_scan,
+        &recent_rollout_snapshots,
+    );
+    sync_recent_active_codex_rollouts(&recent_rollout_snapshots, command_unix_now());
+}
+
+/// 按 loaded thread id 精确读取当前 thread 元数据，失败时降级为一次 thread/list。
+fn read_loaded_codex_app_threads(
+    server: &CodexAppServerClient,
+    loaded_thread_id_set: &BTreeSet<String>,
+    timeout: Duration,
+) -> Vec<CodexAppThreadMetadata> {
+    if loaded_thread_id_set.is_empty() {
+        return Vec::new();
+    }
+
+    let started_at = Instant::now();
+    let mut threads = Vec::new();
+    for thread_id in loaded_thread_id_set
+        .iter()
+        .take(CODEX_APP_MAX_LOADED_THREAD_READS)
+    {
+        let remaining = timeout.saturating_sub(started_at.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        match server.read_thread_with_timeout(thread_id, remaining) {
+            Ok(thread) => threads.push(thread),
+            Err(error) if should_fallback_to_thread_list(&error) => {
+                return read_loaded_codex_app_threads_from_list(server, loaded_thread_id_set);
+            }
+            Err(_) => {}
+        }
+    }
+
+    threads
+}
+
+/// 非阻塞读取当前 loaded thread 元数据，失败时降级为一次 thread/list。
+fn try_read_loaded_codex_app_threads(
+    server: &CodexAppServerClient,
+    loaded_thread_id_set: &BTreeSet<String>,
+    timeout: Duration,
+) -> Vec<CodexAppThreadMetadata> {
+    if loaded_thread_id_set.is_empty() {
+        return Vec::new();
+    }
+
+    let started_at = Instant::now();
+    let mut threads = Vec::new();
+    for thread_id in loaded_thread_id_set
+        .iter()
+        .take(CODEX_APP_MAX_LOADED_THREAD_READS)
+    {
+        let remaining = timeout.saturating_sub(started_at.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        match server.try_read_thread_with_timeout(thread_id, remaining) {
+            Ok(thread) => threads.push(thread),
+            Err(error) if should_fallback_to_thread_list(&error) => {
+                let remaining = timeout.saturating_sub(started_at.elapsed());
+                if remaining.is_zero() {
+                    return threads;
+                }
+                return filter_history_threads_for_candidates(
+                    server
+                        .try_list_threads_with_timeout(CODEX_APP_THREAD_LIST_LIMIT, remaining)
+                        .unwrap_or_default(),
+                    loaded_thread_id_set,
+                );
+            }
+            Err(_) => {}
+        }
+    }
+
+    threads
+}
+
+/// 通过 thread/list 降级补齐 loaded thread 元数据。
+fn read_loaded_codex_app_threads_from_list(
+    server: &CodexAppServerClient,
+    loaded_thread_id_set: &BTreeSet<String>,
+) -> Vec<CodexAppThreadMetadata> {
+    filter_history_threads_for_candidates(
+        server
+            .list_threads(CODEX_APP_THREAD_LIST_LIMIT)
+            .unwrap_or_default(),
+        loaded_thread_id_set,
+    )
+}
+
+/// 判断 thread/read 失败后是否应停止逐个读取并改用 thread/list。
+fn should_fallback_to_thread_list(error: &crate::domain::app_error::AppError) -> bool {
+    if error.user_message.contains("超时") {
+        return true;
+    }
+    let detail = error
+        .technical_detail
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    detail.contains("method")
+        || detail.contains("not found")
+        || detail.contains("unknown")
+        || detail.contains("invalid request")
 }
 
 /// 同步 Codex rollout 历史，避免高频全量扫描。
 fn sync_codex_rollout_history(
     threads: &[crate::adapters::codex_app::CodexAppThreadMetadata],
     candidate_thread_ids: &BTreeSet<String>,
-    needs_recent_scan: bool,
+    allow_recent_scan: bool,
+    recent_snapshots: &[crate::adapters::codex_app::CodexRolloutSnapshot],
 ) {
     let discovery = CodexRolloutDiscovery::default_root();
     let mut snapshots = Vec::new();
@@ -1366,12 +1477,12 @@ fn sync_codex_rollout_history(
         }
     }
 
-    if needs_recent_scan && should_scan_recent_rollouts() {
+    if allow_recent_scan {
         snapshots.extend(
-            discovery
-                .discover_recent(SystemTime::now())
-                .into_iter()
-                .filter(|snapshot| candidate_thread_ids.contains(&snapshot.session_id)),
+            recent_snapshots
+                .iter()
+                .filter(|snapshot| candidate_thread_ids.contains(&snapshot.session_id))
+                .cloned(),
         );
     }
 
@@ -1383,6 +1494,29 @@ fn sync_codex_rollout_history(
     if let Ok(mut runtime) = runtime.lock() {
         for snapshot in snapshots {
             let _ = runtime.apply_rollout_snapshot(snapshot);
+        }
+    };
+}
+
+/// 同步最近仍活跃的 rollout，补上 app-server 标记为 notLoaded 的运行中线程。
+fn sync_recent_active_codex_rollouts(
+    recent_snapshots: &[crate::adapters::codex_app::CodexRolloutSnapshot],
+    now: UnixMillis,
+) {
+    let window = configured_active_rollout_window();
+    let snapshots = recent_snapshots
+        .iter()
+        .filter(|snapshot| active_rollout_snapshot_is_recent(snapshot, now, window))
+        .cloned()
+        .collect::<Vec<_>>();
+    if snapshots.is_empty() {
+        return;
+    }
+
+    let runtime = codex_app_runtime();
+    if let Ok(mut runtime) = runtime.lock() {
+        for snapshot in snapshots {
+            let _ = runtime.apply_active_rollout_snapshot(snapshot);
         }
     };
 }
@@ -1427,6 +1561,40 @@ fn rollout_candidate_thread_ids(
     ids.extend(threads.iter().map(|thread| thread.id.clone()));
     ids.extend(unresolved_thread_ids.iter().cloned());
     ids
+}
+
+/// 判断 rollout 快照是否处在当前活跃恢复窗口内。
+fn active_rollout_snapshot_is_recent(
+    snapshot: &crate::adapters::codex_app::CodexRolloutSnapshot,
+    now: UnixMillis,
+    window: Duration,
+) -> bool {
+    if snapshot.completed {
+        return false;
+    }
+    let window_millis = window.as_millis() as u64;
+    let cutoff = now.value.saturating_sub(window_millis);
+    snapshot.updated_at.value >= cutoff && snapshot.updated_at.value <= now.value
+}
+
+/// 读取最近活跃 rollout 恢复窗口。
+fn configured_active_rollout_window() -> Duration {
+    parse_active_rollout_window_minutes(std::env::var(CODEX_APP_ACTIVE_ROLLOUT_WINDOW_ENV).ok())
+}
+
+/// 解析最近活跃 rollout 恢复窗口，非法配置回退到默认值。
+fn parse_active_rollout_window_minutes(value: Option<String>) -> Duration {
+    let Some(value) = value else {
+        return CODEX_APP_ACTIVE_ROLLOUT_DEFAULT_WINDOW;
+    };
+    let Ok(minutes) = value.trim().parse::<u64>() else {
+        return CODEX_APP_ACTIVE_ROLLOUT_DEFAULT_WINDOW;
+    };
+    if minutes == 0 {
+        return CODEX_APP_ACTIVE_ROLLOUT_DEFAULT_WINDOW;
+    }
+
+    Duration::from_secs(minutes.saturating_mul(60))
 }
 
 /// 判断是否允许同步 app-server thread 元数据。
@@ -1648,7 +1816,9 @@ fn command_unix_now() -> UnixMillis {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::codex_app::{CodexAppRpcWrite, CodexAppThreadMetadata};
+    use crate::adapters::codex_app::{
+        CodexAppRpcWrite, CodexAppThreadMetadata, CodexRolloutSnapshot,
+    };
     use crate::domain::agent_session::{AgentKind, ConversationId, ProjectId};
     use crate::domain::app_error::{AppError, AppErrorCode};
 
@@ -1729,6 +1899,71 @@ mod tests {
             "unlisted-thread",
             &candidates
         ));
+    }
+
+    #[test]
+    fn active_rollout_window_defaults_to_five_minutes() {
+        assert_eq!(
+            parse_active_rollout_window_minutes(None),
+            Duration::from_secs(5 * 60)
+        );
+        assert_eq!(
+            parse_active_rollout_window_minutes(Some("0".to_string())),
+            Duration::from_secs(5 * 60)
+        );
+        assert_eq!(
+            parse_active_rollout_window_minutes(Some("bad".to_string())),
+            Duration::from_secs(5 * 60)
+        );
+    }
+
+    #[test]
+    fn active_rollout_window_accepts_positive_minutes() {
+        assert_eq!(
+            parse_active_rollout_window_minutes(Some("7".to_string())),
+            Duration::from_secs(7 * 60)
+        );
+    }
+
+    #[test]
+    fn active_rollout_recent_filter_requires_unfinished_snapshot_in_window() {
+        let now = UnixMillis::new(10_000);
+        let window = Duration::from_secs(5);
+        let recent = rollout_snapshot("thread-1", UnixMillis::new(6_000), false);
+        let old = rollout_snapshot("thread-2", UnixMillis::new(4_999), false);
+        let completed = rollout_snapshot("thread-3", UnixMillis::new(9_000), true);
+        let future = rollout_snapshot("thread-4", UnixMillis::new(10_001), false);
+
+        assert!(active_rollout_snapshot_is_recent(&recent, now, window));
+        assert!(!active_rollout_snapshot_is_recent(&old, now, window));
+        assert!(!active_rollout_snapshot_is_recent(&completed, now, window));
+        assert!(!active_rollout_snapshot_is_recent(&future, now, window));
+    }
+
+    #[test]
+    fn thread_read_method_error_falls_back_to_thread_list_once() {
+        let error = AppError::new(
+            AppErrorCode::BridgeUnavailable,
+            "Codex APP app-server request 失败",
+            Some("Method not found: thread/read".to_string()),
+            true,
+            None,
+        );
+
+        assert!(should_fallback_to_thread_list(&error));
+    }
+
+    #[test]
+    fn unrelated_thread_read_error_does_not_trigger_list_fallback() {
+        let error = AppError::new(
+            AppErrorCode::BridgeUnavailable,
+            "Codex APP thread 详情格式无效",
+            Some("missing field thread.cwd".to_string()),
+            true,
+            None,
+        );
+
+        assert!(!should_fallback_to_thread_list(&error));
     }
 
     #[test]
@@ -1853,11 +2088,27 @@ mod tests {
         CodexAppThreadMetadata {
             id: id.to_string(),
             cwd: Some(cwd.to_string()),
-            name: None,
-            preview: None,
+            name: Some("Thread 1".to_string()),
+            preview: Some("已完成".to_string()),
             path: None,
             status_type: "idle".to_string(),
             ephemeral: false,
+        }
+    }
+
+    fn rollout_snapshot(
+        session_id: &str,
+        updated_at: UnixMillis,
+        completed: bool,
+    ) -> CodexRolloutSnapshot {
+        CodexRolloutSnapshot {
+            session_id: session_id.to_string(),
+            cwd: "/tmp/builder-panel".to_string(),
+            summary: Some("正在处理".to_string()),
+            last_agent_message: Some("正在处理".to_string()),
+            path: PathBuf::from(format!("/tmp/rollout-{session_id}.jsonl")),
+            updated_at,
+            completed,
         }
     }
 
@@ -1871,7 +2122,7 @@ mod tests {
         runtime
             .lock()
             .expect("runtime should lock")
-            .apply_thread_metadata(
+            .apply_loaded_thread_metadata(
                 thread_metadata("thread-1", "/tmp/project"),
                 UnixMillis::new(1),
             )

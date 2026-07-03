@@ -34,11 +34,9 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 阶段 2 建立本地 bridge codec、Mac Unix Domain Socket 传输、Windows Named Pipe 传输代码、hook helper 读取 stdin 和 stdout directive 编码。
 
-
 阶段 4 开始接入 Codex CLI 真实 hook 闭环和 Codex APP app-server schema 探针。
 
 阶段 5 建立选项处理、允许并记住审批、快捷回复过滤、预设命令计划和跳回端口边界。
-
 
 阶段 7 建立扩展模式工作台、设置页、设置文件读写、通知计划服务和记录型通知 adapter。
 
@@ -60,24 +58,21 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 当前 Codex CLI hook 可折叠为 session 状态，并可在 pending approval 上返回 allow 或 deny directive。
 
-
-
-
 当前 Codex APP hook 与 app-server 事件通过 thread ID 和 cwd 映射统一为同一个 session。
-
 
 当前产品运行时只读取 Codex CLI 和 Codex APP session。
 
 Codex CLI session 读取只以当前 Builder Panel 进程启动后的实时 hook 为来源。
 
-Codex APP session 读取可通过 app-server 已加载 thread id 列表定位当前 APP thread，并通过 `thread/list` 元数据或 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出。
+Codex APP session 读取可通过 app-server 已加载 thread id 列表定位当前 APP thread，并通过 `thread/read`、`thread/list` 元数据或 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出。
 
+Builder Panel APP 启动时可从 Codex APP 当前已加载 thread id 列表恢复当前 loaded/running 的 Codex APP session。
 
-除 Codex APP 的项目名、跳回目标和最新输出补齐外，Builder Panel APP 启动时不从 coding agent 的历史文件、transcript、JSONL、rollout、已加载 thread id 列表或其它持久化记录恢复 session。
+Builder Panel APP 启动时也可从最近未完成且处于活跃窗口内的 Codex APP rollout 恢复运行中 session；该窗口可通过 `BUILDER_PANEL_CODEX_APP_ACTIVE_ROLLOUT_WINDOW_MINUTES` 配置，默认 5 分钟。
+
+除 Codex APP 当前已加载 thread、最近活跃 rollout 和其项目名、跳回目标、最新输出补齐外，Builder Panel APP 启动时不从 coding agent 的历史文件、transcript、JSONL、rollout 或其它持久化记录恢复 session。
 
 Builder Panel APP 启动后仍在运行并继续发出实时事件的任务可以进入当前 session 列表，即使该任务早于 APP 启动。
-
-
 
 当前系统不声明 Claude Code 真实闭环已完成。
 
@@ -115,7 +110,6 @@ Builder Panel APP 启动后仍在运行并继续发出实时事件的任务可�
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook adapter、runtime 和 bridge server 入口。
 
-
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server、runtime、schema 探针和 notification 转换入口。
 
 `src-tauri/src/adapters/codex_app/codex_rollout.rs` 是 Codex rollout JSONL 发现和摘要清洗入口。
@@ -133,7 +127,6 @@ Builder Panel APP 启动后仍在运行并继续发出实时事件的任务可�
 `src-tauri/src/services/shortcut_reply_service.rs` 是快捷回复过滤和排序服务入口。
 
 `src-tauri/src/services/preset_command_service.rs` 是预设命令计划生成服务入口。
-
 
 `src-tauri/src/adapters/terminal/mod.rs` 是终端跳回 adapter 入口。
 
@@ -187,7 +180,6 @@ Builder Panel APP 启动后仍在运行并继续发出实时事件的任务可�
 
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 验证 Codex CLI hook 事件转换和审批 directive 等待。
 
-
 `src-tauri/src/adapters/codex_app/mod.rs` 验证 Codex APP schema 探针、hook 分流、request 编码、notification 转换和完整能力 capability。
 
 `src-tauri/src/adapters/codex_app/codex_rollout.rs` 验证 Codex rollout JSONL 项目名和 Agent 输出清洗。
@@ -201,8 +193,6 @@ Builder Panel APP 启动后仍在运行并继续发出实时事件的任务可�
 `src-tauri/src/services/shortcut_reply_service.rs` 验证快捷回复过滤和排序。
 
 `src-tauri/src/services/preset_command_service.rs` 验证预设命令计划生成。
-
-
 
 `src/views/BuilderPanelApp.test.ts` 验证阶段 7 session 捕捉顺序、统计、动作标签和工具用量聚合。
 
