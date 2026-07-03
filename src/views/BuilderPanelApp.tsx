@@ -65,11 +65,9 @@ import {
   createDefaultMockPanelUiState,
   endSubmit,
   clearFollowupSessionExpansion,
-  isFollowupSessionExpanded,
   isReplyDraftInvalid,
   selectSession,
   sessionKeyToId,
-  toggleFollowupSessionExpansion,
   toggleChoiceSelection,
   updateDraft,
   type MockPanelUiState,
@@ -107,6 +105,7 @@ export const BuilderPanelApp = () => {
   );
   const [sessions, setSessions] = useState<readonly PanelSessionListItem[]>([]);
   const sessionsRef = useRef<readonly PanelSessionListItem[]>([]);
+  const [currentTimeMs, setCurrentTimeMs] = useState(() => Date.now());
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [settingsView, setSettingsView] = useState<SettingsViewModel>(() => ({
     settings: defaultSettings(),
@@ -298,6 +297,16 @@ export const BuilderPanelApp = () => {
       }
     };
   }, [settingsView.settings]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCurrentTimeMs(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const refreshSessions = async (): Promise<void> => {
     const nextSessions = await fetchAllSessions(settingsView.settings);
@@ -660,20 +669,28 @@ export const BuilderPanelApp = () => {
 
   return (
     <main className={appSurfaceClassName(settingsView.settings)}>
-      <PanelShell title="Builder Panel">
-        <PanelTopBar
-          sessions={sessions}
-          settings={settingsView.settings}
-          onClose={() => {
-            void closeWindow();
-          }}
-          onMinimize={() => {
-            void minimizeWindow();
-          }}
-          onOpenSettings={() => {
-            setSettingsModalOpen(true);
-          }}
-        />
+      <PanelShell
+        actions={
+          <PanelTitleActions
+            onClose={() => {
+              void closeWindow();
+            }}
+            onMinimize={() => {
+              void minimizeWindow();
+            }}
+            onOpenSettings={() => {
+              setSettingsModalOpen(true);
+            }}
+          />
+        }
+        title="Builder Panel"
+        titleMeta={
+          <PanelTitleMeta
+            sessions={sessions}
+            settings={settingsView.settings}
+          />
+        }
+      >
         {mockUiState.errorMessage !== null && (
           <div className="panel-error" role="alert">
             {mockUiState.errorMessage}
@@ -681,6 +698,7 @@ export const BuilderPanelApp = () => {
         )}
         <SessionStream
           mockUiState={mockUiState}
+          currentTimeMs={currentTimeMs}
           sessions={sessions}
           settings={settingsView.settings}
           selectedSessionId={mockUiState.selectedSessionId}
@@ -712,11 +730,6 @@ export const BuilderPanelApp = () => {
                 choiceValue,
                 allowsMultiple,
               ),
-            );
-          }}
-          onToggleFollowupExpansion={(session) => {
-            setMockUiState((current) =>
-              toggleFollowupSessionExpansion(current, session.session_key),
             );
           }}
         />
@@ -1099,12 +1112,30 @@ const withRuntimeSource = (
   runtimeSource,
 });
 
-/// 顶部状态区属性。
-interface PanelTopBarProps {
+/// 标题栏状态区属性。
+interface PanelTitleMetaProps {
   /// 当前 session 列表。
   readonly sessions: readonly PanelSessionListItem[];
   /// 当前设置。
   readonly settings: BuilderPanelSettings;
+}
+
+/// 标题栏状态区。
+const PanelTitleMeta = ({ sessions, settings }: PanelTitleMetaProps) => {
+  const counts = countSessionsByStatus(sessions);
+
+  return (
+    <div className="panel-title-meta" aria-label="session 状态">
+      <span>
+        运行 {counts.running} 等待 {counts.waiting} 总计 {sessions.length}
+      </span>
+      {settings.display.show_usage && <ToolUsageSummary sessions={sessions} />}
+    </div>
+  );
+};
+
+/// 标题栏操作属性。
+interface PanelTitleActionsProps {
   /// 打开设置回调。
   readonly onOpenSettings: () => void;
   /// 最小化窗口回调。
@@ -1113,36 +1144,34 @@ interface PanelTopBarProps {
   readonly onClose: () => void;
 }
 
-/// 顶部状态区。
-const PanelTopBar = ({
-  sessions,
-  settings,
+/// 标题栏窗口操作。
+const PanelTitleActions = ({
   onOpenSettings,
   onMinimize,
   onClose,
-}: PanelTopBarProps) => {
-  const counts = countSessionsByStatus(sessions);
-
-  return (
-    <div className="panel-topbar" aria-label="session 状态">
-      <strong>
-        运行中 {counts.running} / {sessions.length}
-      </strong>
-      {settings.display.show_usage && <ToolUsageSummary sessions={sessions} />}
-      <div className="panel-topbar-actions">
-        <button type="button" onClick={onMinimize}>
-          最小化
-        </button>
-        <button type="button" onClick={onOpenSettings}>
-          设置
-        </button>
-        <button type="button" onClick={onClose}>
-          关闭
-        </button>
-      </div>
-    </div>
-  );
-};
+}: PanelTitleActionsProps) => (
+  <div className="panel-title-actions">
+    <button
+      aria-label="最小化"
+      title="最小化"
+      type="button"
+      onClick={onMinimize}
+    >
+      -
+    </button>
+    <button
+      aria-label="设置"
+      title="设置"
+      type="button"
+      onClick={onOpenSettings}
+    >
+      ⚙
+    </button>
+    <button aria-label="关闭" title="关闭" type="button" onClick={onClose}>
+      ×
+    </button>
+  </div>
+);
 
 /// 判断 session 是否来自真实 Codex CLI runtime。
 export const isCodexCliRuntime = (session: PanelSessionListItem): boolean => {
@@ -1196,15 +1225,12 @@ export const canToggleFollowupRow = (
 export const shouldShowSessionActionRow = (
   statusKind: PanelSessionListItem["status_kind"],
   canCreateFollowupTurn: boolean,
-  followupExpanded: boolean,
 ): boolean => {
   if (shouldAutoShowSessionActionRow(statusKind)) {
     return true;
   }
 
-  return (
-    canToggleFollowupRow(statusKind, canCreateFollowupTurn) && followupExpanded
-  );
+  return canToggleFollowupRow(statusKind, canCreateFollowupTurn);
 };
 
 /// 返回 session 第二行样式类名。
@@ -1243,12 +1269,97 @@ export const actionLabel = (action: UiAction): string => {
   }
 };
 
+/// 返回 session 右侧时间标签。
+export const sessionSideTimeLabel = (
+  session: PanelSessionListItem,
+  currentTimeMs: number,
+): string | null => {
+  if (
+    session.status_kind === "running" ||
+    session.status_kind === "waiting_for_approval" ||
+    session.status_kind === "waiting_for_answer"
+  ) {
+    return elapsedDurationLabel(session.started_at.value, currentTimeMs);
+  }
+
+  if (
+    (session.status_kind === "completed" || session.status_kind === "failed") &&
+    session.completed_at !== null
+  ) {
+    return relativePastLabel(session.completed_at.value, currentTimeMs);
+  }
+
+  return null;
+};
+
+/// 格式化运行耗时。
+export const elapsedDurationLabel = (
+  startedAtMs: number,
+  currentTimeMs: number,
+): string => {
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((currentTimeMs - startedAtMs) / 1000),
+  );
+  const seconds = elapsedSeconds % 60;
+  const minutes = Math.floor(elapsedSeconds / 60) % 60;
+  const hours = Math.floor(elapsedSeconds / 3600);
+
+  if (hours > 0) {
+    return [hours, minutes, seconds].map(padTimePart).join(":");
+  }
+
+  return [minutes, seconds].map(padTimePart).join(":");
+};
+
+/// 格式化过去时间。
+export const relativePastLabel = (
+  eventTimeMs: number,
+  currentTimeMs: number,
+): string => {
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((currentTimeMs - eventTimeMs) / 1000),
+  );
+  if (elapsedSeconds < 60) {
+    return "刚刚";
+  }
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes} 分钟前`;
+  }
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return `${elapsedHours} 小时前`;
+  }
+
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  if (elapsedDays < 30) {
+    return `${elapsedDays} 天前`;
+  }
+
+  const elapsedMonths = Math.floor(elapsedDays / 30);
+  if (elapsedMonths < 12) {
+    return `${elapsedMonths} 个月前`;
+  }
+
+  return `${Math.floor(elapsedMonths / 12)} 年前`;
+};
+
+/// 补齐时间段两位数。
+const padTimePart = (value: number): string =>
+  value.toString().padStart(2, "0");
+
 /// Session 流属性。
 interface SessionStreamProps {
   /// 会话列表。
   readonly sessions: readonly PanelSessionListItem[];
   /// 当前选中 session ID。
   readonly selectedSessionId: string | null;
+  /// 当前时间戳，用于刷新相对时间。
+  readonly currentTimeMs: number;
   /// 当前设置。
   readonly settings: BuilderPanelSettings;
   /// mock UI 状态。
@@ -1289,14 +1400,13 @@ interface SessionStreamProps {
     session: PanelSessionListItem,
     content: string,
   ) => void;
-  /// 切换 follow-up 输入区回调。
-  readonly onToggleFollowupExpansion: (session: PanelSessionListItem) => void;
 }
 
 /// Session 流。
 export const SessionStream = ({
   sessions,
   selectedSessionId,
+  currentTimeMs,
   settings,
   mockUiState,
   onJump,
@@ -1306,7 +1416,6 @@ export const SessionStream = ({
   onToggleChoice,
   onSubmitChoice,
   onCreateFollowupTurn,
-  onToggleFollowupExpansion,
 }: SessionStreamProps) => (
   <div className="session-list" aria-label="agent 会话列表">
     {sessions.length === 0 && (
@@ -1316,6 +1425,7 @@ export const SessionStream = ({
       <SessionRow
         key={panelSessionToId(session)}
         mockUiState={mockUiState}
+        currentTimeMs={currentTimeMs}
         selected={selectedSessionId === panelSessionToId(session)}
         session={session}
         settings={settings}
@@ -1326,7 +1436,6 @@ export const SessionStream = ({
         onSendReply={onSendReply}
         onSubmitChoice={onSubmitChoice}
         onToggleChoice={onToggleChoice}
-        onToggleFollowupExpansion={onToggleFollowupExpansion}
       />
     ))}
   </div>
@@ -1459,6 +1568,8 @@ interface SessionRowProps {
   readonly session: PanelSessionListItem;
   /// 是否选中。
   readonly selected: boolean;
+  /// 当前时间戳，用于刷新相对时间。
+  readonly currentTimeMs: number;
   /// 当前设置。
   readonly settings: BuilderPanelSettings;
   /// mock UI 状态。
@@ -1480,14 +1591,13 @@ interface SessionRowProps {
   readonly onSubmitChoice: SessionStreamProps["onSubmitChoice"];
   /// 创建后续 turn 回调。
   readonly onCreateFollowupTurn: SessionStreamProps["onCreateFollowupTurn"];
-  /// 切换 follow-up 输入区回调。
-  readonly onToggleFollowupExpansion: SessionStreamProps["onToggleFollowupExpansion"];
 }
 
 /// Session 行。
 const SessionRow = ({
   session,
   selected,
+  currentTimeMs,
   settings,
   mockUiState,
   onJump,
@@ -1497,7 +1607,6 @@ const SessionRow = ({
   onToggleChoice,
   onSubmitChoice,
   onCreateFollowupTurn,
-  onToggleFollowupExpansion,
 }: SessionRowProps) => {
   const interaction = session.inline_interaction;
   const interactionId = interaction.interaction_id;
@@ -1513,17 +1622,9 @@ const SessionRow = ({
   const followupSubmitId = `followup-${sessionKeyToId(session.session_key)}`;
   const followupSubmitting =
     mockUiState.submittingInteractionId === followupSubmitId;
-  const canToggleFollowup = canToggleFollowupRow(
-    session.status_kind,
-    interaction.can_create_followup_turn,
-  );
-  const followupExpanded =
-    canToggleFollowup &&
-    isFollowupSessionExpanded(mockUiState, session.session_key);
   const expanded = shouldShowSessionActionRow(
     session.status_kind,
     interaction.can_create_followup_turn,
-    followupExpanded,
   );
   const canCreateFollowup = shouldUseFollowupShortcut(
     session.status_kind,
@@ -1538,54 +1639,62 @@ const SessionRow = ({
   const actionSummary = interaction.summary ?? summaryParagraph.visibleText;
   const actionSummaryTooltip =
     interaction.summary ?? summaryParagraph.tooltipText;
+  const sideLabel = sessionSideTimeLabel(session, currentTimeMs);
 
   return (
     <article
       className={
-        selected ? "session-card session-card-selected" : "session-card"
+        selected
+          ? "session-table-row session-table-row-selected"
+          : "session-table-row"
       }
       onClick={() => {
         onJump(session);
       }}
     >
       <div className="session-row-main">
-        <span
-          className={`session-status session-status-${session.status_kind}`}
-        >
-          {session.status_label}
-        </span>
-        <span className="session-source">{sourceTag(session)}</span>
-        <MarkdownTooltip
-          className="session-project"
-          content={session.project_label}
-        >
-          <strong>{session.project_label}</strong>
-        </MarkdownTooltip>
-        <MarkdownTooltip
-          className="session-thread"
-          content={session.thread_label}
-        >
-          <strong>{session.thread_label}</strong>
-        </MarkdownTooltip>
+        <div className="session-identity">
+          <div className="session-identity-line">
+            <span
+              className={`session-status session-status-${session.status_kind}`}
+            >
+              {session.status_label}
+            </span>
+            <span className="session-source">{sourceTag(session)}</span>
+          </div>
+          <MarkdownTooltip
+            className="session-project"
+            content={session.project_label}
+          >
+            <strong>{session.project_label}</strong>
+          </MarkdownTooltip>
+          <MarkdownTooltip
+            className="session-thread"
+            content={session.thread_label}
+          >
+            <strong>{session.thread_label}</strong>
+          </MarkdownTooltip>
+        </div>
         <MarkdownTooltip
           className="session-summary-tooltip"
           content={summaryParagraph.tooltipText}
         >
           {summaryParagraph.visibleText}
         </MarkdownTooltip>
-        {canToggleFollowup && (
-          <button
-            aria-expanded={followupExpanded}
-            className="session-expand-button"
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleFollowupExpansion(session);
-            }}
-          >
-            {followupExpanded ? "收起" : "展开"}
-          </button>
-        )}
+        <div className="session-side">
+          {sideLabel !== null && <span>{sideLabel}</span>}
+          {session.status_kind === "running" && (
+            <button
+              aria-label="停止占位"
+              className="session-stop-placeholder"
+              disabled
+              title="停止能力尚未接入"
+              type="button"
+            >
+              STOP
+            </button>
+          )}
+        </div>
       </div>
       {expanded && (
         <div

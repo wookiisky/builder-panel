@@ -36,17 +36,25 @@ panel 展示 Codex CLI 和 Codex APP 会话列表。
 
 panel 不展示 mini 模式切换入口。
 
-panel 顶部状态区展示运行中数量和 session 总数。
+panel 标题栏展示运行中数量、等待中数量和 session 总数。
 
-panel 顶部状态区展示 Codex 和 Claude 工具维度整体用量。
+panel 标题栏展示 Codex 和 Claude 工具维度整体用量。
 
 同一工具同一来源键的整体用量只取最新值，不按 session 求和。
 
-panel 顶部状态区右侧展示最小化、设置和关闭按钮。
+panel 标题栏右侧展示最小化、设置和关闭按钮。
 
 session 列表展示等待审批、等待回复、运行中、完成和失败状态。
 
-每个 session 行从左到右展示状态、来源标签、项目名、thread 名和当前输出文本。
+每个 session 行从左到右展示身份信息、当前输出文本和时间信息。
+
+session 行身份信息多行展示状态、来源标签、项目名和 thread 名。
+
+运行中、等待审批和等待用户回复的 session 行展示当前 turn 已运行时间。
+
+运行中 session 行展示禁用的停止占位按钮；该按钮当前不触发停止行为。
+
+完成和失败 session 行展示当前 turn 结束到现在的相对时间。
 
 session 行当前输出文本在后端 session 更新事件后短延迟刷新。
 
@@ -74,9 +82,9 @@ session 详情可展示当前 view model 可用的完整多段摘要。
 
 完成和失败且可创建后续 turn 的 session 默认展示为单行。
 
-完成和失败且可创建后续 turn 的 session 第一行右侧提供展开按钮。
+完成和失败且可创建后续 turn 的 session 不展示展开按钮。
 
-用户点击展开按钮后，完成或失败 session 才展示第二行。
+用户 hover 或 focus 到完成或失败 session 行时展示第二行。
 
 两行 session 的第一行展示最后一段输出文本。
 

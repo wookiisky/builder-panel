@@ -108,6 +108,10 @@ export interface SessionListItemViewModel {
   readonly summary: TextDisplay;
   /// 更新时间展示标签。
   readonly updated_at_label: string;
+  /// 当前 turn 开始时间。
+  readonly started_at: { readonly value: number };
+  /// 当前 turn 结束时间。
+  readonly completed_at: { readonly value: number } | null;
   /// 5 小时用量展示。
   readonly usage_5h: UsageValueViewModel;
   /// 周用量展示。

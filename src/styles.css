@@ -43,25 +43,26 @@ textarea:focus-visible {
 }
 
 .app-surface {
-  --bg: #eef1f4;
-  --bg-grid: rgba(15, 23, 42, 0.08);
-  --panel: #f9fbfc;
+  --bg: #f3f5f7;
+  --bg-grid: rgba(24, 32, 44, 0.05);
+  --panel: #f7f9fb;
   --panel-strong: #ffffff;
-  --panel-soft: #e6ebef;
-  --text: #111827;
-  --muted: #4b5563;
-  --faint: #7a8594;
-  --line: #111827;
-  --line-soft: rgba(17, 24, 39, 0.18);
-  --accent: #0f9f6e;
-  --accent-strong: #0b6bcb;
+  --panel-soft: #edf1f5;
+  --text: #10151d;
+  --muted: #46515f;
+  --faint: #7b8796;
+  --line: #27313f;
+  --line-soft: rgba(39, 49, 63, 0.16);
+  --accent: #0f8f76;
+  --accent-strong: #1769aa;
   --accent-text: #ffffff;
-  --warn: #c46a08;
+  --warn: #b86512;
   --danger: #b42318;
   --danger-soft: #ffe7e3;
-  --shadow: rgba(15, 23, 42, 0.2);
+  --row-hover: rgba(23, 105, 170, 0.08);
+  --shadow: rgba(15, 23, 42, 0.16);
   min-height: 100vh;
-  padding: 8px;
+  padding: 6px;
   background:
     linear-gradient(var(--bg-grid) 1px, transparent 1px),
     linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px), var(--bg);
@@ -69,31 +70,32 @@ textarea:focus-visible {
 }
 
 .app-theme-dark {
-  --bg: #10120f;
-  --bg-grid: rgba(87, 255, 181, 0.08);
-  --panel: #171a15;
-  --panel-strong: #20241d;
-  --panel-soft: #11140f;
-  --text: #e8f1df;
-  --muted: #9ba88f;
-  --faint: #6d7665;
-  --line: #5b6a52;
-  --line-soft: rgba(167, 197, 150, 0.24);
-  --accent: #58e39b;
-  --accent-strong: #1dbb73;
-  --accent-text: #07120c;
-  --warn: #f0b64a;
-  --danger: #ff705e;
-  --danger-soft: #2a1511;
+  --bg: #0b0f12;
+  --bg-grid: rgba(106, 130, 154, 0.08);
+  --panel: #11171c;
+  --panel-strong: #151d23;
+  --panel-soft: #0d1216;
+  --text: #edf3f5;
+  --muted: #a2adb5;
+  --faint: #707d87;
+  --line: #2f3b45;
+  --line-soft: rgba(164, 179, 190, 0.18);
+  --accent: #3bd6a3;
+  --accent-strong: #2f81b7;
+  --accent-text: #061014;
+  --warn: #e7b04b;
+  --danger: #ff7465;
+  --danger-soft: #2d1714;
+  --row-hover: rgba(59, 214, 163, 0.08);
   --shadow: rgba(0, 0, 0, 0.45);
 }
 
 .panel-shell {
   width: min(100%, 1040px);
-  border: 2px solid var(--line);
-  border-radius: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
   background: var(--panel);
-  box-shadow: 6px 6px 0 var(--shadow);
+  box-shadow: 0 18px 42px var(--shadow);
   overflow: hidden;
 }
 
@@ -101,9 +103,10 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 34px;
-  padding: 0 8px;
-  border-bottom: 2px solid var(--line);
+  min-height: 30px;
+  gap: 8px;
+  padding: 0 6px 0 8px;
+  border-bottom: 1px solid var(--line);
   background: var(--panel-strong);
   cursor: grab;
   user-select: none;
@@ -112,8 +115,9 @@ textarea:focus-visible {
 .panel-title-block {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .panel-title-block h1 {
@@ -125,6 +129,41 @@ textarea:focus-visible {
   text-overflow: ellipsis;
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+.panel-title-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.panel-title-meta > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.panel-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.panel-title-actions button {
+  width: 24px;
+  min-height: 22px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  color: var(--text);
+  background: var(--panel-soft);
+  box-shadow: none;
+  font-size: 12px;
+  line-height: 1;
 }
 
 .panel-status-dot {
@@ -184,9 +223,9 @@ button:disabled {
 
 .panel-content {
   display: grid;
-  gap: 8px;
-  max-height: calc(100vh - 52px);
-  padding: 8px;
+  gap: 0;
+  max-height: calc(100vh - 42px);
+  padding: 0;
   overflow: auto;
 }
 
@@ -229,12 +268,13 @@ button:disabled {
 
 .tool-usage {
   overflow: hidden;
+  flex: 1 1 auto;
 }
 
 .tool-usage span,
 .tool-usage-empty {
   min-width: 0;
-  padding: 4px 6px;
+  padding: 2px 5px;
   border: 1px solid var(--line-soft);
   border-radius: 3px;
   color: var(--muted);
@@ -295,9 +335,10 @@ button:disabled {
 .panel-error,
 .settings-status {
   margin: 0;
-  padding: 7px 8px;
-  border: 1px solid var(--danger);
-  border-radius: 3px;
+  padding: 6px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--danger);
+  border-radius: 0;
   color: var(--danger);
   background: var(--danger-soft);
   font-size: 11px;
@@ -314,8 +355,8 @@ button:disabled {
 
 .session-list {
   display: grid;
-  gap: 5px;
   min-width: 0;
+  border-top: 1px solid var(--line-soft);
 }
 
 .session-list-empty,
@@ -351,77 +392,99 @@ button:disabled {
   cursor: pointer;
 }
 
-.session-card {
+.session-table-row {
   display: grid;
-  gap: 6px;
+  gap: 0;
   min-width: 0;
-  padding: 6px;
-  border: 1px solid var(--line-soft);
-  border-radius: 3px;
+  padding: 0;
+  border-bottom: 1px solid var(--line-soft);
   background: var(--panel-strong);
   cursor: pointer;
 }
 
-.session-card-selected {
-  border-color: var(--accent);
+.session-table-row-selected {
   background: var(--panel-soft);
-  box-shadow: inset 4px 0 0 var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.session-card:hover {
-  border-color: var(--line);
+.session-table-row:hover {
+  background: var(--row-hover);
 }
 
 .session-row-main {
   display: grid;
-  grid-template-columns:
-    max-content max-content minmax(0, auto) minmax(0, auto)
-    minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 7px;
-  min-height: 30px;
+  grid-template-columns: minmax(176px, 0.34fr) minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+  min-height: 56px;
+  padding: 5px 8px;
 }
 
-.session-row-main > strong,
+.session-identity,
 .session-summary-tooltip,
 .session-action-tooltip {
   min-width: 0;
+}
+
+.session-identity {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+}
+
+.session-identity-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.session-project,
+.session-thread,
+.session-summary-tooltip,
+.session-action-tooltip {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.session-row-main > strong {
-  max-width: min(22ch, 24vw);
+.session-project {
   color: var(--text);
   font-size: 12px;
+  line-height: 1.18;
 }
 
-.session-row-main > .session-project {
-  max-width: min(22ch, 24vw);
-  color: var(--text);
-  font-size: 12px;
-}
-
-.session-row-main > .session-thread {
-  max-width: min(26ch, 28vw);
+.session-thread {
   color: var(--muted);
   font-size: 11px;
+  line-height: 1.18;
 }
 
 .session-summary-tooltip {
+  align-self: center;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
-.session-expand-button {
-  min-width: 42px;
-  min-height: 24px;
-  padding: 0 7px;
-  color: var(--accent-text);
-  background: var(--accent-strong);
-  font-size: 10px;
-  font-weight: 800;
+.session-side {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 82px;
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.session-stop-placeholder {
+  width: 34px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 8px;
+  letter-spacing: 0;
 }
 
 .session-action-tooltip {
@@ -429,6 +492,7 @@ button:disabled {
   font-size: 10px;
 }
 
+.session-identity > .markdown-tooltip,
 .session-row-main > .markdown-tooltip,
 .session-row-action > .markdown-tooltip {
   position: relative;
@@ -446,7 +510,7 @@ button:disabled {
   white-space: nowrap;
 }
 
-.session-row-main > .session-thread .markdown-tooltip-label {
+.session-thread .markdown-tooltip-label {
   overflow: visible;
   line-height: 1.25;
   overflow-wrap: anywhere;
@@ -552,7 +616,7 @@ button:disabled {
   min-width: 0;
   min-height: 24px;
   padding: 0 5px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-soft);
   border-radius: 3px;
   font-size: 10px;
   font-style: normal;
@@ -599,14 +663,36 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(0, 0.36fr) minmax(0, 0.64fr) minmax(180px, 1fr);
   align-items: center;
-  gap: 7px;
-  min-height: 32px;
-  padding-top: 6px;
-  border-top: 1px dashed var(--line-soft);
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 8px 6px;
+  border-top: 1px solid var(--line-soft);
 }
 
 .session-row-action-followup {
   grid-template-columns: minmax(0, 0.48fr) minmax(190px, 1fr);
+  max-height: 0;
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    max-height 140ms ease,
+    opacity 120ms ease,
+    padding 140ms ease;
+}
+
+.session-table-row:hover .session-row-action-followup,
+.session-table-row:focus-within .session-row-action-followup {
+  max-height: 46px;
+  padding-top: 4px;
+  padding-bottom: 6px;
+  border-top: 1px solid var(--line-soft);
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .inline-reply {

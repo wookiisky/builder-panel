@@ -60,6 +60,7 @@ impl SessionState {
                     ),
                 };
                 let pending_interaction = session.pending_interaction.take();
+                let previous_status = session.status;
                 session.project_label = event.project_label;
                 session.conversation_label = event.conversation_label;
                 if event.title.is_some() {
@@ -68,7 +69,14 @@ impl SessionState {
                 if let Some(summary) = event.summary {
                     session.summary = Some(summary);
                 }
-                session.status = preserve_waiting_status(pending_interaction.as_ref());
+                let next_status = preserve_waiting_status(pending_interaction.as_ref());
+                if starts_new_turn(previous_status, next_status) {
+                    session.started_at = event.updated_at;
+                }
+                if next_status == SessionStatus::Running {
+                    session.completed_at = None;
+                }
+                session.status = next_status;
                 session.capabilities = event.capabilities;
                 session.usage = event.usage;
                 session.pending_interaction = pending_interaction;
@@ -79,7 +87,11 @@ impl SessionState {
                 let session = self.ensure_session(event.session_key, event.updated_at);
                 session.summary = Some(event.summary);
                 if session.pending_interaction.is_none() {
+                    if resumes_terminal_session(session.status) {
+                        session.started_at = event.updated_at;
+                    }
                     session.status = SessionStatus::Running;
+                    session.completed_at = None;
                 }
                 session.updated_at = event.updated_at;
             }
@@ -87,7 +99,11 @@ impl SessionState {
                 let session = self.ensure_session(event.session_key, event.updated_at);
                 session.summary = Some(event.summary);
                 if session.pending_interaction.is_none() {
+                    if resumes_terminal_session(session.status) {
+                        session.started_at = event.updated_at;
+                    }
                     session.status = SessionStatus::Running;
+                    session.completed_at = None;
                 }
                 session.updated_at = event.updated_at;
             }
@@ -119,6 +135,7 @@ impl SessionState {
                     session.summary = Some(summary);
                 }
                 session.pending_interaction = None;
+                session.completed_at = None;
                 session.updated_at = event.updated_at;
             }
             AgentEvent::TurnCompleted(event) => {
@@ -128,6 +145,7 @@ impl SessionState {
                     session.summary = Some(summary);
                 }
                 session.pending_interaction = None;
+                session.completed_at = Some(event.updated_at);
                 session.updated_at = event.updated_at;
             }
             AgentEvent::Failed(event) => {
@@ -136,6 +154,7 @@ impl SessionState {
                 session.summary = Some(event.error.user_message.clone());
                 session.last_error = Some(event.error);
                 session.pending_interaction = None;
+                session.completed_at = Some(event.updated_at);
                 session.updated_at = event.updated_at;
             }
             AgentEvent::Detached(event) => {
@@ -209,6 +228,19 @@ fn preserve_waiting_status(pending_interaction: Option<&AgentInteraction>) -> Se
     }
 }
 
+/// 判断事件是否从终态开启了新 turn。
+fn starts_new_turn(previous_status: SessionStatus, next_status: SessionStatus) -> bool {
+    next_status == SessionStatus::Running && resumes_terminal_session(previous_status)
+}
+
+/// 判断状态是否是需要重新计算开始时间的终态。
+fn resumes_terminal_session(status: SessionStatus) -> bool {
+    matches!(
+        status,
+        SessionStatus::Completed | SessionStatus::Failed | SessionStatus::Detached
+    )
+}
+
 /// 比较两个 session 的捕捉展示顺序。
 fn compare_sessions_by_capture_order(
     left: &AgentSession,
@@ -248,6 +280,8 @@ mod tests {
 
         assert_eq!(session.status, SessionStatus::Running);
         assert_eq!(session.project_label, "project-a");
+        assert_eq!(session.started_at, UnixMillis::new(1));
+        assert_eq!(session.completed_at, None);
     }
 
     #[test]
@@ -284,6 +318,8 @@ mod tests {
         let session = state.sessions.get(&key).expect("session should exist");
 
         assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.started_at, UnixMillis::new(3));
+        assert_eq!(session.completed_at, None);
     }
 
     #[test]
@@ -451,6 +487,7 @@ mod tests {
         assert_eq!(session.status, SessionStatus::Completed);
         assert_eq!(session.pending_interaction, None);
         assert_eq!(session.summary, Some("完成".to_string()));
+        assert_eq!(session.completed_at, Some(UnixMillis::new(3)));
     }
 
     #[test]
@@ -471,6 +508,8 @@ mod tests {
         assert_eq!(session.status, SessionStatus::Running);
         assert_eq!(session.pending_interaction, None);
         assert_eq!(session.summary, Some("审批已允许".to_string()));
+        assert_eq!(session.started_at, UnixMillis::new(1));
+        assert_eq!(session.completed_at, None);
     }
 
     #[test]
@@ -490,6 +529,7 @@ mod tests {
         assert_eq!(session.status, SessionStatus::Failed);
         assert!(session.pending_interaction.is_none());
         assert!(session.last_error.is_some());
+        assert_eq!(session.completed_at, Some(UnixMillis::new(3)));
     }
 
     #[test]

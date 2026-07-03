@@ -42,6 +42,12 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 `Detached` 表示会话不可见或不可控，但历史状态不删除。
 
+Session 保存当前 turn 的开始时间和结束时间。
+
+运行中和等待状态的 session 结束时间为空。
+
+完成和失败状态的 session 记录结束时间。
+
 ## reducer 规则
 
 `SessionStarted` 创建或更新 session，并保留已有 pending interaction。
@@ -52,6 +58,8 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 没有 pending interaction 时，`SessionStarted` 将旧的完成、失败或失联状态恢复为运行中。
 
+`SessionStarted` 从完成、失败或失联状态恢复为运行中时，会用事件时间重置当前 turn 开始时间，并清空结束时间。
+
 非 `SessionStarted` 的实时事件可以创建占位 session，用于纳入 APP 启动后仍继续运行并发出事件的任务。
 
 占位 session 的 agent 能力和跳回目标由对应 adapter 在事件进入 reducer 前或同批事件中补齐。
@@ -59,6 +67,8 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 `ActivityUpdated` 更新摘要；已有 pending interaction 时不覆盖等待状态。
 
 `UserMessageUpdated` 使用用户输入原文更新摘要；已有 pending interaction 时不覆盖等待状态。
+
+`ActivityUpdated` 和 `UserMessageUpdated` 从完成、失败或失联状态恢复为运行中时，会用事件时间重置当前 turn 开始时间，并清空结束时间。
 
 `ApprovalRequested` 设置审批等待状态，并替换旧 pending。
 
@@ -68,11 +78,17 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 `InteractionCompleted` 清理 pending interaction，并保持或恢复运行状态，不表示 turn 完成。
 
+`InteractionCompleted` 不重置当前 turn 开始时间。
+
 `TurnCompleted` 设置完成状态，并清理 pending interaction。
+
+`TurnCompleted` 用事件时间记录当前 turn 结束时间。
 
 `TurnCompleted` 只有携带摘要时才更新 session 摘要；空摘要不得生成完成兜底文案。
 
 `Failed` 设置失败状态，记录错误，并清理 pending interaction。
+
+`Failed` 用事件时间记录当前 turn 结束时间。
 
 `Detached` 设置失联状态，清理 pending interaction，不删除 session。
 
@@ -84,7 +100,7 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 ## View Model
 
-Session 列表 view model 暴露项目标签、thread 标签、对话标签、状态、摘要、更新时间、用量、动作和行内交互。
+Session 列表 view model 暴露项目标签、thread 标签、对话标签、状态、摘要、更新时间、当前 turn 开始时间、当前 turn 结束时间、用量、动作和行内交互。
 
 Thread 标签优先来自 `AgentSession.title`，输出完整清洗后的标题；空标题展示为未命名。
 

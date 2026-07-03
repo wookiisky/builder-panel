@@ -184,6 +184,10 @@ pub struct AgentSession {
     /// 首次被当前状态捕捉到的稳定顺序。
     #[serde(default)]
     pub capture_sequence: u64,
+    /// 当前 turn 开始时间。
+    pub started_at: UnixMillis,
+    /// 当前 turn 结束时间。
+    pub completed_at: Option<UnixMillis>,
     /// 最近更新时间。
     pub updated_at: UnixMillis,
 }
@@ -209,6 +213,8 @@ impl AgentSession {
             last_error: None,
             jump_target: None,
             capture_sequence: 0,
+            started_at: updated_at,
+            completed_at: None,
             updated_at,
         }
     }

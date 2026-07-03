@@ -74,6 +74,10 @@ pub struct SessionListItemViewModel {
     pub summary: TextDisplay,
     /// 更新时间展示标签。
     pub updated_at_label: String,
+    /// 当前 turn 开始时间。
+    pub started_at: UnixMillis,
+    /// 当前 turn 结束时间。
+    pub completed_at: Option<UnixMillis>,
     /// 5 小时用量展示。
     pub usage_5h: UsageValueViewModel,
     /// 周用量展示。
@@ -199,6 +203,8 @@ pub fn session_list_item_view_model(session: &AgentSession) -> SessionListItemVi
         status_kind: session.status,
         summary: text_display(session.summary.as_deref().unwrap_or(""), 96),
         updated_at_label: session.updated_at.value.to_string(),
+        started_at: session.started_at,
+        completed_at: session.completed_at,
         usage_5h: usage_value_view_model(&session.usage.usage_5h),
         usage_weekly: usage_value_view_model(&session.usage.usage_weekly),
         actions: actions_for_session(session),
@@ -534,6 +540,17 @@ mod tests {
             detail_view_model.identity,
             "project / 一二三四五六七八九十十一"
         );
+    }
+
+    #[test]
+    fn list_view_model_exposes_turn_timestamps() {
+        let mut session = base_session(SessionCapabilities::none(), UsageSnapshot::unavailable());
+        session.started_at = UnixMillis::new(10);
+        session.completed_at = Some(UnixMillis::new(20));
+        let list_view_model = session_list_item_view_model(&session);
+
+        assert_eq!(list_view_model.started_at, UnixMillis::new(10));
+        assert_eq!(list_view_model.completed_at, Some(UnixMillis::new(20)));
     }
 
     #[test]

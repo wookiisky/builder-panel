@@ -12,6 +12,7 @@ import {
   canSelectOnSessionClick,
   countSessionsByStatus,
   createSessionRefreshScheduler,
+  elapsedDurationLabel,
   fetchSessionsForSource,
   isLatestSettingsSaveResponse,
   isCodexCliRuntime,
@@ -23,6 +24,7 @@ import {
   panelSessionToId,
   parseTooltipMarkdown,
   positionTooltipPanel,
+  relativePastLabel,
   selectPanelSession,
   selectFirstSessionWhenMissing,
   SessionDetail,
@@ -34,6 +36,7 @@ import {
   shouldUseFollowupShortcut,
   sourceTag,
   stopTooltipPortalEvent,
+  sessionSideTimeLabel,
   textDisplayParagraph,
   type PanelSessionListItem,
 } from "./BuilderPanelApp";
@@ -293,6 +296,7 @@ describe("BuilderPanelApp session refresh", () => {
     const renderStream = (items: readonly PanelSessionListItem[]) =>
       createElement(SessionStream, {
         mockUiState: createDefaultMockPanelUiState(),
+        currentTimeMs: 2000,
         sessions: items,
         settings: defaultSettings(),
         selectedSessionId: null,
@@ -303,7 +307,6 @@ describe("BuilderPanelApp session refresh", () => {
         onSendReply: () => undefined,
         onSubmitChoice: () => undefined,
         onToggleChoice: () => undefined,
-        onToggleFollowupExpansion: () => undefined,
       });
 
     await act(async () => {
@@ -349,6 +352,7 @@ describe("BuilderPanelApp session refresh", () => {
       root.render(
         createElement(SessionStream, {
           mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
           sessions: [session],
           settings,
           selectedSessionId: null,
@@ -359,7 +363,6 @@ describe("BuilderPanelApp session refresh", () => {
           onSendReply: () => undefined,
           onSubmitChoice: () => undefined,
           onToggleChoice: () => undefined,
-          onToggleFollowupExpansion: () => undefined,
         }),
       );
     });
@@ -786,14 +789,13 @@ describe("BuilderPanelApp session refresh", () => {
     expect(shouldAutoShowSessionActionRow("failed")).toBe(false);
   });
 
-  it("requires manual expansion for completed and failed follow-up rows", () => {
+  it("renders completed and failed follow-up rows for hover expansion", () => {
     expect(canToggleFollowupRow("failed", true)).toBe(true);
     expect(canToggleFollowupRow("completed", true)).toBe(true);
     expect(canToggleFollowupRow("failed", false)).toBe(false);
-    expect(shouldShowSessionActionRow("completed", true, false)).toBe(false);
-    expect(shouldShowSessionActionRow("completed", true, true)).toBe(true);
-    expect(shouldShowSessionActionRow("failed", true, false)).toBe(false);
-    expect(shouldShowSessionActionRow("failed", true, true)).toBe(true);
+    expect(shouldShowSessionActionRow("completed", true)).toBe(true);
+    expect(shouldShowSessionActionRow("failed", true)).toBe(true);
+    expect(shouldShowSessionActionRow("completed", false)).toBe(false);
     expect(shouldUseFollowupShortcut("failed", true)).toBe(true);
     expect(shouldUseFollowupShortcut("completed", true)).toBe(true);
     expect(shouldUseFollowupShortcut("running", true)).toBe(false);
@@ -927,6 +929,41 @@ describe("BuilderPanelApp session refresh", () => {
     expect(next.errorMessage).toBe("最小化窗口失败");
     expect(next.submittingInteractionId).toBe("approval-1");
   });
+
+  it("formats active session elapsed time with hour rollover", () => {
+    expect(elapsedDurationLabel(1000, 62_000)).toBe("01:01");
+    expect(elapsedDurationLabel(1000, 3_663_000)).toBe("01:01:02");
+    expect(elapsedDurationLabel(3000, 1000)).toBe("00:00");
+  });
+
+  it("formats completed session relative time", () => {
+    expect(relativePastLabel(10_000, 59_000)).toBe("刚刚");
+    expect(relativePastLabel(10_000, 130_000)).toBe("2 分钟前");
+    expect(relativePastLabel(10_000, 7_210_000)).toBe("2 小时前");
+  });
+
+  it("uses started and completed timestamps for the session side label", () => {
+    const running = sessionItem(
+      sessionKey("project-a", "running"),
+      "codex_app",
+      "running",
+      "运行中",
+      10_000,
+    );
+    const completed = {
+      ...sessionItem(
+        sessionKey("project-a", "completed"),
+        "codex_app",
+        "completed",
+        "已完成",
+        30_000,
+      ),
+      completed_at: { value: 30_000 },
+    };
+
+    expect(sessionSideTimeLabel(running, 72_000)).toBe("01:02");
+    expect(sessionSideTimeLabel(completed, 150_000)).toBe("2 分钟前");
+  });
 });
 
 const sessionItem = (
@@ -951,6 +988,11 @@ const sessionItem = (
     max_chars: 120,
   },
   updated_at_label: updatedAt.toString(),
+  started_at: { value: updatedAt },
+  completed_at:
+    statusKind === "completed" || statusKind === "failed"
+      ? { value: updatedAt }
+      : null,
   usage_5h: {
     value_label: "--",
     amount_label: null,
