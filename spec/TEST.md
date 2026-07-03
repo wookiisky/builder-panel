@@ -112,7 +112,7 @@ Rust Codex APP runtime 测试验证 path-only thread metadata 只补齐已有可
 
 Rust Codex APP adapter 测试验证已有运行态 session 会忽略后台 `idle` thread 元数据状态，避免覆盖实时摘要或运行状态。
 
-Rust Codex APP adapter 测试验证当前 turn Agent message delta 会累积展示、缓存有界，完成后仍保留最新 Agent 输出。
+Rust Codex APP adapter 测试验证当前 turn Agent message delta 会累积展示、运行中列表摘要 `full_text` 保留有界当前 turn 输出、缓存有界，完成后仍保留最新 Agent 输出。
 
 Rust Codex APP adapter 测试验证同一 thread 新 turn 不串联上一 turn 输出。
 

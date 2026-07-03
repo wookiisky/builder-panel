@@ -174,7 +174,10 @@ impl CodexAppAdapter {
                 let _ = required_string(params.get("threadId"), "threadId")?;
                 Ok(None)
             }
-            "item/agentMessage/delta" => Ok(Some(agent_message_delta(params, cwd, updated_at)?)),
+            "item/agentMessage/delta" => {
+                validate_agent_message_delta(params)?;
+                Ok(None)
+            }
             "thread/status/changed" => Ok(status_changed(params, cwd, updated_at)?),
             "thread/tokenUsage/updated" => Ok(Some(usage_updated(params, cwd, updated_at)?)),
             "turn/completed" => Ok(Some(turn_completed(params, cwd, updated_at)?)),
@@ -1341,7 +1344,7 @@ impl CodexAppRuntime {
             .or_default();
         output.push_str(&delta);
         truncate_to_recent_chars(output, MAX_CURRENT_TURN_OUTPUT_CHARS);
-        let summary = truncate(output, 240);
+        let summary = output.clone();
         self.apply_event(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
             session_key: session_key(cwd, &thread_id),
             summary,
@@ -1380,7 +1383,7 @@ impl CodexAppRuntime {
                     .get(&event.session_key.conversation_id.value)
                     .filter(|value| !value.trim().is_empty())
                 {
-                    event.summary = truncate(output, 240);
+                    event.summary = output.clone();
                 }
                 AgentEvent::ActivityUpdated(event)
             }
@@ -3081,19 +3084,10 @@ fn started_from_thread(
     }))
 }
 
-fn agent_message_delta(
-    params: &Value,
-    cwd: &str,
-    updated_at: UnixMillis,
-) -> Result<AgentEvent, CodexAppAdapterError> {
-    let thread_id = required_string(params.get("threadId"), "threadId")?;
-    let delta = required_string(params.get("delta"), "delta")?;
-
-    Ok(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
-        session_key: session_key(cwd, &thread_id),
-        summary: truncate(&delta, 120),
-        updated_at,
-    }))
+fn validate_agent_message_delta(params: &Value) -> Result<(), CodexAppAdapterError> {
+    let _ = required_string(params.get("threadId"), "threadId")?;
+    let _ = required_string(params.get("delta"), "delta")?;
+    Ok(())
 }
 
 fn title_updated(
@@ -4120,6 +4114,26 @@ mod tests {
             UnixMillis::new(2),
         )
         .expect("notification should parse");
+
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn agent_message_delta_notification_is_consumed_by_runtime_stateful_path() {
+        let notification = json!({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": "thread-1",
+                "delta": "实时输出"
+            }
+        });
+
+        let event = CodexAppAdapter::event_from_notification(
+            &notification,
+            "/tmp/builder-panel",
+            UnixMillis::new(2),
+        )
+        .expect("notification should validate");
 
         assert!(event.is_none());
     }
@@ -6576,6 +6590,52 @@ mod tests {
     }
 
     #[test]
+    fn running_agent_message_delta_keeps_bounded_full_summary_for_tooltip() {
+        let mut runtime = CodexAppRuntime::empty();
+        let first_paragraph = "第一段".repeat(70);
+        let second_paragraph = "第二段".repeat(70);
+        let third_paragraph = "第三段末尾标记".repeat(30);
+        let expected_summary =
+            format!("{first_paragraph}\n\n{second_paragraph}\n\n{third_paragraph}");
+
+        for (index, delta) in [
+            first_paragraph.as_str().to_string(),
+            format!("\n\n{second_paragraph}"),
+            format!("\n\n{third_paragraph}"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            runtime
+                .apply_app_server_message(
+                    &json!({
+                        "method": "item/agentMessage/delta",
+                        "params": {
+                            "threadId": "thread-1",
+                            "cwd": "/tmp/builder-panel",
+                            "delta": delta
+                        }
+                    }),
+                    "/wrong/cwd",
+                    UnixMillis::new(index as u64 + 1),
+                )
+                .expect("delta should apply");
+        }
+
+        let sessions = runtime.session_list();
+        let session = sessions
+            .iter()
+            .find(|session| session.session_key == session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+
+        assert_eq!(session.status_kind, SessionStatus::Running);
+        assert!(expected_summary.chars().count() > 240);
+        assert_eq!(session.summary.full_text, expected_summary);
+        assert!(session.summary.full_text.contains("第三段末尾标记"));
+        assert!(!session.summary.full_text.ends_with("..."));
+    }
+
+    #[test]
     fn agent_message_delta_cache_is_bounded() {
         let mut runtime = CodexAppRuntime::empty();
         runtime
@@ -6654,6 +6714,72 @@ mod tests {
             .expect("session should exist");
         let summary = session.summary.as_ref().expect("summary should exist");
         assert_eq!(summary.chars().count(), MAX_FINAL_OUTPUT_CHARS);
+    }
+
+    #[test]
+    fn idle_status_keeps_full_current_turn_output() {
+        let mut runtime = CodexAppRuntime::empty();
+        let first_paragraph = "第一段".repeat(70);
+        let second_paragraph = "第二段".repeat(70);
+        let expected_summary = format!("{first_paragraph}\n\n{second_paragraph}");
+
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": first_paragraph
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(1),
+            )
+            .expect("first delta should apply");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": format!("\n\n{second_paragraph}")
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(2),
+            )
+            .expect("second delta should apply");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "thread/status/changed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "status": {"type": "idle"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(3),
+            )
+            .expect("idle should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+
+        assert_eq!(session.status, SessionStatus::Completed);
+        assert!(expected_summary.chars().count() > 240);
+        assert_eq!(session.summary.as_deref(), Some(expected_summary.as_str()));
+        assert!(!session
+            .summary
+            .as_deref()
+            .unwrap_or_default()
+            .ends_with("..."));
     }
 
     #[test]

@@ -14,7 +14,9 @@ Codex APP app-server schema 通过本机 `codex app-server generate-json-schema 
 
 Codex APP adapter 可编码 `initialize`、`initialized`、`thread/start`、`thread/resume`、`turn/start`、`thread/loaded/list`、`thread/read` 和 `thread/list` JSON-RPC 消息。
 
-Codex APP adapter 可把 `thread/started`、`thread/name/updated`、`turn/started`、`item/agentMessage/delta`、`thread/status/changed`、`thread/tokenUsage/updated` 和 `turn/completed` notification 转换为归一事件。
+Codex APP adapter 可把 `thread/started`、`thread/name/updated`、`turn/started`、`thread/status/changed`、`thread/tokenUsage/updated` 和 `turn/completed` notification 转换为归一事件。
+
+Codex APP `item/agentMessage/delta` notification 由 runtime 的有状态路径消费，不由无状态 notification 转换入口生成短摘要事件。
 
 Codex APP `thread/status/changed` 的 `idle` 映射为完成态；`systemError` 映射为失败态；`notLoaded` 映射为失联态。
 
@@ -144,7 +146,7 @@ Codex rollout 中未知工具、动态工具和已知工具的 JSON arguments �
 
 Codex rollout 中的工具事件不得在完成后覆盖最终 Agent 输出。
 
-Codex APP 当前 turn 的 `item/agentMessage/delta` 会在 runtime 内按 thread 累积最多 65535 字符的有界输出；`turn/started` 或 follow-up 成功提交会清空该 thread 的当前 turn 输出。
+Codex APP 当前 turn 的 `item/agentMessage/delta` 会在 runtime 内按 thread 累积最多 65535 字符的有界输出；运行中 session 列表摘要的 `full_text` 使用该有界输出，行内展示截断由前端负责；`turn/started` 或 follow-up 成功提交会清空该 thread 的当前 turn 输出。
 
 Codex APP `turn/completed` 和 `thread/status/changed` 的 `idle` 优先保留当前 turn 最新 Agent 输出；没有当前输出时不写固定完成或空闲文案。
 
