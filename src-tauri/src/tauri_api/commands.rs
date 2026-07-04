@@ -1817,7 +1817,7 @@ fn command_unix_now() -> UnixMillis {
 mod tests {
     use super::*;
     use crate::adapters::codex_app::{
-        CodexAppRpcWrite, CodexAppThreadMetadata, CodexRolloutSnapshot,
+        CodexAppRpcWrite, CodexAppThreadMetadata, CodexAppThreadSourceKind, CodexRolloutSnapshot,
     };
     use crate::domain::agent_session::{AgentKind, ConversationId, ProjectId};
     use crate::domain::app_error::{AppError, AppErrorCode};
@@ -1871,6 +1871,7 @@ mod tests {
             path: Some(PathBuf::from("/tmp/rollout-unresolved-thread.jsonl")),
             status_type: "idle".to_string(),
             ephemeral: false,
+            source_kind: CodexAppThreadSourceKind::UserVisible,
         }];
         let candidates = BTreeSet::from(["unresolved-thread".to_string()]);
 
@@ -2095,6 +2096,7 @@ mod tests {
             path: None,
             status_type: "idle".to_string(),
             ephemeral: false,
+            source_kind: CodexAppThreadSourceKind::UserVisible,
         }
     }
 

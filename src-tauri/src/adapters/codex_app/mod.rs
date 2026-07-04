@@ -34,8 +34,8 @@ use crate::domain::agent_interaction::{
     StructuredRpcTarget, TextReplyInteraction,
 };
 use crate::domain::agent_session::{
-    AgentKind, ConversationId, JumpTarget, ProjectId, SessionCapabilities, SessionKey,
-    SessionStatus,
+    AgentKind, AgentSession, ConversationId, JumpTarget, ProjectId, SessionCapabilities,
+    SessionKey, SessionStatus,
 };
 use crate::domain::app_error::{AppError, AppErrorCode, FallbackAction};
 use crate::domain::session_state::SessionState;
@@ -481,6 +481,25 @@ pub struct CodexAppThreadMetadata {
     pub status_type: String,
     /// 是否是临时 thread。
     pub ephemeral: bool,
+    /// app-server source 清洗后的可见性。
+    pub source_kind: CodexAppThreadSourceKind,
+}
+
+/// Codex APP thread 来源可见性。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CodexAppThreadSourceKind {
+    /// 用户可见来源，包括普通 thread 与显式 thread_spawn subagent。
+    #[default]
+    UserVisible,
+    /// Codex 内部机制来源，不应创建 Builder Panel session。
+    InternalMechanism,
+}
+
+impl CodexAppThreadSourceKind {
+    /// 是否是 Codex 内部机制来源。
+    fn is_internal(self) -> bool {
+        self == Self::InternalMechanism
+    }
 }
 
 /// Codex APP thread 元数据来源。
@@ -517,6 +536,8 @@ impl CodexAppThreadMetadata {
             .get("ephemeral")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        validate_thread_source_labels(object)?;
+        let source_kind = thread_source_kind(object.get("source"))?;
 
         Ok(Self {
             id,
@@ -527,8 +548,82 @@ impl CodexAppThreadMetadata {
             path,
             status_type,
             ephemeral,
+            source_kind,
         })
     }
+}
+
+/// 解析 app-server thread source，仅在适配器边界转换成内部可见性。
+fn thread_source_kind(
+    source: Option<&Value>,
+) -> Result<CodexAppThreadSourceKind, CodexAppAdapterError> {
+    let Some(source) = source else {
+        return Ok(CodexAppThreadSourceKind::UserVisible);
+    };
+    match source {
+        Value::Null | Value::String(_) => Ok(CodexAppThreadSourceKind::UserVisible),
+        Value::Object(object) => {
+            let subagent = object.get("subAgent").or_else(|| object.get("subagent"));
+            subagent.map_or(
+                Ok(CodexAppThreadSourceKind::UserVisible),
+                subagent_source_kind,
+            )
+        }
+        _ => Err(CodexAppAdapterError::InvalidField("thread.source")),
+    }
+}
+
+fn subagent_source_kind(source: &Value) -> Result<CodexAppThreadSourceKind, CodexAppAdapterError> {
+    match source {
+        Value::String(kind) => Ok(subagent_kind_visibility(kind)),
+        Value::Object(object) => {
+            if object.contains_key("thread_spawn") || object.contains_key("threadSpawn") {
+                return Ok(CodexAppThreadSourceKind::UserVisible);
+            }
+            if object.keys().any(|key| {
+                matches!(
+                    subagent_kind_visibility(key),
+                    CodexAppThreadSourceKind::InternalMechanism
+                )
+            }) {
+                return Ok(CodexAppThreadSourceKind::InternalMechanism);
+            }
+            Ok(CodexAppThreadSourceKind::UserVisible)
+        }
+        Value::Null => Ok(CodexAppThreadSourceKind::UserVisible),
+        _ => Err(CodexAppAdapterError::InvalidField("thread.source.subAgent")),
+    }
+}
+
+fn subagent_kind_visibility(kind: &str) -> CodexAppThreadSourceKind {
+    match kind {
+        "review" | "compact" | "memory_consolidation" | "memoryConsolidation" => {
+            CodexAppThreadSourceKind::InternalMechanism
+        }
+        _ => CodexAppThreadSourceKind::UserVisible,
+    }
+}
+
+fn validate_thread_source_labels(
+    object: &serde_json::Map<String, Value>,
+) -> Result<(), CodexAppAdapterError> {
+    let _ = optional_non_empty_string(
+        object
+            .get("threadSource")
+            .or_else(|| object.get("thread_source")),
+        "thread.threadSource",
+    )?;
+    let _ = optional_non_empty_string(
+        object.get("agentRole").or_else(|| object.get("agent_role")),
+        "thread.agentRole",
+    )?;
+    let _ = optional_non_empty_string(
+        object
+            .get("agentNickname")
+            .or_else(|| object.get("agent_nickname")),
+        "thread.agentNickname",
+    )?;
+    Ok(())
 }
 
 /// Codex 本地 session index 条目。
@@ -650,6 +745,8 @@ pub struct CodexAppRuntime {
     thread_rollout_paths: BTreeMap<String, PathBuf>,
     /// 当前 turn 已累积的 Agent 输出。
     current_turn_agent_outputs: BTreeMap<String, String>,
+    /// hook SessionStart 暂时影响已有 session 前保存的快照。
+    pending_hook_start_snapshots: BTreeMap<SessionKey, AgentSession>,
     /// 只由启动信号创建、尚未看到真实可展示内容的空壳候选。
     empty_shell_candidates: BTreeSet<SessionKey>,
     /// 已发起但尚未完成写入确认的 follow-up turn。
@@ -679,6 +776,7 @@ impl CodexAppRuntime {
             child_thread_parents: BTreeMap::new(),
             thread_rollout_paths: BTreeMap::new(),
             current_turn_agent_outputs: BTreeMap::new(),
+            pending_hook_start_snapshots: BTreeMap::new(),
             empty_shell_candidates: BTreeSet::new(),
             pending_followup_turns: BTreeMap::new(),
             update_sink,
@@ -842,6 +940,16 @@ impl CodexAppRuntime {
         }
         let _ =
             self.migrate_codex_app_thread_to_cwd(&payload.session_id, &payload.cwd, updated_at)?;
+        let hook_session_key = session_key(&payload.cwd, &payload.session_id);
+        if payload.hook_event_name == BridgeHookEventName::SessionStart {
+            self.remember_hook_start_snapshot(&hook_session_key);
+        }
+        let is_internal_user_prompt = payload.hook_event_name
+            == BridgeHookEventName::UserPromptSubmit
+            && payload
+                .prompt
+                .as_deref()
+                .is_some_and(is_codex_internal_prompt);
         let events =
             CodexAppAdapter::events_from_hook_payload(&request.request_id, payload, updated_at)
                 .map_err(|_| protocol_error("Codex APP hook payload 不受支持"))?;
@@ -849,14 +957,11 @@ impl CodexAppRuntime {
         for event in events {
             self.apply_event(event)?;
         }
-        if payload.hook_event_name == BridgeHookEventName::UserPromptSubmit
-            && payload
-                .prompt
-                .as_deref()
-                .is_some_and(is_codex_internal_prompt)
-        {
-            let session_key = session_key(&payload.cwd, &payload.session_id);
-            self.remove_empty_shell_session(&session_key, updated_at);
+        if is_internal_user_prompt {
+            self.remove_empty_shell_session(&hook_session_key, updated_at);
+            self.restore_hook_start_snapshot(&hook_session_key, updated_at);
+        } else if payload.hook_event_name != BridgeHookEventName::SessionStart {
+            self.pending_hook_start_snapshots.remove(&hook_session_key);
         }
 
         if payload.hook_event_name != BridgeHookEventName::PermissionRequest {
@@ -883,6 +988,29 @@ impl CodexAppRuntime {
             interaction_id,
             waiter,
         }))
+    }
+
+    fn remember_hook_start_snapshot(&mut self, session_key: &SessionKey) {
+        if self.empty_shell_candidates.contains(session_key)
+            || self.pending_hook_start_snapshots.contains_key(session_key)
+        {
+            return;
+        }
+        let Some(session) = self.session_state.sessions.get(session_key) else {
+            return;
+        };
+        self.pending_hook_start_snapshots
+            .insert(session_key.clone(), session.clone());
+    }
+
+    fn restore_hook_start_snapshot(&mut self, session_key: &SessionKey, updated_at: UnixMillis) {
+        let Some(snapshot) = self.pending_hook_start_snapshots.remove(session_key) else {
+            return;
+        };
+        self.session_state
+            .sessions
+            .insert(session_key.clone(), snapshot);
+        self.publish_codex_app_session_update(session_key, updated_at);
     }
 
     /// 应用 app-server JSON-RPC 消息。
@@ -1273,6 +1401,7 @@ impl CodexAppRuntime {
         self.thread_rollout_paths.remove(&thread_id);
         self.clear_thread_hierarchy_references(&thread_id, session_key, updated_at);
         self.current_turn_agent_outputs.remove(&thread_id);
+        self.pending_hook_start_snapshots.remove(session_key);
         self.pending_followup_turns.remove(session_key);
         self.pending_hook_approvals
             .retain(|_, pending| pending.session_key != *session_key);
@@ -1444,6 +1573,17 @@ impl CodexAppRuntime {
         }
 
         let thread_id = metadata.id.clone();
+        let preview = metadata.preview.clone().filter(|value| !value.is_empty());
+        let has_internal_preview = preview.as_deref().is_some_and(is_codex_internal_prompt);
+        if has_internal_preview || metadata.source_kind.is_internal() {
+            self.remove_internal_thread_empty_shell(
+                &thread_id,
+                metadata.cwd.as_deref(),
+                updated_at,
+            );
+            return Ok(());
+        }
+
         self.record_thread_parent(&metadata);
         let Some(cwd) = metadata
             .cwd
@@ -1454,20 +1594,10 @@ impl CodexAppRuntime {
             return Ok(());
         };
         let target_key = session_key(&cwd, &thread_id);
-        let preview = metadata.preview.clone().filter(|value| !value.is_empty());
-        let has_internal_preview = preview.as_deref().is_some_and(is_codex_internal_prompt);
-        let summary = preview.filter(|value| !is_codex_internal_prompt(value));
+        let summary = preview;
         let title = clean_optional_thread_title(&metadata.name);
         let session_exists = self.session_state.sessions.contains_key(&target_key);
         let has_thread_session = self.has_session_for_thread(&thread_id);
-        if has_internal_preview {
-            if session_exists {
-                self.remove_empty_shell_session(&target_key, updated_at);
-            } else if let Some(existing_key) = self.session_key_for_thread(&thread_id) {
-                self.remove_empty_shell_session(&existing_key, updated_at);
-            }
-            return Ok(());
-        }
         if !session_exists
             && !has_thread_session
             && !thread_metadata_can_create_session_from_source(
@@ -1544,6 +1674,31 @@ impl CodexAppRuntime {
 
         self.apply_thread_metadata_status(&target_key, &metadata.status_type, summary, updated_at)?;
         self.try_apply_related_thread_hierarchies(&thread_id, updated_at)
+    }
+
+    fn remove_internal_thread_empty_shell(
+        &mut self,
+        thread_id: &str,
+        cwd: Option<&str>,
+        updated_at: UnixMillis,
+    ) {
+        if let Some(cwd) = cwd {
+            self.remove_empty_shell_session(&session_key(cwd, thread_id), updated_at);
+        }
+        if let Some(existing_key) = self.session_key_for_thread(thread_id) {
+            self.remove_empty_shell_session(&existing_key, updated_at);
+        }
+        if self.has_session_for_thread(thread_id) {
+            return;
+        }
+
+        self.thread_cwds.remove(thread_id);
+        self.thread_metadata.remove(thread_id);
+        self.thread_rollout_paths.remove(thread_id);
+        self.current_turn_agent_outputs.remove(thread_id);
+        self.child_thread_parents.remove(thread_id);
+        self.child_thread_parents
+            .retain(|_, parent_thread_id| parent_thread_id != thread_id);
     }
 
     /// 返回 runtime 已信任的 thread cwd。
@@ -4103,8 +4258,9 @@ mod tests {
         ensure_codex_app_thread_loaded, handle_rpc_response, schema_probe_from_dir, session_key,
         try_write_message_line_nonblocking, CodexAppAdapter, CodexAppAdapterError,
         CodexAppFollowupRpcClient, CodexAppRpcWrite, CodexAppRuntime, CodexAppServerClient,
-        CodexAppThreadMetadata, CodexRolloutSnapshot, CodexRolloutWatchTarget, PendingRpcResult,
-        MAX_CURRENT_TURN_OUTPUT_CHARS, MAX_FINAL_OUTPUT_CHARS, UNRESOLVED_CODEX_APP_PROJECT_ID,
+        CodexAppThreadMetadata, CodexAppThreadSourceKind, CodexRolloutSnapshot,
+        CodexRolloutWatchTarget, PendingRpcResult, MAX_CURRENT_TURN_OUTPUT_CHARS,
+        MAX_FINAL_OUTPUT_CHARS, UNRESOLVED_CODEX_APP_PROJECT_ID,
         UNRESOLVED_CODEX_APP_PROJECT_LABEL,
     };
     use crate::adapters::bridge::codec::{
@@ -4921,6 +5077,61 @@ mod tests {
     }
 
     #[test]
+    fn internal_hook_turn_after_completed_session_keeps_previous_status() {
+        let mut runtime = CodexAppRuntime::empty();
+        let session_start = BridgeRequestEnvelope::process_agent_hook(
+            "request-start".to_string(),
+            hook_payload(BridgeHookEventName::SessionStart),
+        );
+        runtime
+            .apply_hook_request(&session_start, UnixMillis::new(1))
+            .expect("session start should apply");
+        let mut stop_payload = hook_payload(BridgeHookEventName::Stop);
+        stop_payload.last_assistant_message = Some("真实任务完成".to_string());
+        let stop =
+            BridgeRequestEnvelope::process_agent_hook("request-stop".to_string(), stop_payload);
+        runtime
+            .apply_hook_request(&stop, UnixMillis::new(2))
+            .expect("stop should complete session");
+
+        let key = session_key("/tmp/builder-panel", "thread-1");
+        let completed = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("session should exist");
+        assert_eq!(completed.status, SessionStatus::Completed);
+        assert_eq!(completed.summary.as_deref(), Some("真实任务完成"));
+
+        let internal_start = BridgeRequestEnvelope::process_agent_hook(
+            "request-internal-start".to_string(),
+            hook_payload(BridgeHookEventName::SessionStart),
+        );
+        runtime
+            .apply_hook_request(&internal_start, UnixMillis::new(3))
+            .expect("internal session start should apply");
+        let mut internal_prompt = hook_payload(BridgeHookEventName::UserPromptSubmit);
+        internal_prompt.prompt =
+            Some("Create Codex ambient suggestions for the current thread.".to_string());
+        let internal_submit = BridgeRequestEnvelope::process_agent_hook(
+            "request-internal-submit".to_string(),
+            internal_prompt,
+        );
+        runtime
+            .apply_hook_request(&internal_submit, UnixMillis::new(4))
+            .expect("internal user prompt should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("session should still exist");
+        assert_eq!(session.status, SessionStatus::Completed);
+        assert_eq!(session.summary.as_deref(), Some("真实任务完成"));
+        assert_eq!(session.completed_at, Some(UnixMillis::new(2)));
+    }
+
+    #[test]
     fn hook_session_uses_thread_metadata_name_as_title() {
         let mut runtime = CodexAppRuntime::empty();
         let request = BridgeRequestEnvelope::process_agent_hook(
@@ -4942,6 +5153,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(2),
             )
@@ -5077,6 +5289,7 @@ mod tests {
                     path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(2),
             )
@@ -5092,6 +5305,7 @@ mod tests {
                     path: Some(PathBuf::from("/tmp/rollout-unrelated.jsonl")),
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(3),
             )
@@ -5117,6 +5331,7 @@ mod tests {
             path: None,
             status_type: "idle".to_string(),
             ephemeral: false,
+            source_kind: CodexAppThreadSourceKind::UserVisible,
         }];
         let index = r#"{"id":"thread-1","thread_name":"说明身份","updated_at":"2026-06-08T04:30:16Z"}
 {"id":"thread-2","thread_name":"其它"}
@@ -5150,6 +5365,7 @@ mod tests {
             path: None,
             status_type: "idle".to_string(),
             ephemeral: false,
+            source_kind: CodexAppThreadSourceKind::UserVisible,
         }];
         let index = r#"{"id":"thread-1","thread_name":"gpt-5.5","updated_at":"2026-06-08T04:30:16Z"}
 "#;
@@ -5195,6 +5411,7 @@ mod tests {
                     path: None,
                     status_type: "idle".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(2),
             )
@@ -5239,6 +5456,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(2),
             )
@@ -5321,6 +5539,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -5358,6 +5577,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -5373,6 +5593,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(2),
             )
@@ -5871,6 +6092,7 @@ mod tests {
                     path: None,
                     status_type: "idle".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(2),
             )
@@ -5933,6 +6155,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(2),
             )
@@ -5963,6 +6186,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -5996,6 +6220,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(2),
             )
@@ -6044,6 +6269,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6067,6 +6293,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(3),
             )
@@ -6095,6 +6322,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6116,6 +6344,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(3),
             )
@@ -6206,6 +6435,7 @@ mod tests {
                     path: None,
                     status_type: "idle".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6245,6 +6475,7 @@ mod tests {
                     path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6292,6 +6523,7 @@ mod tests {
                     path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6318,6 +6550,7 @@ mod tests {
                     path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6325,6 +6558,78 @@ mod tests {
 
         assert!(runtime.session_state().sessions.is_empty());
         assert!(runtime.rollout_watch_targets().is_empty());
+    }
+
+    #[test]
+    fn loaded_thread_metadata_with_internal_source_does_not_create_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        let response = json!({
+            "threads": [{
+                "id": "thread-1",
+                "cwd": "/tmp/builder-panel",
+                "name": "review",
+                "preview": "检查实现",
+                "path": "/tmp/rollout-thread-1.jsonl",
+                "status": {"type": "active"},
+                "source": {"subAgent": "review"},
+                "threadSource": "subagent",
+                "agentRole": "review",
+                "agentNickname": "Reviewer"
+            }]
+        });
+        let mut threads =
+            CodexAppAdapter::threads_from_response(&response).expect("response should clean");
+
+        runtime
+            .apply_loaded_thread_metadata(threads.remove(0), UnixMillis::new(1))
+            .expect("internal source metadata should be ignored");
+
+        assert!(runtime.session_state().sessions.is_empty());
+        assert!(runtime.rollout_watch_targets().is_empty());
+    }
+
+    #[test]
+    fn loaded_thread_spawn_subagent_metadata_can_create_nested_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        let response = json!({
+            "threads": [{
+                "id": "child-thread",
+                "parentThreadId": "parent-thread",
+                "cwd": "/tmp/builder-panel",
+                "name": "plan reviewer",
+                "preview": "检查方案",
+                "path": "/tmp/rollout-child.jsonl",
+                "status": {"type": "active"},
+                "source": {
+                    "subAgent": {
+                        "thread_spawn": {
+                            "depth": 1,
+                            "parent_thread_id": "parent-thread",
+                            "agent_role": "plan_reviewer",
+                            "agent_nickname": "Reviewer",
+                            "agent_path": "child-thread"
+                        }
+                    }
+                },
+                "threadSource": "subagent",
+                "agentRole": "plan_reviewer",
+                "agentNickname": "Reviewer"
+            }]
+        });
+        let mut threads =
+            CodexAppAdapter::threads_from_response(&response).expect("response should clean");
+
+        runtime
+            .apply_loaded_thread_metadata(threads.remove(0), UnixMillis::new(1))
+            .expect("thread_spawn subagent metadata should apply");
+
+        assert!(
+            runtime
+                .session_state()
+                .sessions
+                .contains_key(&session_key("/tmp/builder-panel", "child-thread")),
+            "thread_spawn subagent should remain visible"
+        );
     }
 
     #[test]
@@ -6343,6 +6648,7 @@ mod tests {
                     path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6364,10 +6670,57 @@ mod tests {
                     path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(2),
             )
             .expect("internal metadata should remove shell");
+
+        assert!(runtime.session_state().sessions.is_empty());
+        assert!(!runtime.claims_codex_app_thread("thread-1", "/tmp/builder-panel"));
+        assert!(runtime.rollout_watch_targets().is_empty());
+    }
+
+    #[test]
+    fn internal_source_removes_existing_loaded_empty_shell_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        let key = session_key("/tmp/builder-panel", "thread-1");
+
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    parent_thread_id: None,
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: None,
+                    preview: None,
+                    path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("empty loaded active metadata should create shell");
+        assert!(runtime.session_state().sessions.contains_key(&key));
+        assert!(!runtime.rollout_watch_targets().is_empty());
+
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    parent_thread_id: None,
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: Some("review".to_string()),
+                    preview: Some("检查实现".to_string()),
+                    path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::InternalMechanism,
+                },
+                UnixMillis::new(2),
+            )
+            .expect("internal source metadata should remove shell");
 
         assert!(runtime.session_state().sessions.is_empty());
         assert!(!runtime.claims_codex_app_thread("thread-1", "/tmp/builder-panel"));
@@ -6389,6 +6742,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: true,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6412,6 +6766,7 @@ mod tests {
                     path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6440,6 +6795,7 @@ mod tests {
                     path: None,
                     status_type: "idle".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6463,6 +6819,7 @@ mod tests {
                     path: None,
                     status_type: "notLoaded".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6486,6 +6843,7 @@ mod tests {
                     path: None,
                     status_type: "systemError".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6514,6 +6872,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -6529,6 +6888,7 @@ mod tests {
                     path: None,
                     status_type: "idle".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(2),
             )
@@ -6792,6 +7152,7 @@ mod tests {
                     path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
                     status_type: "notLoaded".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(3),
             )
@@ -8006,6 +8367,7 @@ mod tests {
                     path: None,
                     status_type: "active".to_string(),
                     ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
                 },
                 UnixMillis::new(1),
             )
@@ -8107,6 +8469,7 @@ mod tests {
             path: None,
             status_type: "idle".to_string(),
             ephemeral: false,
+            source_kind: CodexAppThreadSourceKind::UserVisible,
         }
     }
 

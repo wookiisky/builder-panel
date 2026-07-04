@@ -18,12 +18,10 @@ describe("settingsApi", () => {
     expect("auto_update" in settings).toBe(false);
   });
 
-  it("defaults codex internal prompt patterns to the suggestion task", () => {
+  it("defaults codex internal prompt patterns to custom additions only", () => {
     const settings = defaultSettings();
 
-    expect(settings.agents.codex_internal_prompt_patterns).toEqual([
-      "hyperpersonalized suggestions",
-    ]);
+    expect(settings.agents.codex_internal_prompt_patterns).toEqual([]);
   });
 
   it("normalizes codex internal prompt patterns by trimming and dropping blanks", () => {

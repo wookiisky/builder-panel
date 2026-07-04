@@ -100,6 +100,10 @@ Codex APP 历史 thread metadata 对未知 thread 创建 session 时，必须至
 
 Codex APP thread metadata 的预览文本命中内部提示词过滤规则时，不创建新的可见 session，也不写入 session 摘要。
 
+Codex APP thread metadata 会在 adapter 边界读取 `source`、`threadSource`、`agentRole` 和 `agentNickname` 等 app-server 字段；这些字段只用于内部过滤和父子关系判断，不写入 Domain。
+
+Codex APP `source.subAgent` 为 `review`、`compact` 或 `memory_consolidation` 时视为 Codex 内部机制 thread，不创建新的可见 session；`source.subAgent.thread_spawn` 仍按显式 sub agent 保留可见层级关系。
+
 Codex APP 不恢复 `ephemeral` thread metadata。
 
 Codex APP thread metadata 可清洗 `parentThreadId` 或 `parent_thread_id` 作为子 thread 与父 thread 的关系来源。
@@ -136,6 +140,8 @@ Codex APP thread 元数据或候选快照携带 rollout path 后，可作为已�
 
 Codex APP rollout tail 只读取已知 session 的新增追加行，不回放历史行。
 
+Codex APP rollout tail 开始监听或检测到文件替换、截断时，只扫描当前文件恢复内部 turn 状态和 offset，不回放历史事件。
+
 Codex APP rollout tail 可将新增追加行清洗为用户输入、Agent 文本活动更新或 turn 完成事件。
 
 Codex rollout path 必须位于 `~/.codex/sessions` root 内，文件名必须匹配 `rollout-*.jsonl`，且必须通过普通文件和大小上限校验。
@@ -143,6 +149,8 @@ Codex rollout path 必须位于 `~/.codex/sessions` root 内，文件名必须�
 Codex rollout 读取只在 adapter 边界清洗 `session_meta`、`event_msg` 和 `response_item` 的必要字段，不把原始 JSON 写入 Domain。
 
 Codex rollout 中 `event_msg.agent_message`、`task_complete.last_agent_message`、`turn_complete.last_agent_message` 和 assistant `response_item` 的 `output_text` 可作为最新 Agent 输出摘要。
+
+Codex rollout 中用户提示词命中内部提示词过滤规则后，整个内部 turn 的 Agent 文本、assistant `response_item`、工具活动和完成摘要都不得进入 session 列表；该内部 turn 不改变上一轮真实 session 的可见完成态。
 
 Codex APP rollout snapshot 可用已清洗的最近 Agent 输出刷新已知运行中 session 摘要；运行中已有摘要时不得用仅来自用户输入的 rollout 摘要覆盖当前摘要。
 
@@ -166,7 +174,7 @@ Codex APP hook 权限请求可在 pending approval 摘要中保留清洗后的�
 
 Codex APP hook `SessionStart` 若只创建了无标题、无摘要、无 pending 的空壳 session，且随后同 thread 的 `UserPromptSubmit` 命中内部提示词模式，该空壳 session 会被清理，不进入 session 列表。
 
-Codex APP 清理内部提示词空壳 session 时，会同步清理该 thread 的 runtime 缓存和 rollout tail 目标，并发布轻量 `session_updated` 事件。
+Codex APP 清理内部提示词或内部 source 空壳 session 时，会同步清理该 thread 的 runtime 缓存和 rollout tail 目标，并发布轻量 `session_updated` 事件。
 
 Codex APP 清理空壳 session 时，会同步清理与该 thread 相关的 parent-child 缓存；已有 child session 指向被清理 parent 时会回退为顶层展示。
 

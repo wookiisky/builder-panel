@@ -168,19 +168,20 @@ pub struct AgentSettings {
     pub claude_cli_enabled: bool,
     /// 是否启用 Claude Code APP。
     pub claude_app_enabled: bool,
-    /// Codex 内部任务提示词过滤模式。
+    /// Codex 内部任务提示词追加过滤模式。
     ///
-    /// 命中（大小写不敏感、忽略连字符/空白差异的子串匹配）的 Codex 隐藏 turn
-    /// 不写入 session 摘要、不发出用户消息事件，从而让 session 列表只保留真实用户任务。
+    /// 内置内部过滤模式始终生效；这里的模式只做追加。命中（大小写不敏感、忽略
+    /// 连字符/空白差异的子串匹配）的 Codex 隐藏 turn 不写入 session 摘要、不发出
+    /// 用户消息事件，从而让 session 列表只保留真实用户任务。
     #[serde(default = "default_codex_internal_prompt_patterns")]
     pub codex_internal_prompt_patterns: Vec<String>,
 }
 
-/// Codex 内部任务提示词过滤模式默认值。
+/// Codex 内部任务提示词追加过滤模式默认值。
 ///
-/// 与适配器内 `DEFAULT_INTERNAL_PROMPT_PATTERNS` 保持一致；分层上两者各自独立持有同一字面量。
+/// 内置模式由 Codex APP 适配器常驻维护，设置默认只保留用户追加项。
 pub fn default_codex_internal_prompt_patterns() -> Vec<String> {
-    vec!["hyperpersonalized suggestions".to_string()]
+    Vec::new()
 }
 
 impl Default for AgentSettings {
@@ -506,9 +507,19 @@ fn trimmed_text(value: &Value, max_chars: usize) -> Option<String> {
 /// 清洗设置模型。
 fn normalize_settings(mut settings: BuilderPanelSettings) -> BuilderPanelSettings {
     settings.panel.collapsed = false;
+    settings.agents.codex_internal_prompt_patterns =
+        sanitize_codex_internal_prompt_patterns(settings.agents.codex_internal_prompt_patterns);
     settings.replies.custom_shortcuts =
         sanitize_custom_shortcuts(settings.replies.custom_shortcuts);
     settings
+}
+
+/// 清洗用户追加的 Codex 内部提示词过滤模式。
+fn sanitize_codex_internal_prompt_patterns(patterns: Vec<String>) -> Vec<String> {
+    patterns
+        .into_iter()
+        .filter_map(|pattern| clean_model_text(pattern, 500))
+        .collect()
 }
 
 /// 清洗自定义快捷输入。
@@ -611,6 +622,34 @@ mod tests {
         assert_eq!(settings.panel.collapsed, false);
         assert_eq!(settings.panel.window_position, None);
         assert_eq!(settings.panel.window_size, None);
+    }
+
+    #[test]
+    fn defaults_leave_codex_internal_prompt_patterns_as_custom_additions() {
+        let settings = BuilderPanelSettings::defaults();
+
+        assert!(settings.agents.codex_internal_prompt_patterns.is_empty());
+    }
+
+    #[test]
+    fn save_settings_trims_codex_internal_prompt_patterns() {
+        let store = FakeSettingsStore::missing();
+        let service = SettingsService::new(&store);
+        let mut settings = BuilderPanelSettings::defaults();
+        settings.agents.codex_internal_prompt_patterns = vec![
+            "  custom task  ".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+        ];
+
+        let view = service
+            .save_settings(settings)
+            .expect("settings should save");
+
+        assert_eq!(
+            view.settings.agents.codex_internal_prompt_patterns,
+            vec!["custom task".to_string()]
+        );
     }
 
     struct FakeSettingsStore {

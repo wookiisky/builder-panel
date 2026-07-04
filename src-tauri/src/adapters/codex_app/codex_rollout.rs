@@ -80,6 +80,8 @@ struct CodexRolloutTailState {
     dropping_overlong_line: bool,
     /// 当前 turn 是否已完成。
     completed: bool,
+    /// 当前追加流是否处在 Codex 内部隐藏 turn 中。
+    current_turn_is_internal: bool,
 }
 
 /// rollout 文件身份。
@@ -126,26 +128,7 @@ impl CodexRolloutTailer {
                 next.insert(path, state);
                 continue;
             }
-            let metadata = fs::metadata(&path).ok();
-            let offset = metadata
-                .as_ref()
-                .map(|metadata| metadata.len())
-                .unwrap_or(0);
-            let file_identity = metadata
-                .as_ref()
-                .map(rollout_file_identity)
-                .unwrap_or_else(empty_rollout_file_identity);
-            next.insert(
-                path,
-                CodexRolloutTailState {
-                    session_key: target.session_key,
-                    offset,
-                    file_identity,
-                    partial_line: Vec::new(),
-                    dropping_overlong_line: false,
-                    completed: false,
-                },
-            );
+            next.insert(path.clone(), tail_state_at_eof(&path, target.session_key));
         }
 
         self.tracked = next;
@@ -274,6 +257,41 @@ fn read_rollout_path(path: &Path) -> Option<CodexRolloutSnapshot> {
     state.into_snapshot()
 }
 
+fn tail_state_at_eof(path: &Path, session_key: SessionKey) -> CodexRolloutTailState {
+    let metadata = fs::metadata(path).ok();
+    let offset = metadata
+        .as_ref()
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let file_identity = metadata
+        .as_ref()
+        .map(rollout_file_identity)
+        .unwrap_or_else(empty_rollout_file_identity);
+    CodexRolloutTailState {
+        session_key,
+        offset,
+        file_identity,
+        partial_line: Vec::new(),
+        dropping_overlong_line: false,
+        completed: false,
+        current_turn_is_internal: scan_current_internal_turn(path),
+    }
+}
+
+fn scan_current_internal_turn(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let mut state = CodexRolloutInternalTurnState::default();
+    let mut reader = BufReader::new(file);
+
+    for_each_bounded_line(&mut reader, |line| {
+        apply_internal_turn_line(&line, &mut state);
+    });
+
+    state.current_turn_is_internal
+}
+
 fn poll_path_events(
     path: &Path,
     state: &mut CodexRolloutTailState,
@@ -287,19 +305,11 @@ fn poll_path_events(
     }
     let file_identity = rollout_file_identity(&metadata);
     if file_identity != state.file_identity {
-        state.offset = metadata.len();
-        state.file_identity = file_identity;
-        state.partial_line.clear();
-        state.dropping_overlong_line = false;
-        state.completed = false;
+        reset_tail_state_at_eof(path, state, metadata.len(), file_identity);
         return Vec::new();
     }
     if metadata.len() < state.offset {
-        state.offset = metadata.len();
-        state.file_identity = file_identity;
-        state.partial_line.clear();
-        state.dropping_overlong_line = false;
-        state.completed = false;
+        reset_tail_state_at_eof(path, state, metadata.len(), file_identity);
         return Vec::new();
     }
     if metadata.len() == state.offset {
@@ -338,6 +348,20 @@ fn poll_path_events(
     }
 
     events
+}
+
+fn reset_tail_state_at_eof(
+    path: &Path,
+    state: &mut CodexRolloutTailState,
+    offset: u64,
+    file_identity: CodexRolloutFileIdentity,
+) {
+    state.offset = offset;
+    state.file_identity = file_identity;
+    state.partial_line.clear();
+    state.dropping_overlong_line = false;
+    state.completed = false;
+    state.current_turn_is_internal = scan_current_internal_turn(path);
 }
 
 #[cfg(unix)]
@@ -455,24 +479,35 @@ fn live_event_from_event_msg(
 ) -> Option<AgentEvent> {
     match payload.get("type").and_then(Value::as_str) {
         Some("turn_started") | Some("task_started") => {
-            state.completed = false;
+            if !state.current_turn_is_internal {
+                state.completed = false;
+            }
             None
         }
         Some("user_message") => {
+            let message = clean_string(payload.get("message"))?;
+            if is_codex_internal_prompt(&message) {
+                state.current_turn_is_internal = true;
+                return None;
+            }
+            state.current_turn_is_internal = false;
             state.completed = false;
-            clean_string(payload.get("message"))
-                // 过滤 Codex 内部生成的隐藏 turn，只保留真实用户任务。
-                .filter(|message| !is_codex_internal_prompt(message))
-                .map(|message| user_message_event(state, &message, updated_at))
+            Some(user_message_event(state, &message, updated_at))
         }
-        Some("agent_message") => clean_string(payload.get("message")).map(|message| {
-            activity_event(
-                state,
-                &truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS),
-                updated_at,
-            )
-        }),
+        Some("agent_message") if !state.current_turn_is_internal => {
+            clean_string(payload.get("message")).map(|message| {
+                activity_event(
+                    state,
+                    &truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS),
+                    updated_at,
+                )
+            })
+        }
+        Some("agent_message") => None,
         Some("task_complete") | Some("turn_complete") => {
+            if state.current_turn_is_internal {
+                return None;
+            }
             state.completed = true;
             let summary = clean_string(payload.get("last_agent_message"))
                 .map(|message| truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS));
@@ -483,6 +518,9 @@ fn live_event_from_event_msg(
             }))
         }
         Some("turn_aborted") => {
+            if state.current_turn_is_internal {
+                return None;
+            }
             state.completed = true;
             Some(AgentEvent::TurnCompleted(TurnCompletedEvent {
                 session_key: state.session_key.clone(),
@@ -515,6 +553,9 @@ fn live_event_from_response_item(
     state: &mut CodexRolloutTailState,
     updated_at: UnixMillis,
 ) -> Option<AgentEvent> {
+    if state.current_turn_is_internal {
+        return None;
+    }
     let item = payload
         .get("item")
         .and_then(Value::as_object)
@@ -540,6 +581,35 @@ fn live_event_from_response_item(
         Some("function_call_output") | Some("custom_tool_call_output") => None,
         _ => None,
     }
+}
+
+/// 只用于恢复 tailer 内部 turn 状态，不产生摘要或 UI 事件。
+#[derive(Default)]
+struct CodexRolloutInternalTurnState {
+    /// 当前是否处在 Codex 内部隐藏 turn。
+    current_turn_is_internal: bool,
+}
+
+fn apply_internal_turn_line(line: &str, state: &mut CodexRolloutInternalTurnState) {
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    if object.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return;
+    }
+    let Some(payload) = object.get("payload").and_then(Value::as_object) else {
+        return;
+    };
+    if payload.get("type").and_then(Value::as_str) != Some("user_message") {
+        return;
+    }
+    let Some(message) = clean_string(payload.get("message")) else {
+        return;
+    };
+    state.current_turn_is_internal = is_codex_internal_prompt(&message);
 }
 
 /// 根据 response_item.item 中的 function_call 字段，构造一条"正在执行什么"的简短摘要，
@@ -710,6 +780,8 @@ struct CodexRolloutState {
     path: PathBuf,
     /// 最近更新时间。
     updated_at: UnixMillis,
+    /// 当前 reducer 是否处在 Codex 内部隐藏 turn 中。
+    current_turn_is_internal: bool,
 }
 
 impl CodexRolloutState {
@@ -723,6 +795,7 @@ impl CodexRolloutState {
             completed: false,
             path,
             updated_at,
+            current_turn_is_internal: false,
         }
     }
 
@@ -774,29 +847,41 @@ fn apply_session_meta(payload: &serde_json::Map<String, Value>, state: &mut Code
 fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRolloutState) {
     match payload.get("type").and_then(Value::as_str) {
         Some("agent_message") => {
+            if state.current_turn_is_internal {
+                return;
+            }
             if let Some(message) = clean_string(payload.get("message")) {
                 apply_agent_message(message, state);
             }
         }
         Some("task_complete") | Some("turn_complete") => {
+            if state.current_turn_is_internal {
+                return;
+            }
             state.completed = true;
             if let Some(message) = clean_string(payload.get("last_agent_message")) {
                 apply_agent_message(message, state);
             }
         }
         Some("turn_aborted") => {
+            if state.current_turn_is_internal {
+                return;
+            }
             state.completed = true;
         }
         Some("user_message") => {
-            if state.completed {
-                state.completed = false;
-            }
-            state.last_agent_message = None;
             if let Some(message) = clean_string(payload.get("message")) {
                 // 过滤 Codex 内部生成的隐藏 turn，避免内部任务覆盖真实用户摘要。
-                if !is_codex_internal_prompt(&message) {
-                    state.summary = Some(truncate(&message, 120));
+                if is_codex_internal_prompt(&message) {
+                    state.current_turn_is_internal = true;
+                    return;
                 }
+                state.current_turn_is_internal = false;
+                if state.completed {
+                    state.completed = false;
+                }
+                state.last_agent_message = None;
+                state.summary = Some(truncate(&message, 120));
             }
         }
         Some("exec_command_begin")
@@ -818,6 +903,9 @@ fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRo
 
 /// 应用 response_item。
 fn apply_response_item(payload: &serde_json::Map<String, Value>, state: &mut CodexRolloutState) {
+    if state.current_turn_is_internal {
+        return;
+    }
     let item = payload
         .get("item")
         .and_then(Value::as_object)
@@ -1254,6 +1342,23 @@ mod tests {
     }
 
     #[test]
+    fn rollout_snapshot_internal_turn_does_not_override_visible_completion() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"重构旅游规划提示词"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete","last_agent_message":"真实任务完成"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"You are an expert at upholding safety and compliance standards for Codex ambient suggestions."}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"exclude\":[]}"}]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"{\"exclude\":[]}"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete","last_agent_message":"{\"exclude\":[]}"}}"#,
+        ]);
+
+        assert_eq!(snapshot.summary.as_deref(), Some("真实任务完成"));
+        assert_eq!(snapshot.last_agent_message.as_deref(), Some("真实任务完成"));
+        assert!(snapshot.completed);
+    }
+
+    #[test]
     fn rollout_tailer_skips_codex_internal_prompt() {
         let root = test_root("rollout-tail-internal");
         let file = root.join("rollout-thread-1.jsonl");
@@ -1286,6 +1391,97 @@ mod tests {
             events.is_empty(),
             "internal suggestion prompt should not emit user-message event"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollout_tailer_suppresses_internal_turn_outputs_after_existing_prompt() {
+        let root = test_root("rollout-tail-internal-existing");
+        let file = root.join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(&root).expect("root should create");
+        std::fs::write(
+            &file,
+            [
+                r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"Create Codex ambient suggestions for the current thread."}}"#,
+            ]
+            .join("\n"),
+        )
+        .expect("rollout should write");
+        let session_key = SessionKey::new(
+            AgentKind::CodexCli,
+            ProjectId::new("/tmp/builder-panel"),
+            ConversationId::new("thread-1"),
+        );
+        let mut tailer = CodexRolloutTailer::new(root.clone());
+        tailer.sync_targets(vec![CodexRolloutWatchTarget {
+            session_key,
+            path: file.clone(),
+        }]);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .expect("rollout should open")
+            .write_all(
+                br#"
+{"type":"response_item","payload":{"item":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"}}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"suggestions\":[]}"}]}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"{\"suggestions\":[]}"}}
+{"type":"event_msg","payload":{"type":"turn_complete","last_agent_message":"{\"suggestions\":[]}"}}
+"#,
+            )
+            .expect("rollout should append");
+
+        let events = tailer.poll_events(UnixMillis::new(2));
+
+        assert!(events.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollout_tailer_real_user_message_after_internal_turn_is_visible() {
+        let root = test_root("rollout-tail-internal-then-real");
+        let file = root.join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(&root).expect("root should create");
+        std::fs::write(
+            &file,
+            [
+                r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"Create Codex ambient suggestions for the current thread."}}"#,
+            ]
+            .join("\n"),
+        )
+        .expect("rollout should write");
+        let session_key = SessionKey::new(
+            AgentKind::CodexCli,
+            ProjectId::new("/tmp/builder-panel"),
+            ConversationId::new("thread-1"),
+        );
+        let mut tailer = CodexRolloutTailer::new(root.clone());
+        tailer.sync_targets(vec![CodexRolloutWatchTarget {
+            session_key,
+            path: file.clone(),
+        }]);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .expect("rollout should open")
+            .write_all(
+                r#"
+{"type":"event_msg","payload":{"type":"turn_complete","last_agent_message":"{\"suggestions\":[]}"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"继续真实任务"}}
+"#
+                .as_bytes(),
+            )
+            .expect("rollout should append");
+
+        let events = tailer.poll_events(UnixMillis::new(2));
+
+        assert_eq!(events.len(), 1);
+        let AgentEvent::UserMessageUpdated(event) = &events[0] else {
+            panic!("event should be user message");
+        };
+        assert_eq!(event.summary, "继续真实任务");
         let _ = std::fs::remove_dir_all(root);
     }
 

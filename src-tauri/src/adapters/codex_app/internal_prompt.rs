@@ -5,28 +5,32 @@
 //! “Generate 0 to 3 hyperpersonalized suggestions …”）。这些隐藏 turn 在负载里
 //! 没有任何结构字段可与真实用户任务区分，唯一可用信号是提示词文本本身。
 //!
-//! 本模块提供一个可配置的子串模式列表：命中的提示词被视为 Codex 内部任务，
+//! 本模块提供内置模式与用户追加模式：命中的提示词被视为 Codex 内部任务，
 //! 不写入 session 摘要、不发出用户消息事件，从而让 session 列表只保留真实用户任务。
 
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
-/// 默认内部提示词模式（大小写不敏感、忽略连字符/空格差异后做子串匹配）。
+/// 内置内部提示词模式（大小写不敏感、忽略连字符/空格差异后做子串匹配）。
 ///
-/// 新增 Codex 内部任务类型时，可在此追加模式，或通过设置项
-/// `agents.codex_internal_prompt_patterns` 覆盖。
-pub const DEFAULT_INTERNAL_PROMPT_PATTERNS: &[&str] = &["hyperpersonalized suggestions"];
+/// 新增 Codex 内部任务类型时在此追加；设置项 `agents.codex_internal_prompt_patterns`
+/// 只追加用户自定义模式，不能关闭内置过滤。
+pub const DEFAULT_INTERNAL_PROMPT_PATTERNS: &[&str] = &[
+    "hyperpersonalized suggestions",
+    "codex ambient suggestions",
+    "upholding safety and compliance standards for codex ambient suggestions",
+];
 
-/// 当前生效的内部提示词模式（已归一化）。为空表示尚未配置，回退到默认值。
+/// 用户追加的内部提示词模式（已归一化）。
 static ACTIVE_PATTERNS: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
 
 fn active_patterns() -> &'static RwLock<Vec<String>> {
     ACTIVE_PATTERNS.get_or_init(|| RwLock::new(Vec::new()))
 }
 
-/// 用配置覆盖当前生效的内部提示词模式。
+/// 设置用户追加的内部提示词模式。
 ///
-/// 传入空列表会清空覆盖并回退到 [`DEFAULT_INTERNAL_PROMPT_PATTERNS`]。
+/// 内置 [`DEFAULT_INTERNAL_PROMPT_PATTERNS`] 始终生效，传入空列表只清空用户追加模式。
 pub fn set_internal_prompt_patterns<I, S>(patterns: I)
 where
     I: IntoIterator<Item = S>,
@@ -51,15 +55,16 @@ where
 
 /// 判断给定原始提示词是否为 Codex 内部任务。
 ///
-/// 使用当前生效的模式列表（[`set_internal_prompt_patterns`] 配置，未配置时回退默认值）。
+/// 使用内置模式和 [`set_internal_prompt_patterns`] 配置的用户追加模式。
 /// 纯匹配逻辑见 [`matches_patterns`]。
 pub fn is_codex_internal_prompt(message: &str) -> bool {
-    if let Ok(guard) = active_patterns().read() {
-        if !guard.is_empty() {
-            return matches_patterns(message, guard.iter());
-        }
+    if matches_patterns(message, DEFAULT_INTERNAL_PROMPT_PATTERNS.iter()) {
+        return true;
     }
-    matches_patterns(message, DEFAULT_INTERNAL_PROMPT_PATTERNS.iter())
+    if let Ok(guard) = active_patterns().read() {
+        return matches_patterns(message, guard.iter());
+    }
+    false
 }
 
 /// 在给定模式列表下做纯匹配，不读全局状态，便于测试。
@@ -128,6 +133,22 @@ mod tests {
     }
 
     #[test]
+    fn matches_ambient_suggestions_prompt() {
+        assert!(matches_patterns(
+            "Create Codex ambient suggestions for the current thread.",
+            DEFAULT_INTERNAL_PROMPT_PATTERNS.iter(),
+        ));
+    }
+
+    #[test]
+    fn matches_ambient_safety_exclude_prompt() {
+        assert!(matches_patterns(
+            "You are an expert at upholding safety and compliance standards for Codex ambient suggestions.",
+            DEFAULT_INTERNAL_PROMPT_PATTERNS.iter(),
+        ));
+    }
+
+    #[test]
     fn keeps_real_user_task() {
         assert!(!matches_patterns(
             "重构优化旅游规划部分提示词，给出分析和重构建议",
@@ -162,21 +183,21 @@ mod tests {
 
     // 全局接线测试：序列化在单个测试里，避免共享状态竞争。
     #[test]
-    fn global_state_override_and_fallback() {
-        // 默认（未配置）回退到 DEFAULT_INTERNAL_PROMPT_PATTERNS。
+    fn global_state_adds_custom_patterns_without_disabling_builtins() {
+        // 默认内置模式始终生效。
         set_internal_prompt_patterns(Vec::<String>::new());
         assert!(is_codex_internal_prompt(
             "Generate hyperpersonalized suggestions"
         ));
 
-        // 配置自定义模式后覆盖默认。
+        // 配置自定义模式后，只追加用户模式，不覆盖内置模式。
         set_internal_prompt_patterns(["internal probe task"]);
         assert!(is_codex_internal_prompt("running an internal probe task"));
-        assert!(!is_codex_internal_prompt(
+        assert!(is_codex_internal_prompt(
             "Generate hyperpersonalized suggestions"
         ));
 
-        // 全空白配置被忽略，回退默认。
+        // 全空白配置被忽略，内置模式仍生效。
         set_internal_prompt_patterns(["   ", ""]);
         assert!(is_codex_internal_prompt(
             "Generate hyperpersonalized suggestions"

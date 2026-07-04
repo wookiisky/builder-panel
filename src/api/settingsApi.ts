@@ -33,7 +33,7 @@ export const defaultSettings = (): BuilderPanelSettings => ({
     codex_app_enabled: true,
     claude_cli_enabled: false,
     claude_app_enabled: false,
-    codex_internal_prompt_patterns: ["hyperpersonalized suggestions"],
+    codex_internal_prompt_patterns: [],
   },
   replies: {
     enter_to_send: true,

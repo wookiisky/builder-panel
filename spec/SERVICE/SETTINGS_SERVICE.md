@@ -34,6 +34,10 @@ Agents 设置控制 Codex CLI、Codex APP、Claude Code CLI 和 Claude Code APP 
 
 Codex APP 开关当前保存在模型中并驱动 Codex APP session 读取；默认值为开启。
 
+`agents.codex_internal_prompt_patterns` 表示用户追加的 Codex 内部提示词过滤模式，默认值为空数组；Codex APP 适配器内置的内部过滤模式始终生效，不能通过设置关闭。
+
+`agents.codex_internal_prompt_patterns` 在保存和读取边界会 trim 并丢弃空白项。
+
 Claude Code CLI 和 Claude Code APP 开关当前保存在模型中，但 UI 禁用，不驱动 session 读取。
 
 Replies 设置控制 Enter 发送、快捷回复入口和自定义快捷输入。
@@ -78,7 +82,7 @@ JSON 设置文件 adapter 使用同目录临时文件写入后替换目标文件
 
 ## 相关测试
 
-`src-tauri/src/services/settings_service.rs` 覆盖缺失配置、损坏配置和保存。
+`src-tauri/src/services/settings_service.rs` 覆盖缺失配置、损坏配置、保存和 Codex 内部提示词追加模式归一化。
 
 `src-tauri/src/adapters/config_file/mod.rs` 覆盖设置文件缺失、读写和损坏 JSON。
 
@@ -86,6 +90,6 @@ JSON 设置文件 adapter 使用同目录临时文件写入后替换目标文件
 
 `src-tauri/src/adapters/config_file/mod.rs` 覆盖同一路径并发保存不会共享临时文件。
 
-`src/api/settingsApi.test.ts` 覆盖前端默认设置、默认 panel 状态事实和自定义快捷输入归一化。
+`src/api/settingsApi.test.ts` 覆盖前端默认设置、默认 panel 状态事实、Codex 内部提示词追加模式默认值和自定义快捷输入归一化。
 
 `src/views/BuilderPanelApp.test.ts` 覆盖 hook 安装按钮禁用规则。

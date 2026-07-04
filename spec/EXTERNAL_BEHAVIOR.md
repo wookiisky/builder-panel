@@ -92,7 +92,9 @@ Codex APP thread 名可由 Codex session index、app-server thread metadata 或 
 
 Codex CLI hook 的模型字段和 Codex APP 中形似模型名的值不展示为 thread 名。
 
-Codex APP 内部建议生成等隐藏 turn 不展示为 session；这类 turn 只产生空白启动行时，列表会移除对应空壳 session。
+Codex APP 内部建议生成、ambient suggestions 和 safety compliance exclude 判断等隐藏 turn 不展示为 session；这类 turn 只产生空白启动行时，列表会移除对应空壳 session。
+
+Codex APP 内部隐藏 turn 后续输出的 `{"suggestions":[]}`、`{"exclude":[]}`、工具活动和完成摘要不会展示为 session 摘要，也不会把上一轮真实 session 重新标成运行中。
 
 Codex APP 当前已加载且 `active` 的 thread 可展示为运行中 session；没有标题或预览文本时先展示为空内容运行中行。
 
@@ -109,6 +111,8 @@ session 列表合并 Codex CLI 和 Codex APP session 后按首次捕捉顺序保
 新捕捉到的 session 展示在列表顶部。
 
 Codex APP sub agent session 识别到已有 parent session 后，展示在 parent session 下方，并带有少量一级缩进。
+
+Codex APP `review`、`compact` 和 `memory_consolidation` 等内部机制 sub agent 不展示为 session；显式 `thread_spawn` sub agent 继续按可见 sub agent 展示。
 
 更深层级的 Codex APP sub agent 当前仍按一级缩进展示。
 

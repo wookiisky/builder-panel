@@ -108,11 +108,11 @@ Codex APP adapter 写入最后消息时，只能使用用户输入原文、assis
 
 Codex CLI 和 Codex APP adapter 不为工具 hook 事件、工具参数或工具结束事件写活动摘要。
 
-Codex APP adapter 过滤 Codex 内部生成的隐藏 turn（如建议生成任务），不为命中内部提示词模式的用户提示词写 session 摘要或发出用户消息事件，从而让 session 列表只保留真实用户任务。内部提示词模式可由设置项 `agents.codex_internal_prompt_patterns` 配置，匹配时对提示词与模式做大小写折叠、连字符/下划线删除、连续空白折叠后做子串包含判断。
+Codex APP adapter 过滤 Codex 内部生成的隐藏 turn（如建议生成任务、ambient suggestions 和 safety compliance exclude 判断），不为命中内部提示词模式的用户提示词写 session 摘要或发出用户消息事件，从而让 session 列表只保留真实用户任务。内置内部提示词模式始终生效；设置项 `agents.codex_internal_prompt_patterns` 只追加用户自定义模式，匹配时对提示词与模式做大小写折叠、连字符/下划线删除、连续空白折叠后做子串包含判断。
 
 Codex APP runtime 对只由启动信号创建且尚未出现真实标题、摘要、pending、失败或失联原因的 session 维护内部空壳候选；真实用户输入、assistant 输出、审批、回复、失败或真实标题会移除候选标记。
 
-Codex APP runtime 在内部提示词到达时只清理仍带空壳候选标记的同 thread session；清理时必须同步移除对应 cwd、metadata、rollout path、当前 turn 输出和 pending 缓存，避免后续归属判定或 rollout watcher 再次带回空白 session。
+Codex APP runtime 在内部提示词或内部 source 到达时只清理仍带空壳候选标记的同 thread session；清理时必须同步移除对应 cwd、metadata、rollout path、当前 turn 输出和 pending 缓存，避免后续归属判定或 rollout watcher 再次带回空白 session。
 
 Codex CLI 和 Codex APP adapter 使用可信 cwd 派生项目展示名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
 
@@ -123,6 +123,8 @@ Codex rollout adapter 不得把未知工具 JSON arguments 作为 preview 写入
 Codex APP app-server `thread/loaded/list` 只提供当前已加载 thread id；当前已加载 thread 优先通过 `thread/read` 精确补齐 cwd、标题、状态、预览和 rollout path，`thread/read` 不可用、超时或出现方法/协议类错误时降级为一次有限数量 `thread/list` 读取。
 
 Codex APP thread metadata 必须显式区分当前 loaded 来源和历史候选来源。
+
+Codex APP thread metadata 必须在 adapter 边界解析 app-server `source`、`threadSource`、`agentRole` 和 `agentNickname` 字段；`source.subAgent=review|compact|memory_consolidation` 视为内部机制，不得创建可见 session，`source.subAgent.thread_spawn` 仍保留为用户可见 sub agent。
 
 Codex APP 当前 loaded thread metadata 对未知 thread 创建 session 时，必须具备可信 cwd，并满足真实标题、预览文本、`systemError` 状态，或 `active` 状态之一。
 
@@ -162,9 +164,13 @@ Codex rollout tailer 只接收已知 session 的 watch target，不得从任意 
 
 Codex rollout tailer 按 canonical path 去重。
 
+Codex rollout tailer 同步新 watch target、文件截断或文件替换时只能恢复 offset、文件身份和内部 turn 状态；不得回放历史行或发布历史事件。
+
 Codex rollout tailer 遇到文件截断、替换、超大文件或超长行时必须降级跳过或重置本地读取状态，不得污染 Domain。
 
 Codex rollout tailer 输出必须先清洗为归一事件，不得把 rollout 原始 JSON 写入 Domain。
+
+Codex rollout tailer 在当前 turn 命中内部提示词后，必须抑制该 turn 的用户输入、Agent 文本、assistant response item、工具活动和完成摘要；下一个真实用户输入到达后恢复正常输出。
 
 Codex APP pending approval 必须同时匹配 `SessionKey` 和 `InteractionId` 后才能唤醒 hook request 或回写 app-server response。
 
