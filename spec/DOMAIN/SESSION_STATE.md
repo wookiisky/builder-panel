@@ -120,17 +120,29 @@ Thread 标签不在 Domain 层按展示宽度截断，视觉换行和布局约�
 
 ## 排序规则
 
-Session 列表按首次捕捉顺序保持稳定。
+Session 列表先按展示分组排序，再按块级捕捉锚点排序。
 
-新捕捉到的 session 排在已捕捉 session 前面。
+`Running`、`WaitingForApproval` 和 `WaitingForAnswer` 属于未完成分组，展示在顶部。
 
-已捕捉 session 不因状态、摘要或更新时间变化重排。
+`Completed`、`Failed` 和 `Detached` 属于已结束分组，展示在未完成分组下方。
+
+无有效父子关系的 session 自身是一个展示块。
 
 存在有效父级关系时，child session 紧跟 parent session 展示。
 
+父子展示块不拆散；块内任一 session 未完成时，整个块进入未完成分组。
+
+展示块内存在未完成 session 时，块级捕捉锚点取块内最新未完成 session 的捕捉序号。
+
+展示块内不存在未完成 session 时，块级捕捉锚点取块内最新 session 的捕捉序号。
+
+同一展示分组内，块级捕捉锚点越新越靠前。
+
+状态变化只影响展示分组和块级捕捉锚点；摘要、标题或更新时间变化不改变捕捉序。
+
 父级缺失、父级无效或父子关系成环时，相关 session 回退为顶层展示。
 
-捕捉序号相同的异常情况按 `SessionKey` 稳定兜底排序。
+块级捕捉锚点相同的异常情况按 root `SessionKey` 稳定兜底排序。
 
 ## 相关测试
 

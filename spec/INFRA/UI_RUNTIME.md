@@ -14,11 +14,19 @@ UI Runtime 不记录 React 组件内部私有状态细节，不替代外部行�
 
 Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
 
-前端合并 Codex CLI 和 Codex APP session 后按首次捕捉顺序保持稳定。
+前端合并 Codex CLI 和 Codex APP session 后按展示分组和首次观察顺序排序。
 
-刷新时新捕捉到的 session 插入列表顶部；已捕捉 session 的状态或更新时间变化不触发重排。
+运行中、等待审批和等待用户回复属于未完成分组，展示在完成、失败和失联分组上方。
 
-前端跨来源合并 session 时保持首次捕捉顺序；当后端已把 Codex APP sub agent 排在 parent 下方时，前端把该 parent-child 相邻段作为不可拆散的展示块。
+前端跨来源合并 session 时维护独立首次观察序；身份键使用包含 runtime source 的前端展示身份。
+
+同一次刷新里首次观察到多个新 session 时，前端按返回数组顺序分配首次观察序。
+
+刷新时状态变化可以触发 session 跨展示分组移动；摘要或更新时间变化不改变首次观察序。
+
+当前端已把 Codex APP sub agent 排在 parent 下方时，前端把该 parent-child 相邻段作为不可拆散的展示块。
+
+Codex APP parent-child 展示块内任一 session 未完成时，整个块进入未完成分组。
 
 前端 session 行按 `indent_level` 设置左侧缩进，当前最多展示 1 级缩进。
 

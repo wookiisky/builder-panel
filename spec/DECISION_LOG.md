@@ -296,7 +296,7 @@
 
 代码影响：`src/views/BuilderPanelApp.tsx` 负责顶部状态区、工具用量聚合、session 行、行内交互和设置弹窗；`src/components/PanelShell.tsx` 不再提供收缩按钮；设置保存边界将 `collapsed` 归一化为 `false`。
 
-测试影响：前端测试覆盖 session 捕捉顺序、统计、工具用量聚合和自定义快捷输入清洗；Rust 测试覆盖 view model 只在存在跳回目标时生成跳回动作。
+测试影响：前端测试覆盖 session 展示分组、首次观察序、统计、工具用量聚合和自定义快捷输入清洗；Rust 测试覆盖 view model 只在存在跳回目标时生成跳回动作。
 
 排障影响：若 UI 出现收缩入口，应视为旧交互残留；若点击 session 没有跳转，应先检查该 session 是否同时具备跳回能力和跳回目标。
 

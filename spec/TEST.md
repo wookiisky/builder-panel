@@ -56,7 +56,7 @@ Rust 单元测试验证 Domain 纯规则。
 
 前端单元测试验证 UI store 的纯状态转换。
 
-前端单元测试验证合并 session 的首次捕捉顺序稳定，且新捕捉 session 插入顶部。
+前端单元测试验证合并 session 的展示分组、首次观察序、父子展示块锚点和 store 隔离。
 
 架构脚本验证跨层依赖边界。
 
@@ -190,11 +190,11 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证同一个 `SessionKey` 的 Codex CLI 和 Codex APP session 拥有不同 UI 选中身份。
 
-前端 Builder Panel 测试验证合并后的 session 首次捕捉顺序稳定、新 session 插入顶部、统计数量和动作标签。
+前端 Builder Panel 测试验证合并后的 session 未完成分组置顶、已结束分组下沉、首次观察序、统计数量和动作标签。
 
-前端 Builder Panel 测试验证已有 session 摘要刷新后不改变首次捕捉顺序。
+前端 Builder Panel 测试验证已有 session 摘要刷新后不改变首次观察序。
 
-前端 Builder Panel 测试验证后端刷新顺序可保持 parent-child 相邻，且 child session 按一级缩进展示。
+前端 Builder Panel 测试验证后端刷新顺序可保持 parent-child 相邻，child session 按一级缩进展示，且 parent-child 展示块按未完成锚点排序。
 
 前端 Builder Panel 测试验证列表刷新调度器在刷新中收到实时事件时会补刷，且连续事件不会无限后延。
 
@@ -290,7 +290,7 @@ Mock panel store 测试断言虚拟列表不会按一万条记录全量计算可
 
 Builder Panel 测试断言主界面不依赖收缩状态。
 
-Builder Panel 测试断言合并后的首次捕捉顺序稳定，且新 session 插入顶部。
+Builder Panel 测试断言合并后的展示分组、首次观察序和 parent-child 展示块排序稳定。
 
 Settings Service 测试断言配置损坏时核心 UI 使用默认设置。
 
@@ -370,7 +370,7 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 
 `src-tauri/src/domain/agent_event.rs` 是事件序列化测试入口。
 
-`src-tauri/src/domain/session_state.rs` 是 reducer、pending 清理、多会话隔离和排序测试入口。
+`src-tauri/src/domain/session_state.rs` 是 reducer、pending 清理、多会话隔离、展示分组和块级排序测试入口。
 
 `src-tauri/src/domain/usage.rs` 是用量测试入口。
 
@@ -424,7 +424,7 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 
 `src/views/BuilderPanelApp.test.ts` 是前端 Codex CLI session 刷新选择测试入口。
 
-`src/views/BuilderPanelApp.test.ts` 是阶段 7 session 捕捉顺序、统计、动作标签和工具用量聚合测试入口。
+`src/views/BuilderPanelApp.test.ts` 是阶段 7 session 展示分组、首次观察序、统计、动作标签和工具用量聚合测试入口。
 
 `src/api/settingsApi.test.ts` 是前端设置默认值和自定义快捷输入清洗测试入口。
 

@@ -106,11 +106,17 @@ Codex APP 历史 thread 只有在存在真实标题、预览文本、实时事�
 
 两行 session 的第二行展示快捷输入和输入区。
 
-session 列表合并 Codex CLI 和 Codex APP session 后按首次捕捉顺序保持稳定。
+session 列表合并 Codex CLI 和 Codex APP session 后，未完成 session 展示在已结束 session 上方。
 
-新捕捉到的 session 展示在列表顶部。
+运行中、等待审批和等待用户回复属于未完成 session。
+
+完成、失败和失联属于已结束 session。
+
+同一展示分组内，新捕捉到的 session 或包含最新未完成 child 的 parent-child 展示块更靠前。
 
 Codex APP sub agent session 识别到已有 parent session 后，展示在 parent session 下方，并带有少量一级缩进。
+
+Codex APP parent-child 展示块不拆散；块内任一 session 未完成时，整个块按未完成 session 展示在顶部区域。
 
 Codex APP `review`、`compact` 和 `memory_consolidation` 等内部机制 sub agent 不展示为 session；显式 `thread_spawn` sub agent 继续按可见 sub agent 展示。
 

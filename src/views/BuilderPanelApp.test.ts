@@ -11,12 +11,14 @@ import {
   canJumpOnSessionClick,
   canSelectOnSessionClick,
   countSessionsByStatus,
+  createPanelSessionCaptureOrderStore,
   createSessionRefreshScheduler,
   elapsedDurationLabel,
   fetchSessionsForSource,
   isLatestSettingsSaveResponse,
   isCodexCliRuntime,
   isCodexAppRuntime,
+  isPanelSessionUnfinishedForDisplay,
   defaultHookAgentStatuses,
   isHookActionDisabled,
   mergePanelSessionsByCaptureOrder,
@@ -203,7 +205,8 @@ describe("BuilderPanelApp session refresh", () => {
     expect(disabledSessions).toEqual([]);
   });
 
-  it("keeps captured session order stable and prepends newly captured sessions", () => {
+  it("keeps unfinished sessions above finished sessions while preserving capture order", () => {
+    const store = createPanelSessionCaptureOrderStore();
     const running = sessionItem(
       sessionKey("project-a", "running"),
       "codex_app",
@@ -225,13 +228,25 @@ describe("BuilderPanelApp session refresh", () => {
       "等待审批",
       2000,
     );
-
-    const initiallyCaptured = mergePanelSessionsByCaptureOrder(
-      [],
-      [running, olderWaiting],
+    const completed = sessionItem(
+      sessionKey("project-a", "completed"),
+      "codex_app",
+      "completed",
+      "已完成",
+      4000,
     );
-    const refreshed = mergePanelSessionsByCaptureOrder(initiallyCaptured, [
+
+    const initiallyCaptured = mergePanelSessionsByCaptureOrder(store, [
+      running,
+      olderWaiting,
+    ]);
+    expect(
+      initiallyCaptured.map((session) => session.conversation_label),
+    ).toEqual(["running", "older-waiting"]);
+
+    const refreshed = mergePanelSessionsByCaptureOrder(store, [
       newerWaiting,
+      completed,
       olderWaiting,
       running,
     ]);
@@ -240,10 +255,12 @@ describe("BuilderPanelApp session refresh", () => {
       "newer-waiting",
       "running",
       "older-waiting",
+      "completed",
     ]);
   });
 
-  it("updates an existing session summary without changing capture order", () => {
+  it("keeps existing capture rank when a session moves between display groups", () => {
+    const store = createPanelSessionCaptureOrderStore();
     const running = sessionItem(
       sessionKey("project-a", "running"),
       "codex_app",
@@ -258,11 +275,21 @@ describe("BuilderPanelApp session refresh", () => {
       "等待回复",
       1000,
     );
-    const captured = mergePanelSessionsByCaptureOrder([], [running, waiting]);
-    const refreshed = mergePanelSessionsByCaptureOrder(captured, [
+    const captured = mergePanelSessionsByCaptureOrder(store, [
+      running,
+      waiting,
+    ]);
+    expect(captured.map((session) => session.conversation_label)).toEqual([
+      "running",
+      "waiting",
+    ]);
+
+    const refreshed = mergePanelSessionsByCaptureOrder(store, [
       {
         ...waiting,
         summary: textDisplay("新的 Agent 摘要"),
+        status_kind: "completed",
+        status_label: "已完成",
       },
       {
         ...running,
@@ -275,19 +302,34 @@ describe("BuilderPanelApp session refresh", () => {
       "waiting",
     ]);
     expect(refreshed[1].summary.full_text).toBe("新的 Agent 摘要");
+
+    const resumed = mergePanelSessionsByCaptureOrder(store, [
+      {
+        ...refreshed[1],
+        status_kind: "running",
+        status_label: "运行中",
+      },
+      refreshed[0],
+    ]);
+
+    expect(resumed.map((session) => session.conversation_label)).toEqual([
+      "running",
+      "waiting",
+    ]);
   });
 
-  it("keeps Codex APP parent-child block together without reordering unrelated CLI sessions", () => {
-    const parent = sessionItem(
-      sessionKey("project-a", "parent"),
-      "codex_app",
+  it("keeps Codex APP parent-child block together and uses unfinished child as block anchor", () => {
+    const store = createPanelSessionCaptureOrderStore();
+    const oldRunning = sessionItem(
+      sessionKey("project-b", "old-running"),
+      "codex_cli",
       "running",
       "运行中",
       1000,
     );
-    const cli = sessionItem(
-      sessionKey("project-b", "cli"),
-      "codex_cli",
+    const parent = sessionItem(
+      sessionKey("project-a", "parent"),
+      "codex_app",
       "running",
       "运行中",
       1000,
@@ -302,19 +344,154 @@ describe("BuilderPanelApp session refresh", () => {
       ),
       indent_level: 1,
     };
-    const previous = mergePanelSessionsByCaptureOrder([], [parent, cli]);
-    const refreshed = mergePanelSessionsByCaptureOrder(previous, [
+    mergePanelSessionsByCaptureOrder(store, [oldRunning]);
+    const previous = mergePanelSessionsByCaptureOrder(store, [
+      oldRunning,
+      parent,
+    ]);
+    expect(previous.map((session) => session.conversation_label)).toEqual([
+      "parent",
+      "old-running",
+    ]);
+
+    const refreshed = mergePanelSessionsByCaptureOrder(store, [
       parent,
       child,
-      cli,
+      oldRunning,
     ]);
 
     expect(refreshed.map((session) => session.conversation_label)).toEqual([
       "parent",
       "child",
-      "cli",
+      "old-running",
     ]);
     expect(refreshed[1].indent_level).toBe(1);
+  });
+
+  it("does not let a completed child raise the unfinished parent block", () => {
+    const store = createPanelSessionCaptureOrderStore();
+    const parent = sessionItem(
+      sessionKey("project-a", "parent"),
+      "codex_app",
+      "running",
+      "运行中",
+      1000,
+    );
+    const otherRunning = sessionItem(
+      sessionKey("project-a", "other-running"),
+      "codex_app",
+      "running",
+      "运行中",
+      1000,
+    );
+    const child = {
+      ...sessionItem(
+        sessionKey("project-a", "child"),
+        "codex_app",
+        "completed",
+        "已完成",
+        1000,
+      ),
+      indent_level: 1,
+    };
+    mergePanelSessionsByCaptureOrder(store, [parent]);
+    const withOtherRunning = mergePanelSessionsByCaptureOrder(store, [
+      otherRunning,
+      parent,
+    ]);
+    const refreshed = mergePanelSessionsByCaptureOrder(store, [
+      parent,
+      child,
+      otherRunning,
+    ]);
+
+    expect(
+      withOtherRunning.map((session) => session.conversation_label),
+    ).toEqual(["other-running", "parent"]);
+    expect(refreshed.map((session) => session.conversation_label)).toEqual([
+      "other-running",
+      "parent",
+      "child",
+    ]);
+  });
+
+  it("uses returned array order as first observation order for same-refresh sessions", () => {
+    const store = createPanelSessionCaptureOrderStore();
+    const codexApp = {
+      ...sessionItem(
+        sessionKey("project-a", "same-key"),
+        "codex_app",
+        "running",
+        "运行中",
+        1000,
+      ),
+      session_key: codexAppSessionKey,
+    };
+    const codexCli = {
+      ...sessionItem(
+        codexAppSessionKey,
+        "codex_cli",
+        "running",
+        "运行中",
+        1000,
+      ),
+      runtimeSource: "codex_cli" as const,
+    };
+
+    const captured = mergePanelSessionsByCaptureOrder(store, [
+      codexApp,
+      codexCli,
+    ]);
+
+    expect(captured.map((session) => session.runtimeSource)).toEqual([
+      "codex_app",
+      "codex_cli",
+    ]);
+  });
+
+  it("keeps capture stores isolated", () => {
+    const firstStore = createPanelSessionCaptureOrderStore();
+    const secondStore = createPanelSessionCaptureOrderStore();
+    const first = sessionItem(
+      sessionKey("project-a", "first"),
+      "codex_app",
+      "running",
+      "运行中",
+    );
+    const second = sessionItem(
+      sessionKey("project-a", "second"),
+      "codex_app",
+      "running",
+      "运行中",
+    );
+
+    mergePanelSessionsByCaptureOrder(firstStore, [first]);
+    const firstStoreOrder = mergePanelSessionsByCaptureOrder(firstStore, [
+      first,
+      second,
+    ]);
+    const secondStoreOrder = mergePanelSessionsByCaptureOrder(secondStore, [
+      first,
+      second,
+    ]);
+
+    expect(
+      firstStoreOrder.map((session) => session.conversation_label),
+    ).toEqual(["second", "first"]);
+    expect(
+      secondStoreOrder.map((session) => session.conversation_label),
+    ).toEqual(["first", "second"]);
+  });
+
+  it("classifies session display groups explicitly", () => {
+    expect(isPanelSessionUnfinishedForDisplay("running")).toBe(true);
+    expect(isPanelSessionUnfinishedForDisplay("waiting_for_approval")).toBe(
+      true,
+    );
+    expect(isPanelSessionUnfinishedForDisplay("waiting_for_answer")).toBe(true);
+    expect(isPanelSessionUnfinishedForDisplay("completed")).toBe(false);
+    expect(isPanelSessionUnfinishedForDisplay("failed")).toBe(false);
+    expect(isPanelSessionUnfinishedForDisplay("detached")).toBe(false);
   });
 
   it("renders the refreshed list row summary for the same session", async () => {

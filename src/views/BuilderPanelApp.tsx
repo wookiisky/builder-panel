@@ -40,6 +40,7 @@ import type {
   InteractionId,
   SessionDetailViewModel,
   SessionListItemViewModel,
+  SessionStatus,
   TextDisplay,
   UiAction,
 } from "../api/mockPanelContract";
@@ -105,7 +106,6 @@ export const BuilderPanelApp = () => {
     createDefaultMockPanelUiState(),
   );
   const [sessions, setSessions] = useState<readonly PanelSessionListItem[]>([]);
-  const sessionsRef = useRef<readonly PanelSessionListItem[]>([]);
   const [currentTimeMs, setCurrentTimeMs] = useState(() => Date.now());
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [settingsView, setSettingsView] = useState<SettingsViewModel>(() => ({
@@ -124,6 +124,9 @@ export const BuilderPanelApp = () => {
   );
   const [logPath, setLogPath] = useState<string | null>(null);
   const settingsSaveVersion = useRef(0);
+  const sessionCaptureOrderStore = useRef(
+    createPanelSessionCaptureOrderStore(),
+  );
   const panelWindowPreferencesApplied = useRef(false);
   const panelGeometrySaveTimer = useRef<number | null>(null);
   const pendingPanelWindowUpdate = useRef<PanelWindowStateUpdate>({});
@@ -132,10 +135,9 @@ export const BuilderPanelApp = () => {
     items: readonly PanelSessionListItem[],
   ): void => {
     const nextSessions = mergePanelSessionsByCaptureOrder(
-      sessionsRef.current,
+      sessionCaptureOrderStore.current,
       items,
     );
-    sessionsRef.current = nextSessions;
     setSessions(nextSessions);
     setMockUiState((current) =>
       selectFirstSessionWhenMissing(current, nextSessions),
@@ -949,9 +951,24 @@ export const fetchSessionsForSource = async (
 };
 
 type SessionOrderBlock = {
+  /// 块内 session。
   readonly sessions: readonly PanelSessionListItem[];
-  readonly memberIds: ReadonlySet<string>;
 };
+
+/// 前端 session 首次观察顺序存储。
+export interface PanelSessionCaptureOrderStore {
+  /// session 展示身份到首次观察序号的映射。
+  readonly rankBySessionId: Map<string, number>;
+  /// 下一个可分配的序号基线。
+  nextRank: number;
+}
+
+/// 创建前端 session 首次观察顺序存储。
+export const createPanelSessionCaptureOrderStore =
+  (): PanelSessionCaptureOrderStore => ({
+    rankBySessionId: new Map<string, number>(),
+    nextRank: 0,
+  });
 
 /// 按后端返回顺序把 Codex APP parent-child session 合成不可拆散的展示块。
 const sessionOrderBlocks = (
@@ -966,7 +983,6 @@ const sessionOrderBlocks = (
     }
     blocks.push({
       sessions: currentBlock,
-      memberIds: new Set(currentBlock.map(panelSessionToId)),
     });
     currentBlock = [];
   };
@@ -986,49 +1002,107 @@ const sessionOrderBlocks = (
   return blocks;
 };
 
-/// 按首次捕捉顺序合并 session，并保持 Codex APP 父子块相邻。
-export const mergePanelSessionsByCaptureOrder = (
-  previousSessions: readonly PanelSessionListItem[],
-  nextSessions: readonly PanelSessionListItem[],
-): readonly PanelSessionListItem[] => {
-  const previousIds = new Set(previousSessions.map(panelSessionToId));
-  const blocks = sessionOrderBlocks(nextSessions);
-  const blockIndexBySessionId = new Map<string, number>();
-  blocks.forEach((block, blockIndex) => {
-    block.memberIds.forEach((sessionId) => {
-      blockIndexBySessionId.set(sessionId, blockIndex);
-    });
+/// 按前端首次观察顺序记录新 session。
+const recordPanelSessionCaptureOrder = (
+  store: PanelSessionCaptureOrderStore,
+  sessions: readonly PanelSessionListItem[],
+): void => {
+  const newSessionIds = sessions
+    .map(panelSessionToId)
+    .filter((sessionId) => !store.rankBySessionId.has(sessionId));
+  const batchSize = newSessionIds.length;
+
+  newSessionIds.forEach((sessionId, index) => {
+    store.rankBySessionId.set(sessionId, store.nextRank + batchSize - index);
   });
+  store.nextRank += batchSize;
+};
 
-  const emittedBlockIndexes = new Set<number>();
-  const mergedSessions: PanelSessionListItem[] = [];
-  const emitBlock = (blockIndex: number) => {
-    if (emittedBlockIndexes.has(blockIndex)) {
-      return;
-    }
-    emittedBlockIndexes.add(blockIndex);
-    mergedSessions.push(...blocks[blockIndex].sessions);
-  };
-
-  blocks.forEach((block, blockIndex) => {
-    const isNewBlock = [...block.memberIds].every(
-      (sessionId) => !previousIds.has(sessionId),
-    );
-    if (isNewBlock) {
-      emitBlock(blockIndex);
-    }
-  });
-
-  for (const previousSession of previousSessions) {
-    const blockIndex = blockIndexBySessionId.get(
-      panelSessionToId(previousSession),
-    );
-    if (blockIndex !== undefined) {
-      emitBlock(blockIndex);
-    }
+/// 判断 session 是否属于展示上的未完成分组。
+export const isPanelSessionUnfinishedForDisplay = (
+  status: SessionStatus,
+): boolean => {
+  switch (status) {
+    case "running":
+    case "waiting_for_approval":
+    case "waiting_for_answer":
+      return true;
+    case "completed":
+    case "failed":
+    case "detached":
+      return false;
   }
 
-  return mergedSessions;
+  const exhaustiveStatus: never = status;
+  return exhaustiveStatus;
+};
+
+/// 判断展示块是否属于未完成分组。
+const panelSessionBlockIsUnfinished = (block: SessionOrderBlock): boolean =>
+  block.sessions.some((session) =>
+    isPanelSessionUnfinishedForDisplay(session.status_kind),
+  );
+
+/// 返回一个 session 的首次观察序号。
+const panelSessionCaptureRank = (
+  store: PanelSessionCaptureOrderStore,
+  session: PanelSessionListItem,
+): number => store.rankBySessionId.get(panelSessionToId(session)) ?? 0;
+
+/// 返回展示块的捕捉锚点。
+const panelSessionBlockCaptureAnchor = (
+  store: PanelSessionCaptureOrderStore,
+  block: SessionOrderBlock,
+): number => {
+  const unfinishedRanks = block.sessions
+    .filter((session) =>
+      isPanelSessionUnfinishedForDisplay(session.status_kind),
+    )
+    .map((session) => panelSessionCaptureRank(store, session));
+  if (unfinishedRanks.length > 0) {
+    return Math.max(...unfinishedRanks);
+  }
+
+  return Math.max(
+    ...block.sessions.map((session) => panelSessionCaptureRank(store, session)),
+  );
+};
+
+/// 比较两个展示块。
+const comparePanelSessionBlocks = (
+  store: PanelSessionCaptureOrderStore,
+  left: SessionOrderBlock,
+  right: SessionOrderBlock,
+): number => {
+  const unfinishedDelta =
+    Number(panelSessionBlockIsUnfinished(right)) -
+    Number(panelSessionBlockIsUnfinished(left));
+  if (unfinishedDelta !== 0) {
+    return unfinishedDelta;
+  }
+
+  const rankDelta =
+    panelSessionBlockCaptureAnchor(store, right) -
+    panelSessionBlockCaptureAnchor(store, left);
+  if (rankDelta !== 0) {
+    return rankDelta;
+  }
+
+  return panelSessionToId(left.sessions[0]).localeCompare(
+    panelSessionToId(right.sessions[0]),
+  );
+};
+
+/// 按展示分组和首次观察顺序合并 session，并保持 Codex APP 父子块相邻。
+export const mergePanelSessionsByCaptureOrder = (
+  store: PanelSessionCaptureOrderStore,
+  nextSessions: readonly PanelSessionListItem[],
+): readonly PanelSessionListItem[] => {
+  recordPanelSessionCaptureOrder(store, nextSessions);
+  const blocks = sessionOrderBlocks(nextSessions);
+  return [...blocks]
+    .sort((left, right) => comparePanelSessionBlocks(store, left, right))
+    .flatMap((block) => block.sessions);
 };
 
 /// 统计等待和运行中的 session 数量。

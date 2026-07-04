@@ -300,9 +300,13 @@ APP 启动后仍在运行的任务如果继续发出实时事件，可以创建�
 
 前端合并 Codex CLI 和 Codex APP session 后，UI session 选中身份必须包含 runtime source。
 
-前端合并 Codex CLI 和 Codex APP session 后，必须按首次捕捉顺序保持稳定。
+前端合并 Codex CLI 和 Codex APP session 后，必须按展示分组和独立首次观察序排序。
 
-刷新时新捕捉到的 session 插入顶部，已捕捉 session 不因状态或更新时间变化重排。
+前端首次观察序的身份键必须包含 runtime source，不能只使用后端 `SessionKey`。
+
+刷新时同批新 session 按后端返回数组顺序分配首次观察序。
+
+状态变化可以触发 session 跨未完成和已结束分组移动；摘要或更新时间变化不得改变首次观察序。
 
 阶段 7 前端设置状态不进入 Domain。
 
@@ -514,7 +518,7 @@ Tauri 窗口位置和尺寸读取、监听与恢复属于前端 Tauri API 边界
 
 若前端选中态不包含 runtime source，同一个 `SessionKey` 的 Codex CLI 和 Codex APP session 可能互相误选。
 
-若后端和前端未共同保持捕捉顺序，刷新后 session 可能因 runtime 拼接、状态或更新时间变化发生跳位。
+若后端和前端未共同遵守展示分组和独立捕捉序，刷新后 session 可能因 runtime 拼接、状态变化或把当前展示顺序误当捕捉顺序而发生跳位。
 
 若设置 fallback 不校验本地缓存结构，脏数据可能让 UI 展示与能力不一致。
 

@@ -62,7 +62,7 @@ Session 状态主事实位于 `SessionState`。
 
 同一个 `SessionKey` 的重复读取不会改变 runtime 状态。
 
-列表排序以 Domain reducer 的排序规则为准。
+列表排序以 Domain reducer 的排序规则为准，包含展示分组、块级捕捉锚点和父子相邻规则。
 
 前端不重新计算 parent-child 排序；Session Service 输出的列表顺序已经包含 Domain 的父子相邻规则。
 

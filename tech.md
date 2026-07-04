@@ -21,9 +21,9 @@ Builder Panel 首版采用 Tauri + Rust + TypeScript + React 构建跨平台常�
 ### 2.2 产品边界
 
 2. 默认不持久化 transcript 全文。
-5. Windows 首版不支持 WSL，不承诺向任意已有终端注入输入。
-6. Claude Code APP 在未验证公开本地协议前，只承诺只读状态、跳回和有限回写。
-7. 用量数字只展示已验证来源提供的数据，不可用时展示 `--` 或隐藏。
+3. Windows 首版不支持 WSL，不承诺向任意已有终端注入输入。
+4. Claude Code APP 在未验证公开本地协议前，只承诺只读状态、跳回和有限回写。
+5. 用量数字只展示已验证来源提供的数据，不可用时展示 `--` 或隐藏。
 
 ## 3. `open-vibe-island/` 借鉴与改造
 
@@ -76,16 +76,16 @@ Builder Panel 首版采用 Tauri + Rust + TypeScript + React 构建跨平台常�
 
 ### 3.4 映射关系
 
-| `open-vibe-island` 概念     | Builder Panel 概念                  | 处理方式                         |
-| --------------------------- | ----------------------------------- | -------------------------------- |
-| `OpenIslandCore.AgentEvent` | `domain::AgentEvent`                | 借鉴事件归一思想，Rust 重新定义  |
-| `SessionState.apply`        | `domain::SessionState::apply_event` | 纯 reducer，无 IO                |
-| `OpenIslandHooks`           | `builder-panel-hook`                | Rust CLI，跨平台                 |
-| Unix socket bridge          | `LocalBridgePort`                   | Mac UDS，Windows Named Pipe      |
-| pending approval / question | `AgentInteraction`                  | 统一审批、选项、文本回复         |
-| terminal jump               | `JumpTargetPort`                    | 只负责聚焦或跳回                 |
-| text sender                 | `ReplySenderPort`                   | 只负责可靠回写或复制降级         |
-| `CodexAppServer`            | `CodexAppAdapter`                   | schema 重验后接入                |
+| `open-vibe-island` 概念     | Builder Panel 概念                  | 处理方式                        |
+| --------------------------- | ----------------------------------- | ------------------------------- |
+| `OpenIslandCore.AgentEvent` | `domain::AgentEvent`                | 借鉴事件归一思想，Rust 重新定义 |
+| `SessionState.apply`        | `domain::SessionState::apply_event` | 纯 reducer，无 IO               |
+| `OpenIslandHooks`           | `builder-panel-hook`                | Rust CLI，跨平台                |
+| Unix socket bridge          | `LocalBridgePort`                   | Mac UDS，Windows Named Pipe     |
+| pending approval / question | `AgentInteraction`                  | 统一审批、选项、文本回复        |
+| terminal jump               | `JumpTargetPort`                    | 只负责聚焦或跳回                |
+| text sender                 | `ReplySenderPort`                   | 只负责可靠回写或复制降级        |
+| `CodexAppServer`            | `CodexAppAdapter`                   | schema 重验后接入               |
 
 ## 4. 总体架构
 
@@ -96,12 +96,12 @@ Builder Panel 首版采用 Tauri + Rust + TypeScript + React 构建跨平台常�
 1. `domain`  
    纯模型、事件、状态 reducer、排序规则、能力规则、错误类型。
 
-2. `ports`  
+2. `ports`
 
 3. `adapters`  
    对接 Codex APP、Codex CLI、Claude Code APP、Claude Code CLI、终端、系统通知、配置文件、IPC、剪贴板、托管进程。
 
-4. `app-services`  
+4. `app-services`
 
 5. `ui`  
    React panel、session 列表、session detail、设置页和行内 follow-up 输入区。UI 不直接处理 agent 协议。
@@ -127,7 +127,7 @@ Builder Panel 首版采用 Tauri + Rust + TypeScript + React 构建跨平台常�
 2. `builder-panel-hook`  
    被 Codex CLI / Claude Code CLI hooks 调用的轻量 CLI。
 
-3. 托管 agent 子进程  
+3. 托管 agent 子进程
 
 ## 5. Rust 工程模块
 
@@ -417,11 +417,13 @@ pub struct SessionState {
 
 view model 层排序：
 
-1. 列表按首次捕捉顺序保持稳定。
-2. 新捕捉到的 session 排在已捕捉 session 前面。
-3. 已捕捉 session 不因状态、摘要或 `updated_at` 变化重排。
-4. 捕捉序号相同的异常情况按 `SessionKey` 稳定兜底排序。
-5. `Detached` 仍可展示最近状态和跳回降级，但不改变捕捉顺序。
+1. 列表先按展示分组排序，再按块级捕捉锚点排序。
+2. `Running`、`WaitingForApproval` 和 `WaitingForAnswer` 属于未完成分组，展示在顶部。
+3. `Completed`、`Failed` 和 `Detached` 属于已结束分组，展示在未完成分组下方。
+4. 存在有效父子关系时，parent-child 展示块不拆散；块内任一 session 未完成时，整个块进入未完成分组。
+5. 块内存在未完成 session 时，块级捕捉锚点取块内最新未完成 session 的捕捉序号；否则取块内最新 session 的捕捉序号。
+6. 摘要、标题或 `updated_at` 变化不改变捕捉序；状态变化只影响展示分组和块级捕捉锚点。
+7. 块级捕捉锚点相同的异常情况按 root `SessionKey` 稳定兜底排序。
 
 排序规则写在 domain 或 app-service 的纯函数中，并有单元测试。
 
@@ -738,7 +740,6 @@ UI 只对 `Verified` 展示数字。
 2. 或按设置隐藏。
 3. 不展示虚构数字。
 
-
 ### 12.1 边界
 
 首版不提供独立历史详情能力。
@@ -828,7 +829,7 @@ UI 只对 `Verified` 展示数字。
 1. `sessionListStore`：轻量 session view model。
 2. `selectedSessionStore`：当前选中 session。
 3. `draftStore`：按 session 保存草稿。
-5. `settingsStore`：设置页表单状态。
+4. `settingsStore`：设置页表单状态。
 
 长文本内容不得进入全局 store。
 
@@ -1095,7 +1096,7 @@ Domain 显式建模：
 
 ### 19.3 大列表
 
-1. session 列表保持稳定捕捉顺序。
+1. session 列表保持展示分组和捕捉锚点排序稳定。
 2. 默认只渲染当前列表视图需要的轻量状态。
 3. 长内容默认折叠或截断。
 4. 1000 个 session 更新和 follow-up 展开集合操作仍应可用。
@@ -1138,7 +1139,6 @@ Domain 显式建模：
 8. `shortcut_replies`
 9. `toolbar_actions`
 
-
 字段：
 
 1. `session_header`
@@ -1162,7 +1162,7 @@ Domain 显式建模：
 4. answer request 进入等待回复。
 5. completed 清理 pending interaction。
 6. detached 不删除历史状态。
-7. 多 session 捕捉顺序。
+7. 多 session 展示分组和捕捉锚点排序。
 8. 不同项目会话不合并。
 9. 同项目不同对话不合并。
 10. usage unavailable 不生成虚假数字。
@@ -1178,9 +1178,9 @@ Domain 显式建模：
 5. Unix socket / Named Pipe codec schema 一致。
 6. hook 事件转换为 `AgentEvent`。
 7. app-server 事件转换为 `AgentEvent`。
-10. 用量可用时解析为 `Verified`。
-11. 用量不可用时输出 `Unavailable`。
-12. adapter 生成稳定 project id 和 conversation id。
+8. 用量可用时解析为 `Verified`。
+9. 用量不可用时输出 `Unavailable`。
+10. adapter 生成稳定 project id 和 conversation id。
 
 ### 21.3 App Service 测试
 
@@ -1191,8 +1191,8 @@ Domain 显式建模：
 3. 快捷回复复用开放性回复路径。
 4. 新对话预设命令生成正确。
 5. 回写失败降级复制。
-8. 用量更新生成正确 view model。
-9. 多项目多对话 view model 独立。
+6. 用量更新生成正确 view model。
+7. 多项目多对话 view model 独立。
 
 ### 21.4 UI 测试
 
@@ -1229,7 +1229,7 @@ Domain 显式建模：
 2. 10 个 session 同时存在时操作流畅。
 3. 连续 1000 条 mock agent 事件输入不丢失。
 4. panel 收缩后动画和刷新降级。
-6. 1000 个 session 更新和 follow-up 展开集合操作可用。
+5. 1000 个 session 更新和 follow-up 展开集合操作可用。
 
 ## 22. 文档要求
 
@@ -1239,6 +1239,6 @@ Domain 显式建模：
 2. `docs/bridge-protocol.md`：bridge envelope、命令、响应、错误码。
 3. `docs/agent-adapters.md`：四类 adapter 能力矩阵和降级策略。
 4. `docs/hook-installation.md`：hook 安装、备份、卸载和 trust review。
-6. `docs/security.md`：本地数据、敏感内容、日志和命令安全。
+5. `docs/security.md`：本地数据、敏感内容、日志和命令安全。
 
 本次 `tech.md` 不包含实施计划和里程碑安排。
