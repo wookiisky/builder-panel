@@ -58,6 +58,7 @@ import type {
   CustomShortcutInput,
   SettingsViewModel,
 } from "../api/settingsContract";
+import { PanelIcon, PanelSessionStatusIcon } from "../components/PanelIcon";
 import { PanelShell } from "../components/PanelShell";
 import { SettingsPanel } from "../components/SettingsPanel";
 import {
@@ -1285,7 +1286,7 @@ interface PanelTitleActionsProps {
 }
 
 /// 标题栏窗口操作。
-const PanelTitleActions = ({
+export const PanelTitleActions = ({
   onOpenSettings,
   onMinimize,
   onClose,
@@ -1297,7 +1298,7 @@ const PanelTitleActions = ({
       type="button"
       onClick={onMinimize}
     >
-      -
+      <PanelIcon name="window-minimize" />
     </button>
     <button
       aria-label="设置"
@@ -1305,10 +1306,10 @@ const PanelTitleActions = ({
       type="button"
       onClick={onOpenSettings}
     >
-      ⚙
+      <PanelIcon name="window-settings" />
     </button>
     <button aria-label="关闭" title="关闭" type="button" onClick={onClose}>
-      ×
+      <PanelIcon name="window-close" />
     </button>
   </div>
 );
@@ -1803,7 +1804,7 @@ const SessionRow = ({
           role="img"
           title={session.status_label}
         >
-          <span aria-hidden="true" />
+          <PanelSessionStatusIcon status={session.status_kind} />
         </span>
         <div className="session-identity">
           <div className="session-identity-line">
@@ -1843,7 +1844,7 @@ const SessionRow = ({
               title="停止能力尚未接入"
               type="button"
             >
-              <span aria-hidden="true" />
+              <PanelIcon name="stop-placeholder" />
             </button>
           )}
         </div>
@@ -1945,6 +1946,45 @@ const SessionRow = ({
               </div>
             </div>
           )}
+          {canCreateFollowup && (
+            <div className="inline-reply inline-reply-followup">
+              <textarea
+                disabled={followupSubmitting}
+                value={draft}
+                placeholder="继续输入"
+                onChange={(event) => {
+                  onDraftChange(session, event.target.value);
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    shouldSubmitReplyOnKeyDown(
+                      settings.replies.enter_to_send,
+                      event.key,
+                      event.shiftKey,
+                    ) &&
+                    !followupSubmitting
+                  ) {
+                    event.preventDefault();
+                    onCreateFollowupTurn(session, draft);
+                  }
+                }}
+              />
+              <button
+                aria-label="发送"
+                className="inline-reply-submit-icon"
+                disabled={
+                  isReplyDraftInvalid(draft, 1000) || followupSubmitting
+                }
+                title="发送"
+                type="button"
+                onClick={() => {
+                  onCreateFollowupTurn(session, draft);
+                }}
+              >
+                <PanelIcon name="send" />
+              </button>
+            </div>
+          )}
           {interaction.kind !== "choice" &&
             (interaction.can_send_reply ||
               interaction.can_create_followup_turn) &&
@@ -2005,42 +2045,6 @@ const SessionRow = ({
                 type="button"
                 onClick={() => {
                   onSendReply(session, interactionId, null);
-                }}
-              >
-                发送
-              </button>
-            </div>
-          )}
-          {canCreateFollowup && (
-            <div className="inline-reply">
-              <textarea
-                disabled={followupSubmitting}
-                value={draft}
-                placeholder="继续输入"
-                onChange={(event) => {
-                  onDraftChange(session, event.target.value);
-                }}
-                onKeyDown={(event) => {
-                  if (
-                    shouldSubmitReplyOnKeyDown(
-                      settings.replies.enter_to_send,
-                      event.key,
-                      event.shiftKey,
-                    ) &&
-                    !followupSubmitting
-                  ) {
-                    event.preventDefault();
-                    onCreateFollowupTurn(session, draft);
-                  }
-                }}
-              />
-              <button
-                disabled={
-                  isReplyDraftInvalid(draft, 1000) || followupSubmitting
-                }
-                type="button"
-                onClick={() => {
-                  onCreateFollowupTurn(session, draft);
                 }}
               >
                 发送

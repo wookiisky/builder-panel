@@ -200,7 +200,11 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证同一 session 摘要刷新后列表行展示新摘要。
 
-前端 Builder Panel 测试验证 session 状态 icon 保留可访问语义、位于行首独立列，来源标签和项目名同排展示，运行中停止占位按钮保持禁用语义。
+前端 Builder Panel 测试验证 session 状态 icon 使用开源 SVG 图标资源，全部状态保留可访问语义并位于行首独立列。
+
+前端 Builder Panel 测试验证标题栏窗口操作图标按钮保留无文本和可访问语义。
+
+前端 Builder Panel 测试验证来源标签和项目名同排展示，运行中停止占位位使用开源 octagon-x SVG 图标资源、不通过 CSS 填充绘制基础形状、不展示红底按钮样式并保持禁用语义。
 
 前端 Builder Panel 测试验证项目名和 thread 名只在单行视觉截断时启用 tooltip。
 
@@ -214,7 +218,7 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证具备 jump action 的 session 在全局跳回关闭时仍可被点击选中。
 
-前端 Builder Panel 测试验证完成和失败状态在可 follow-up 时默认单行，点击展开后展示输入区。
+前端 Builder Panel 测试验证完成和失败状态在可 follow-up 时默认单行，展开后按输入区、发送 icon 和快捷输入的顺序展示。
 
 前端 Builder Panel 测试验证工具用量按工具和来源键取最新值且不按 session 求和。
 
@@ -434,7 +438,7 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 
 `src/views/BuilderPanelApp.test.ts` 是前端 Codex CLI session 刷新选择测试入口。
 
-`src/views/BuilderPanelApp.test.ts` 是阶段 7 session 展示分组、首次观察序、统计、动作标签和工具用量聚合测试入口。
+`src/views/BuilderPanelApp.test.ts` 是阶段 7 session 展示分组、首次观察序、统计、动作标签、工具用量聚合和 follow-up 输入顺序测试入口。
 
 `src/api/settingsApi.test.ts` 是前端设置默认值和自定义快捷输入清洗测试入口。
 

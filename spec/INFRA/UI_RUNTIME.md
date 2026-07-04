@@ -46,9 +46,9 @@ Codex APP parent-child 展示块内任一 session 未完成时，整个块进入
 
 同一工具同一 `source_key` 的账号窗口用量只取 `updated_at` 最新值，不按 session 求和。
 
-标题栏最右侧提供设置按钮和关闭窗口按钮。
+标题栏最右侧提供设置图标按钮和关闭窗口图标按钮。
 
-标题栏最右侧提供最小化窗口按钮。
+标题栏最右侧提供最小化窗口图标按钮。
 
 前端支持浅色和深色两种主题，由 Display 设置控制。
 
@@ -56,7 +56,11 @@ Codex APP parent-child 展示块内任一 session 未完成时，整个块进入
 
 每个 session 主行左侧展示状态 icon、运行时来源、项目名和 thread 名。
 
+前端状态 icon 和窗口操作 icon 使用开源图标资源，不由 CSS 绘制基础形状。
+
 状态 icon 位于主行最左侧独立列，并跟随当前 session 缩进层级移动。
+
+运行中状态 icon 的旋转动画由前端样式控制。
 
 运行时来源和项目名在同一行展示，thread 名在下一行单行展示。
 
@@ -66,7 +70,7 @@ Codex APP parent-child 展示块内任一 session 未完成时，整个块进入
 
 运行中、等待审批和等待用户回复的 session 主行右侧展示当前 turn 已运行时间。
 
-运行中 session 主行右侧展示禁用的红色方形停止占位按钮；当前停止能力未接入真实后端行为。
+运行中 session 主行右侧展示禁用的红色 octagon-x 停止占位图标；当前停止能力未接入真实后端行为。
 
 完成和失败 session 主行右侧展示当前 turn 结束到现在的相对时间。
 
@@ -88,7 +92,7 @@ session 来源标记按运行时来源派生并以无填充样式展示：来自
 
 用户 hover 或 focus 到完成或失败 session 行时展示第二行。
 
-完成和失败 session 的第二行只展示快捷输入和单行输入区。
+完成和失败 session 的第二行从左到右展示单行输入区、发送 icon 和快捷输入。
 
 有选项的行内回复区展示选项按钮，并保留 choice tooltip。
 
@@ -178,7 +182,7 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 ## 相关测试
 
-`src/views/BuilderPanelApp.test.ts` 覆盖合并 session 捕捉顺序、统计、能力动作标签、工具用量聚合和 follow-up 展开规则。
+`src/views/BuilderPanelApp.test.ts` 覆盖合并 session 捕捉顺序、统计、能力动作标签、工具用量聚合、follow-up 展开规则和 follow-up 输入顺序。
 
 `src/api/settingsApi.test.ts` 覆盖阶段 7 默认设置、收缩状态归一化和自定义快捷输入校验。
 

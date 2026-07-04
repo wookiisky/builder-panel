@@ -26,6 +26,7 @@ import {
   isHookActionDisabled,
   mergePanelSessionsByCaptureOrder,
   mergePanelWindowStateUpdate,
+  PanelTitleActions,
   panelSessionToId,
   parseTooltipMarkdown,
   positionTooltipPanel,
@@ -48,9 +49,13 @@ import {
 import type {
   SessionDetailViewModel,
   SessionKey,
+  SessionStatus,
 } from "../api/mockPanelContract";
 import { defaultSettings } from "../api/settingsApi";
-import { createDefaultMockPanelUiState } from "../stores/mockPanelStore";
+import {
+  createDefaultMockPanelUiState,
+  sessionKeyToId,
+} from "../stores/mockPanelStore";
 
 const codexSessionKey: SessionKey = {
   agent_kind: "codex_cli",
@@ -642,10 +647,16 @@ describe("BuilderPanelApp session refresh", () => {
     expect(statusIcons[0].getAttribute("role")).toBe("img");
     expect(statusIcons[0].getAttribute("title")).toBe("运行中");
     expect(statusIcons[0].textContent).toBe("");
-    expect(statusIcons[0].querySelector("[aria-hidden='true']")).not.toBeNull();
+    expect(
+      statusIcons[0].querySelector("svg[aria-hidden='true']"),
+    ).not.toBeNull();
     expect(statusIcons[1].getAttribute("aria-label")).toBe("已完成");
     expect(statusIcons[1].getAttribute("role")).toBe("img");
+    expect(statusIcons[1].getAttribute("title")).toBe("已完成");
     expect(statusIcons[1].textContent).toBe("");
+    expect(
+      statusIcons[1].querySelector("svg[aria-hidden='true']"),
+    ).not.toBeNull();
     expect(
       container.querySelector('[role="img"][aria-label="运行中"]'),
     ).not.toBeNull();
@@ -665,9 +676,134 @@ describe("BuilderPanelApp session refresh", () => {
       ".session-stop-placeholder",
     );
     expect(stopButton?.disabled).toBe(true);
+    expect(stopButton?.className).toBe("session-stop-placeholder");
     expect(stopButton?.getAttribute("aria-label")).toBe("停止占位");
     expect(stopButton?.getAttribute("title")).toBe("停止能力尚未接入");
     expect(stopButton?.textContent).toBe("");
+    expect(stopButton?.querySelector("span")).toBeNull();
+    const stopIcon = stopButton?.querySelector("svg[aria-hidden='true']");
+    expect(stopIcon).not.toBeNull();
+    expect(stopIcon?.classList.contains("lucide-octagon-x")).toBe(true);
+    expect(stopIcon?.querySelectorAll("path")).toHaveLength(3);
+    expect(stopIcon?.querySelector("rect")).toBeNull();
+    expect(stopIcon?.querySelector("circle")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders every session status with an open-source svg icon", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const statusCases: ReadonlyArray<{
+      readonly status: SessionStatus;
+      readonly label: string;
+    }> = [
+      { status: "running", label: "运行中" },
+      { status: "waiting_for_approval", label: "等待审批" },
+      { status: "waiting_for_answer", label: "等待回复" },
+      { status: "completed", label: "已完成" },
+      { status: "failed", label: "失败" },
+      { status: "detached", label: "失联" },
+    ];
+    const sessions = statusCases.map(({ status, label }) =>
+      sessionItem(
+        sessionKey("project-icons", status),
+        "codex_app",
+        status,
+        label,
+      ),
+    );
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions,
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const statusIcons = Array.from(
+      container.querySelectorAll<HTMLElement>(".session-status-icon"),
+    );
+    expect(statusIcons).toHaveLength(statusCases.length);
+    statusCases.forEach(({ label }, index) => {
+      const icon = statusIcons[index];
+      expect(icon.getAttribute("aria-label")).toBe(label);
+      expect(icon.getAttribute("role")).toBe("img");
+      expect(icon.getAttribute("title")).toBe(label);
+      expect(icon.textContent).toBe("");
+      expect(icon.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders title actions as icon buttons without character labels", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const onOpenSettings = vi.fn();
+    const onMinimize = vi.fn();
+    const onClose = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(PanelTitleActions, {
+          onClose,
+          onMinimize,
+          onOpenSettings,
+        }),
+      );
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons).toHaveLength(3);
+    [{ label: "最小化" }, { label: "设置" }, { label: "关闭" }].forEach(
+      ({ label }, index) => {
+        const button = buttons[index];
+        expect(button.getAttribute("aria-label")).toBe(label);
+        expect(button.getAttribute("title")).toBe(label);
+        expect(button.textContent).toBe("");
+        expect(button.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+      },
+    );
+    expect(
+      buttons[1]
+        .querySelector("svg[aria-hidden='true']")
+        ?.classList.contains("lucide-bolt"),
+    ).toBe(true);
+
+    await act(async () => {
+      buttons[0].click();
+      buttons[1].click();
+      buttons[2].click();
+    });
+
+    expect(onMinimize).toHaveBeenCalledTimes(1);
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       root.unmount();
@@ -1462,6 +1598,158 @@ describe("BuilderPanelApp session refresh", () => {
     );
   });
 
+  it("renders completed follow-up input before shortcut inputs", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = followupSession("completed", "已完成");
+    const onCreateFollowupTurn = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const draft = "继续处理";
+    const mockUiState = {
+      ...createDefaultMockPanelUiState(),
+      draftsBySessionId: {
+        [sessionKeyToId(session.session_key)]: draft,
+      },
+    };
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState,
+          currentTimeMs: 2000,
+          sessions: [session],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const actionRow = container.querySelector(".session-row-action-followup");
+    const followupInput = actionRow?.querySelector(".inline-reply-followup");
+    const shortcutRow = actionRow?.querySelector(".shortcut-row");
+    const followupChildren = Array.from(followupInput?.children ?? []);
+    const textarea = followupInput?.querySelector("textarea");
+    const sendButton = followupInput?.querySelector<HTMLButtonElement>(
+      "button[aria-label='发送']",
+    );
+
+    expect(actionRow?.children[0]).toBe(followupInput);
+    expect(actionRow?.children[1]).toBe(shortcutRow);
+    expect(followupChildren[0]).toBe(textarea);
+    expect(followupChildren[1]).toBe(sendButton);
+    expect(sendButton?.getAttribute("title")).toBe("发送");
+    expect(sendButton?.textContent).toBe("");
+    expect(sendButton?.querySelector("svg")).not.toBeNull();
+
+    await act(async () => {
+      sendButton?.click();
+    });
+
+    expect(onCreateFollowupTurn).toHaveBeenCalledTimes(1);
+    expect(onCreateFollowupTurn).toHaveBeenCalledWith(session, draft);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("uses the same follow-up layout for failed sessions", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = followupSession("failed", "失败");
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [session],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const actionRow = container.querySelector(".session-row-action-followup");
+    const followupInput = actionRow?.querySelector(".inline-reply-followup");
+    const shortcutRow = actionRow?.querySelector(".shortcut-row");
+
+    expect(actionRow?.children[0]).toBe(followupInput);
+    expect(actionRow?.children[1]).toBe(shortcutRow);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("lets follow-up input occupy the whole row without shortcut inputs", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = followupSession("completed", "已完成");
+    const settings = {
+      ...defaultSettings(),
+      replies: {
+        ...defaultSettings().replies,
+        shortcut_replies_enabled: false,
+      },
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [session],
+          settings,
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const actionRow = container.querySelector(".session-row-action-followup");
+    const followupInput = actionRow?.querySelector(".inline-reply-followup");
+
+    expect(actionRow?.querySelector(".shortcut-row")).toBeNull();
+    expect(actionRow?.children).toHaveLength(1);
+    expect(actionRow?.children[0]).toBe(followupInput);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("uses stable labels for executable capability actions", () => {
     expect(actionLabel("resolve_approval")).toBe("审批");
     expect(actionLabel("send_reply")).toBe("回复");
@@ -1677,6 +1965,29 @@ const sessionItem = (
     },
   },
   indent_level: 0,
+});
+
+const followupSession = (
+  statusKind: "completed" | "failed",
+  statusLabel: string,
+): PanelSessionListItem => ({
+  ...sessionItem(codexAppSessionKey, "codex_app", statusKind, statusLabel),
+  actions: ["create_followup_turn"],
+  inline_interaction: {
+    summary: null,
+    interaction_id: null,
+    kind: "text_reply",
+    can_jump: false,
+    can_send_reply: false,
+    can_resolve_approval: false,
+    can_create_followup_turn: true,
+    choice_box: {
+      enabled: false,
+      allows_multiple: false,
+      choices: [],
+      disabled_reason: "当前会话没有选项交互",
+    },
+  },
 });
 
 const sessionKey = (projectId: string, conversationId: string): SessionKey => ({

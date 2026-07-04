@@ -38,6 +38,8 @@ Tauri release 构建会通过 `beforeBuildCommand` 先执行 `pnpm build`。
 
 前端使用 pnpm、Vite、React、TypeScript、Vitest 和 ESLint。
 
+前端图标资源使用 `lucide-react`。
+
 桌面端使用 Tauri v2 和 Rust。
 
 本地 bridge codec 和 hook helper 运行时依赖 `serde_json`。

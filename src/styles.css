@@ -165,6 +165,8 @@ textarea:focus-visible {
 }
 
 .panel-title-actions button {
+  display: inline-grid;
+  place-items: center;
   width: 24px;
   min-height: 22px;
   padding: 0;
@@ -516,27 +518,29 @@ button:disabled {
 }
 
 .session-stop-placeholder {
+  display: inline-grid;
   width: 24px;
   min-height: 24px;
   padding: 0;
-  border-radius: 3px;
+  place-items: center;
+  border: 0;
+  color: var(--danger);
+  background: transparent;
+  box-shadow: none;
   letter-spacing: 0;
 }
 
 .session-stop-placeholder:disabled {
-  border-color: #8f1c14;
-  color: #ffffff;
-  background: var(--danger);
+  color: var(--danger);
+  background: transparent;
   box-shadow: none;
   cursor: not-allowed;
 }
 
-.session-stop-placeholder:disabled > span {
+.session-stop-placeholder:disabled > svg {
   display: block;
-  width: 9px;
-  height: 9px;
-  border-radius: 1px;
-  background: currentColor;
+  width: 14px;
+  height: 14px;
 }
 
 .session-action-tooltip {
@@ -695,21 +699,17 @@ button:disabled {
   background: transparent;
 }
 
-.session-status-icon > span {
-  position: relative;
+.session-status-icon > svg {
   display: block;
-  width: 11px;
-  height: 11px;
+  width: 13px;
+  height: 13px;
 }
 
 .session-status-running {
   --status-color: var(--accent);
 }
 
-.session-status-running > span {
-  border: 2px solid currentColor;
-  border-top-color: transparent;
-  border-radius: 999px;
+.session-status-running > svg {
   animation: session-status-spin 900ms linear infinite;
 }
 
@@ -718,58 +718,12 @@ button:disabled {
   --status-color: var(--warn);
 }
 
-.session-status-waiting_for_approval > span,
-.session-status-waiting_for_answer > span {
-  border-radius: 999px;
-  background: currentColor;
-  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
-}
-
 .session-status-completed {
   --status-color: var(--accent-strong);
 }
 
-.session-status-completed > span::after {
-  position: absolute;
-  top: 1px;
-  left: 3px;
-  width: 4px;
-  height: 8px;
-  border: solid currentColor;
-  border-width: 0 2px 2px 0;
-  content: "";
-  transform: rotate(45deg);
-}
-
 .session-status-failed {
   --status-color: var(--danger);
-}
-
-.session-status-failed > span::before,
-.session-status-failed > span::after {
-  position: absolute;
-  top: 5px;
-  left: 1px;
-  width: 10px;
-  height: 2px;
-  border-radius: 2px;
-  background: currentColor;
-  content: "";
-}
-
-.session-status-failed > span::before {
-  transform: rotate(45deg);
-}
-
-.session-status-failed > span::after {
-  transform: rotate(-45deg);
-}
-
-.session-status-detached > span {
-  width: 10px;
-  height: 2px;
-  border-radius: 2px;
-  background: currentColor;
 }
 
 .session-source {
@@ -797,7 +751,8 @@ button:disabled {
 }
 
 .session-row-action-followup {
-  grid-template-columns: minmax(0, 0.48fr) minmax(190px, 1fr);
+  display: flex;
+  grid-template-columns: none;
   max-height: 0;
   min-height: 0;
   padding-top: 0;
@@ -829,6 +784,15 @@ button:disabled {
   min-width: 0;
 }
 
+.inline-reply-followup {
+  flex: 1 1 180px;
+  grid-template-columns: minmax(0, 1fr) 28px;
+}
+
+.inline-reply-followup:only-child {
+  flex-basis: 100%;
+}
+
 .inline-reply textarea,
 .shortcut-editor-row input,
 .select-row select,
@@ -855,6 +819,20 @@ button:disabled {
 
 .inline-reply button {
   min-height: 28px;
+}
+
+.inline-reply-followup .inline-reply-submit-icon {
+  display: inline-flex;
+  width: 28px;
+  min-width: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.inline-reply-submit-icon svg {
+  width: 14px;
+  height: 14px;
 }
 
 .session-row-selected {
@@ -1008,7 +986,10 @@ button:disabled {
 }
 
 .session-row-action-followup .shortcut-row {
+  flex: 0 1 auto;
   flex-wrap: nowrap;
+  justify-content: flex-end;
+  max-width: 45%;
   overflow: hidden;
 }
 
@@ -1380,7 +1361,7 @@ button:disabled {
   }
 
   .session-row-action.session-row-action-followup {
-    grid-template-columns: minmax(0, 0.42fr) minmax(150px, 1fr);
+    display: flex;
   }
 
   .session-summary-tooltip {

@@ -42,7 +42,7 @@ panel 标题栏展示 Codex 和 Claude 工具维度整体用量。
 
 同一工具同一来源键的整体用量只取最新值，不按 session 求和。
 
-panel 标题栏右侧展示最小化、设置和关闭按钮。
+panel 标题栏右侧展示最小化、设置和关闭图标按钮。
 
 session 列表展示等待审批、等待回复、运行中、完成和失败状态。
 
@@ -56,7 +56,7 @@ session 行来源标签和项目名同一行展示，thread 名下一行单行�
 
 运行中、等待审批和等待用户回复的 session 行展示当前 turn 已运行时间。
 
-运行中 session 行展示禁用的红色方形停止占位按钮；该按钮当前不触发停止行为。
+运行中 session 行展示禁用的红色 octagon-x 停止占位图标；该图标当前不触发停止行为。
 
 完成和失败 session 行展示当前 turn 结束到现在的相对时间。
 
@@ -98,6 +98,8 @@ session 详情可展示当前 view model 可用的完整多段摘要。
 
 两行 session 的第一行展示最后一段输出文本。
 
+完成和失败 session 的第二行从左到右展示输入区、发送 icon 和快捷输入。
+
 Codex APP thread 名可由 Codex session index、app-server thread metadata 或 app-server 实时改名通知补齐。
 
 Codex CLI hook 的模型字段和 Codex APP 中形似模型名的值不展示为 thread 名。
@@ -114,7 +116,7 @@ Codex APP 最近未完成且处于活跃窗口内的 rollout 可展示为运行�
 
 Codex APP 历史 thread 只有在存在真实标题、预览文本、实时事件、待处理交互或系统错误时才展示；只有 cwd、id、模型名标题或空预览的历史 thread metadata 不展示为空白 session。
 
-两行 session 的第二行展示快捷输入和输入区。
+等待审批和等待用户回复 session 的第二行展示当前待处理交互对应的操作区。
 
 session 列表合并 Codex CLI 和 Codex APP session 后，未完成 session 展示在已结束 session 上方。
 
@@ -410,7 +412,7 @@ Codex hook 安装不绕过 Codex 自身 hook trust review。
 
 `cargo test --manifest-path src-tauri/Cargo.toml codex_app` 用于验证 Codex APP app-server adapter。
 
-`./node_modules/.bin/vitest run` 用于验证阶段 7 前端捕捉顺序、统计、设置默认值、工具用量聚合和自定义快捷输入。
+`./node_modules/.bin/vitest run` 用于验证阶段 7 前端捕捉顺序、统计、设置默认值、工具用量聚合、自定义快捷输入和 follow-up 输入顺序。
 
 `cargo test --manifest-path src-tauri/Cargo.toml settings_service` 用于验证设置服务。
 
