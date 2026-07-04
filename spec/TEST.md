@@ -200,6 +200,10 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证同一 session 摘要刷新后列表行展示新摘要。
 
+前端 Builder Panel 测试验证 session 状态 icon 保留可访问语义、位于行首独立列，来源标签和项目名同排展示，运行中停止占位按钮保持禁用语义。
+
+前端 Builder Panel 测试验证项目名和 thread 名只在单行视觉截断时启用 tooltip。
+
 前端 Builder Panel 测试验证 session 行点击只有在存在 jump action 且跳回设置开启时才触发跳回。
 
 前端 Builder Panel 测试验证具备 jump action 的 session 在全局跳回关闭时仍可被点击选中。

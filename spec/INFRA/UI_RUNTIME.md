@@ -54,17 +54,23 @@ Codex APP parent-child 展示块内任一 session 未完成时，整个块进入
 
 前端主界面使用紧凑工作台布局，主体为无标题单列 session table。
 
-每个 session 主行左侧多行展示状态、运行时来源、项目名和 thread 名。
+每个 session 主行左侧展示状态 icon、运行时来源、项目名和 thread 名。
 
-每个 session 主行中间展示当前输出文本。
+状态 icon 位于主行最左侧独立列，并跟随当前 session 缩进层级移动。
+
+运行时来源和项目名在同一行展示，thread 名在下一行单行展示。
+
+项目名和 thread 名仅在视觉截断时展示 tooltip。
+
+每个 session 主行中间展示当前输出文本，最多展示两行。
 
 运行中、等待审批和等待用户回复的 session 主行右侧展示当前 turn 已运行时间。
 
-运行中 session 主行右侧展示禁用的停止占位按钮；当前停止能力未接入真实后端行为。
+运行中 session 主行右侧展示禁用的红色方形停止占位按钮；当前停止能力未接入真实后端行为。
 
 完成和失败 session 主行右侧展示当前 turn 结束到现在的相对时间。
 
-session 来源徽章按运行时来源派生：来自 Codex APP 的 session 显示为 `Codex`，来自 Codex CLI 的 session 显示为 `Codex CLI`。
+session 来源标记按运行时来源派生并以无填充样式展示：来自 Codex APP 的 session 显示为 `Codex`，来自 Codex CLI 的 session 显示为 `Codex CLI`。
 
 当前输出文本 tooltip 由前端自绘，hover 或 focus 后立即展示，保留段内换行并按 Markdown 渲染。
 

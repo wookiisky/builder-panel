@@ -48,11 +48,15 @@ session 列表展示等待审批、等待回复、运行中、完成和失败状
 
 每个 session 行从左到右展示身份信息、当前输出文本和时间信息。
 
-session 行身份信息多行展示状态、来源标签、项目名和 thread 名。
+session 行身份信息展示状态 icon、来源标签、项目名和 thread 名。
+
+session 行状态 icon 位于最左侧独立列，并跟随 sub agent 缩进移动。
+
+session 行来源标签和项目名同一行展示，thread 名下一行单行展示。
 
 运行中、等待审批和等待用户回复的 session 行展示当前 turn 已运行时间。
 
-运行中 session 行展示禁用的停止占位按钮；该按钮当前不触发停止行为。
+运行中 session 行展示禁用的红色方形停止占位按钮；该按钮当前不触发停止行为。
 
 完成和失败 session 行展示当前 turn 结束到现在的相对时间。
 
@@ -60,13 +64,15 @@ session 行当前输出文本在后端 session 更新事件后短延迟刷新。
 
 高频输出期间，session 行当前输出文本允许一到两秒体验延迟，但不得等到输出完全停止才刷新。
 
-session 行和详情区展示完整 thread 名。
+session 行项目名和 thread 名只在视觉截断时展示 tooltip。
 
-长 thread 名在面板布局内换行展示，不横向撑破面板。
+session 详情区展示完整 thread 名。
 
-session 来源标签按运行时来源派生：来自 Codex APP 的 session 显示为 `Codex`，来自 Codex CLI 的 session 显示为 `Codex CLI`。
+长 thread 名在 session 行内单行截断，不横向撑破面板。
 
-当前输出文本超过行宽时截断展示。
+session 来源标签按运行时来源派生并以无填充样式展示：来自 Codex APP 的 session 显示为 `Codex`，来自 Codex CLI 的 session 显示为 `Codex CLI`。
+
+当前输出文本超过两行时截断展示。
 
 当前输出文本按段落展示；session 行界面只展示最后一段，用户可通过立即显示的 tooltip 查看最近若干段（段数由展示设置配置，默认 5）完整文本。
 

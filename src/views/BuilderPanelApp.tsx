@@ -1796,24 +1796,29 @@ const SessionRow = ({
       }}
     >
       <div className="session-row-main">
+        <span
+          aria-label={session.status_label}
+          className={`session-status-icon session-status-${session.status_kind}`}
+          role="img"
+          title={session.status_label}
+        >
+          <span aria-hidden="true" />
+        </span>
         <div className="session-identity">
           <div className="session-identity-line">
-            <span
-              className={`session-status session-status-${session.status_kind}`}
-            >
-              {session.status_label}
-            </span>
             <span className="session-source">{sourceTag(session)}</span>
+            <MarkdownTooltip
+              className="session-project"
+              content={session.project_label}
+              tooltipWhenOverflow={true}
+            >
+              <strong>{session.project_label}</strong>
+            </MarkdownTooltip>
           </div>
-          <MarkdownTooltip
-            className="session-project"
-            content={session.project_label}
-          >
-            <strong>{session.project_label}</strong>
-          </MarkdownTooltip>
           <MarkdownTooltip
             className="session-thread"
             content={session.thread_label}
+            tooltipWhenOverflow={true}
           >
             <strong>{session.thread_label}</strong>
           </MarkdownTooltip>
@@ -1834,7 +1839,7 @@ const SessionRow = ({
               title="停止能力尚未接入"
               type="button"
             >
-              STOP
+              <span aria-hidden="true" />
             </button>
           )}
         </div>
@@ -2119,6 +2124,7 @@ interface MarkdownTooltipProps {
   readonly children: ReactNode;
   readonly className?: string;
   readonly content: string | null | undefined;
+  readonly tooltipWhenOverflow?: boolean;
 }
 
 interface TooltipAnchorRect {
@@ -2204,16 +2210,32 @@ export const stopTooltipPortalEvent = (event: {
   event.stopPropagation();
 };
 
+/// 判断单行文本是否发生视觉截断。
+export const elementHasInlineOverflow = (
+  element: Pick<HTMLElement, "clientWidth" | "scrollWidth"> | null,
+): boolean => {
+  if (element === null) {
+    return false;
+  }
+
+  return element.scrollWidth > element.clientWidth;
+};
+
 const MarkdownTooltip = ({
   children,
   className,
   content,
+  tooltipWhenOverflow = false,
 }: MarkdownTooltipProps) => {
-  const hasTooltip =
+  const hasTooltipContent =
     content !== null && content !== undefined && content !== "";
+  const [labelOverflows, setLabelOverflows] = useState(false);
+  const hasTooltip =
+    hasTooltipContent && (!tooltipWhenOverflow || labelOverflows);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<TooltipPanelPosition | null>(null);
   const anchorRef = useRef<HTMLDivElement | null>(null);
+  const labelRef = useRef<HTMLSpanElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const portalTarget =
@@ -2249,10 +2271,70 @@ const MarkdownTooltip = ({
     );
   };
 
+  const updateLabelOverflow = (): void => {
+    if (!tooltipWhenOverflow) {
+      setLabelOverflows(false);
+      return;
+    }
+
+    const nextOverflows = elementHasInlineOverflow(labelRef.current);
+    setLabelOverflows((current) =>
+      current === nextOverflows ? current : nextOverflows,
+    );
+  };
+
   const initialMaxWidth =
     typeof window === "undefined"
       ? TOOLTIP_MAX_WIDTH
       : tooltipMaxWidthForViewport(window.innerWidth);
+
+  useLayoutEffect(() => {
+    updateLabelOverflow();
+  }, [content, tooltipWhenOverflow]);
+
+  useEffect(() => {
+    if (!tooltipWhenOverflow) {
+      return;
+    }
+
+    const label = labelRef.current;
+    const anchor = anchorRef.current;
+    const resizeTargets: Element[] = [];
+    if (label !== null) {
+      resizeTargets.push(label);
+    }
+    if (anchor !== null) {
+      resizeTargets.push(anchor);
+    }
+    const handleViewportChange = (): void => {
+      updateLabelOverflow();
+    };
+    window.addEventListener("resize", handleViewportChange);
+
+    if (typeof ResizeObserver === "undefined") {
+      return () => {
+        window.removeEventListener("resize", handleViewportChange);
+      };
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateLabelOverflow();
+    });
+    resizeTargets.forEach((target) => {
+      observer.observe(target);
+    });
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", handleViewportChange);
+    };
+  }, [content, tooltipWhenOverflow]);
+
+  useEffect(() => {
+    if (!hasTooltip && open) {
+      setOpen(false);
+    }
+  }, [hasTooltip, open]);
 
   useLayoutEffect(() => {
     if (!open) {
@@ -2352,7 +2434,9 @@ const MarkdownTooltip = ({
       onMouseEnter={openTooltip}
       onMouseLeave={scheduleCloseTooltip}
     >
-      <span className="markdown-tooltip-label">{children}</span>
+      <span ref={labelRef} className="markdown-tooltip-label">
+        {children}
+      </span>
       {hasTooltip &&
         open &&
         portalTarget !== null &&

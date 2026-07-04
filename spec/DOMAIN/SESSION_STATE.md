@@ -116,7 +116,7 @@ Session 列表 view model 显式暴露 `indent_level`，表示 UI 可展示的�
 
 Thread 标签优先来自 `AgentSession.title`，输出完整清洗后的标题；空标题展示为未命名。
 
-Thread 标签不在 Domain 层按展示宽度截断，视觉换行和布局约束由前端负责。
+Thread 标签不在 Domain 层按展示宽度截断，列表单行截断、tooltip 和布局约束由前端负责。
 
 ## 排序规则
 

@@ -14,6 +14,7 @@ import {
   createPanelSessionCaptureOrderStore,
   createSessionRefreshScheduler,
   elapsedDurationLabel,
+  elementHasInlineOverflow,
   fetchSessionsForSource,
   isLatestSettingsSaveResponse,
   isCodexCliRuntime,
@@ -590,6 +591,176 @@ describe("BuilderPanelApp session refresh", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("renders status icons in a leading column with source and project on the identity line", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const running = sessionItem(
+      sessionKey("project-a", "running"),
+      "codex_app",
+      "running",
+      "运行中",
+    );
+    const completed = sessionItem(
+      sessionKey("project-b", "completed"),
+      "codex_cli",
+      "completed",
+      "已完成",
+    );
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [running, completed],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const rowMain = container.querySelector(".session-row-main");
+    const statusIcons = container.querySelectorAll(".session-status-icon");
+    expect(rowMain?.firstElementChild).toBe(statusIcons[0]);
+    expect(statusIcons).toHaveLength(2);
+    expect(statusIcons[0].getAttribute("aria-label")).toBe("运行中");
+    expect(statusIcons[0].getAttribute("role")).toBe("img");
+    expect(statusIcons[0].getAttribute("title")).toBe("运行中");
+    expect(statusIcons[0].textContent).toBe("");
+    expect(statusIcons[0].querySelector("[aria-hidden='true']")).not.toBeNull();
+    expect(statusIcons[1].getAttribute("aria-label")).toBe("已完成");
+    expect(statusIcons[1].getAttribute("role")).toBe("img");
+    expect(statusIcons[1].textContent).toBe("");
+    expect(
+      container.querySelector('[role="img"][aria-label="运行中"]'),
+    ).not.toBeNull();
+
+    const firstIdentityLine = container.querySelector(".session-identity-line");
+    expect(
+      firstIdentityLine?.querySelector(".session-source")?.textContent,
+    ).toBe("Codex");
+    expect(
+      firstIdentityLine?.querySelector(".session-project")?.textContent,
+    ).toBe("project-a");
+    expect(container.querySelector(".session-thread")?.textContent).toBe(
+      "Thread running",
+    );
+
+    const stopButton = container.querySelector<HTMLButtonElement>(
+      ".session-stop-placeholder",
+    );
+    expect(stopButton?.disabled).toBe(true);
+    expect(stopButton?.getAttribute("aria-label")).toBe("停止占位");
+    expect(stopButton?.getAttribute("title")).toBe("停止能力尚未接入");
+    expect(stopButton?.textContent).toBe("");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("detects inline overflow from rendered text dimensions", () => {
+    expect(elementHasInlineOverflow(null)).toBe(false);
+    expect(elementHasInlineOverflow({ clientWidth: 0, scrollWidth: 0 })).toBe(
+      false,
+    );
+    expect(
+      elementHasInlineOverflow({ clientWidth: 120, scrollWidth: 120 }),
+    ).toBe(false);
+    expect(
+      elementHasInlineOverflow({ clientWidth: 120, scrollWidth: 121 }),
+    ).toBe(true);
+  });
+
+  it("only enables project and thread tooltips when their visible text overflows", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const restoreInlineSize = mockTooltipLabelInlineSize(100, 100);
+    const session = {
+      ...sessionItem(codexAppSessionKey, "codex_app", "running", "运行中"),
+      project_label: "builder-panel",
+      thread_label: "修复 session 摘要 tooltip 多行未生效",
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(SessionStream, {
+            mockUiState: createDefaultMockPanelUiState(),
+            currentTimeMs: 2000,
+            sessions: [session],
+            settings: defaultSettings(),
+            selectedSessionId: null,
+            onCreateFollowupTurn: () => undefined,
+            onDraftChange: () => undefined,
+            onJump: () => undefined,
+            onResolveApproval: () => undefined,
+            onSendReply: () => undefined,
+            onSubmitChoice: () => undefined,
+            onToggleChoice: () => undefined,
+          }),
+        );
+      });
+
+      expect(
+        container.querySelector(".session-project.markdown-tooltip-enabled"),
+      ).toBeNull();
+      expect(
+        container.querySelector(".session-thread.markdown-tooltip-enabled"),
+      ).toBeNull();
+      expect(container.querySelector(".session-project")?.textContent).toBe(
+        "builder-panel",
+      );
+      expect(container.querySelector(".session-thread")?.textContent).toBe(
+        "修复 session 摘要 tooltip 多行未生效",
+      );
+
+      restoreInlineSize.setSize(140, 80);
+      await act(async () => {
+        window.dispatchEvent(new Event("resize"));
+      });
+
+      expect(
+        container.querySelector(".session-project.markdown-tooltip-enabled"),
+      ).not.toBeNull();
+      expect(
+        container.querySelector(".session-thread.markdown-tooltip-enabled"),
+      ).not.toBeNull();
+
+      restoreInlineSize.setSize(80, 100);
+      await act(async () => {
+        window.dispatchEvent(new Event("resize"));
+      });
+
+      expect(
+        container.querySelector(".session-project.markdown-tooltip-enabled"),
+      ).toBeNull();
+      expect(
+        container.querySelector(".session-thread.markdown-tooltip-enabled"),
+      ).toBeNull();
+    } finally {
+      restoreInlineSize.restore();
+      await act(async () => {
+        root.unmount();
+      });
+    }
   });
 
   it("renders full tooltip paragraph even when the row summary is truncated", async () => {
@@ -1303,6 +1474,75 @@ const sessionKey = (projectId: string, conversationId: string): SessionKey => ({
   project_id: { value: projectId },
   conversation_id: { value: conversationId },
 });
+
+const mockTooltipLabelInlineSize = (
+  initialScrollWidth: number,
+  initialClientWidth: number,
+): {
+  readonly restore: () => void;
+  readonly setSize: (scrollWidth: number, clientWidth: number) => void;
+} => {
+  let scrollWidth = initialScrollWidth;
+  let clientWidth = initialClientWidth;
+  const originalScrollWidth = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "scrollWidth",
+  );
+  const originalClientWidth = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "clientWidth",
+  );
+  Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+    configurable: true,
+    get() {
+      return this instanceof Element &&
+        this.classList.contains("markdown-tooltip-label")
+        ? scrollWidth
+        : 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get() {
+      return this instanceof Element &&
+        this.classList.contains("markdown-tooltip-label")
+        ? clientWidth
+        : 0;
+    },
+  });
+
+  return {
+    restore: () => {
+      restorePropertyDescriptor(
+        HTMLElement.prototype,
+        "scrollWidth",
+        originalScrollWidth,
+      );
+      restorePropertyDescriptor(
+        HTMLElement.prototype,
+        "clientWidth",
+        originalClientWidth,
+      );
+    },
+    setSize: (nextScrollWidth, nextClientWidth) => {
+      scrollWidth = nextScrollWidth;
+      clientWidth = nextClientWidth;
+    },
+  };
+};
+
+const restorePropertyDescriptor = (
+  target: object,
+  property: string,
+  descriptor: PropertyDescriptor | undefined,
+): void => {
+  if (descriptor === undefined) {
+    delete (target as Record<string, unknown>)[property];
+    return;
+  }
+
+  Object.defineProperty(target, property, descriptor);
+};
 
 const verifiedUsage = (
   valueLabel: string,
