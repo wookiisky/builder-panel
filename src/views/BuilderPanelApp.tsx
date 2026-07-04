@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -1826,6 +1827,9 @@ const SessionRow = ({
         <MarkdownTooltip
           className="session-summary-tooltip"
           content={summaryParagraph.tooltipText}
+          onTooltipDoubleClick={() => {
+            onJump(session);
+          }}
         >
           {summaryParagraph.visibleText}
         </MarkdownTooltip>
@@ -2124,6 +2128,7 @@ interface MarkdownTooltipProps {
   readonly children: ReactNode;
   readonly className?: string;
   readonly content: string | null | undefined;
+  readonly onTooltipDoubleClick?: () => void;
   readonly tooltipWhenOverflow?: boolean;
 }
 
@@ -2210,6 +2215,37 @@ export const stopTooltipPortalEvent = (event: {
   event.stopPropagation();
 };
 
+/// 判断 tooltip 事件目标是否位于 Markdown 链接内。
+export const isTooltipLinkEventTarget = (
+  target: EventTarget | null,
+): boolean => {
+  if (target instanceof Element) {
+    return target.closest("a") !== null;
+  }
+
+  if (target instanceof Node) {
+    return target.parentElement?.closest("a") !== null;
+  }
+
+  return false;
+};
+
+/// 处理 tooltip 浮层双击；链接区域保留链接默认行为。
+export const handleTooltipPanelDoubleClick = (
+  event: {
+    readonly target: EventTarget | null;
+    stopPropagation: () => void;
+  },
+  onTooltipDoubleClick: (() => void) | undefined,
+): void => {
+  event.stopPropagation();
+  if (isTooltipLinkEventTarget(event.target)) {
+    return;
+  }
+
+  onTooltipDoubleClick?.();
+};
+
 /// 判断单行文本是否发生视觉截断。
 export const elementHasInlineOverflow = (
   element: Pick<HTMLElement, "clientWidth" | "scrollWidth"> | null,
@@ -2225,6 +2261,7 @@ const MarkdownTooltip = ({
   children,
   className,
   content,
+  onTooltipDoubleClick,
   tooltipWhenOverflow = false,
 }: MarkdownTooltipProps) => {
   const hasTooltipContent =
@@ -2451,6 +2488,9 @@ const MarkdownTooltip = ({
               top: position?.top ?? TOOLTIP_EDGE_GAP,
             }}
             onClick={stopTooltipPortalEvent}
+            onDoubleClick={(event: ReactMouseEvent<HTMLDivElement>) => {
+              handleTooltipPanelDoubleClick(event, onTooltipDoubleClick);
+            }}
             onMouseEnter={cancelClose}
             onMouseLeave={scheduleCloseTooltip}
             onMouseDown={stopTooltipPortalEvent}

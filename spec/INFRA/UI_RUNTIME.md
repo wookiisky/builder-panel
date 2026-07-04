@@ -76,6 +76,10 @@ session 来源标记按运行时来源派生并以无填充样式展示：来自
 
 当前输出文本 tooltip 通过视口 fixed 浮层展示，并在下方空间不足时翻到触发文本上方，避免被 session 列表和 panel 容器裁剪。
 
+当前输出文本 tooltip 的非链接区域双击复用 session 行跳回入口；Markdown 链接区域保留链接行为。
+
+项目名、thread 名、选项说明和 action summary tooltip 不声明双击跳回行为。
+
 等待审批和等待用户回复的 session 会自动展示第二行。
 
 完成和失败且可创建后续 turn 的 session 默认视觉上保持单行。

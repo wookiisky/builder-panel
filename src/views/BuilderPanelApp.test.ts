@@ -16,11 +16,13 @@ import {
   elapsedDurationLabel,
   elementHasInlineOverflow,
   fetchSessionsForSource,
+  handleTooltipPanelDoubleClick,
   isLatestSettingsSaveResponse,
   isCodexCliRuntime,
   isCodexAppRuntime,
   isPanelSessionUnfinishedForDisplay,
   defaultHookAgentStatuses,
+  isTooltipLinkEventTarget,
   isHookActionDisabled,
   mergePanelSessionsByCaptureOrder,
   mergePanelWindowStateUpdate,
@@ -822,6 +824,184 @@ describe("BuilderPanelApp session refresh", () => {
     });
   });
 
+  it("jumps when double-clicking the visible summary tooltip panel", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = {
+      ...sessionItem(codexAppSessionKey, "codex_app", "running", "运行中"),
+      actions: ["jump"] as const,
+      summary: {
+        text: "摘要",
+        full_text: "摘要完整内容",
+        truncated: false,
+        max_chars: 120,
+      },
+    };
+    const onJump = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [session],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const summaryTooltip = container.querySelector(".session-summary-tooltip");
+    await act(async () => {
+      summaryTooltip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+
+    const tooltipPanel = document.body.querySelector(".markdown-tooltip-panel");
+    await act(async () => {
+      tooltipPanel?.dispatchEvent(
+        new MouseEvent("dblclick", { bubbles: true, cancelable: true }),
+      );
+    });
+
+    expect(onJump).toHaveBeenCalledTimes(1);
+    expect(onJump).toHaveBeenCalledWith(session);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps markdown link behavior when double-clicking a summary tooltip link", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = {
+      ...sessionItem(codexAppSessionKey, "codex_app", "running", "运行中"),
+      actions: ["jump"] as const,
+      summary: {
+        text: "摘要",
+        full_text: "查看 [链接](https://example.com)",
+        truncated: false,
+        max_chars: 120,
+      },
+    };
+    const onJump = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [session],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const summaryTooltip = container.querySelector(".session-summary-tooltip");
+    await act(async () => {
+      summaryTooltip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+
+    const tooltipLink = document.body.querySelector<HTMLAnchorElement>(
+      ".markdown-tooltip-panel a",
+    );
+    const linkDoubleClick = new MouseEvent("dblclick", {
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = tooltipLink?.dispatchEvent(linkDoubleClick);
+
+    expect(dispatched).toBe(true);
+    expect(linkDoubleClick.defaultPrevented).toBe(false);
+    expect(onJump).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not jump when double-clicking an action summary tooltip", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = sessionItem(
+      codexAppSessionKey,
+      "codex_app",
+      "waiting_for_approval",
+      "等待审批",
+    );
+    const onJump = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [session],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const actionTooltip = container.querySelector(".session-action-tooltip");
+    await act(async () => {
+      actionTooltip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+
+    const tooltipPanel = document.body.querySelector(".markdown-tooltip-panel");
+    await act(async () => {
+      tooltipPanel?.dispatchEvent(
+        new MouseEvent("dblclick", { bubbles: true, cancelable: true }),
+      );
+    });
+
+    expect(onJump).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("runs a queued refresh after the current refresh finishes", async () => {
     const resolvers: Array<() => void> = [];
     const refresh = vi.fn(
@@ -1137,6 +1317,36 @@ describe("BuilderPanelApp session refresh", () => {
     stopTooltipPortalEvent({ stopPropagation });
 
     expect(stopPropagation).toHaveBeenCalledTimes(1);
+  });
+
+  it("detects tooltip link targets from element and text nodes", () => {
+    const anchor = document.createElement("a");
+    const nested = document.createElement("span");
+    const text = document.createTextNode("链接");
+    nested.append(text);
+    anchor.append(nested);
+
+    expect(isTooltipLinkEventTarget(anchor)).toBe(true);
+    expect(isTooltipLinkEventTarget(nested)).toBe(true);
+    expect(isTooltipLinkEventTarget(text)).toBe(true);
+    expect(isTooltipLinkEventTarget(document.createElement("span"))).toBe(
+      false,
+    );
+    expect(isTooltipLinkEventTarget(null)).toBe(false);
+  });
+
+  it("stops tooltip double-clicks and skips callbacks for links", () => {
+    const anchor = document.createElement("a");
+    const stopPropagation = vi.fn();
+    const onTooltipDoubleClick = vi.fn();
+
+    handleTooltipPanelDoubleClick(
+      { target: anchor, stopPropagation },
+      onTooltipDoubleClick,
+    );
+
+    expect(stopPropagation).toHaveBeenCalledTimes(1);
+    expect(onTooltipDoubleClick).not.toHaveBeenCalled();
   });
 
   it("renders full thread label in session detail", async () => {
