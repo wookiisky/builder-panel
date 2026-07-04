@@ -98,9 +98,21 @@ Session 保存当前 turn 的开始时间和结束时间。
 
 `JumpTargetUpdated` 只更新跳回目标。
 
+`HierarchyUpdated` 只更新已有 session 的父级关系和层级深度。
+
+`HierarchyUpdated` 不创建未知 child session，不改变状态、pending interaction、摘要、捕捉序号或跳回目标。
+
+`HierarchyUpdated` 指向自身时清空父级关系。
+
+`HierarchyUpdated` 的层级深度在 reducer 内归一化；没有父级时深度为 0，有父级时深度限制在 1 到 8。
+
 ## View Model
 
 Session 列表 view model 暴露项目标签、thread 标签、对话标签、状态、摘要、更新时间、当前 turn 开始时间、当前 turn 结束时间、用量、动作和行内交互。
+
+Session 列表 view model 显式暴露 `indent_level`，表示 UI 可展示的有效缩进层级。
+
+`indent_level` 当前最多展示 1 级；更深的领域层级在列表中按 1 级缩进呈现。
 
 Thread 标签优先来自 `AgentSession.title`，输出完整清洗后的标题；空标题展示为未命名。
 
@@ -113,6 +125,10 @@ Session 列表按首次捕捉顺序保持稳定。
 新捕捉到的 session 排在已捕捉 session 前面。
 
 已捕捉 session 不因状态、摘要或更新时间变化重排。
+
+存在有效父级关系时，child session 紧跟 parent session 展示。
+
+父级缺失、父级无效或父子关系成环时，相关 session 回退为顶层展示。
 
 捕捉序号相同的异常情况按 `SessionKey` 稳定兜底排序。
 

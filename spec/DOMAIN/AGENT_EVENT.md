@@ -4,7 +4,7 @@
 
 Agent Event 是 adapter 清洗外部 agent payload 后进入 Domain 的统一事件契约。
 
-Agent Event 负责表达会话启动、活动更新、用户输入、审批、回答、交互回写、完成、失败、失联、能力、用量和跳回目标变化。
+Agent Event 负责表达会话启动、活动更新、用户输入、审批、回答、交互回写、完成、失败、失联、能力、用量、跳回目标和会话层级变化。
 
 Agent Event 不保存第三方原始 payload，不复用参考项目 Swift schema，不承担外部协议兼容逻辑。
 
@@ -53,6 +53,8 @@ Agent Event 不保存第三方原始 payload，不复用参考项目 Swift schem
 `UsageUpdated` 表示用量快照变化。
 
 `JumpTargetUpdated` 表示跳回目标变化。
+
+`HierarchyUpdated` 表示已有会话的父会话关系和层级深度变化。
 
 ## 相关测试
 

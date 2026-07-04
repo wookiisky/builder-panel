@@ -108,6 +108,12 @@ session 列表合并 Codex CLI 和 Codex APP session 后按首次捕捉顺序保
 
 新捕捉到的 session 展示在列表顶部。
 
+Codex APP sub agent session 识别到已有 parent session 后，展示在 parent session 下方，并带有少量一级缩进。
+
+更深层级的 Codex APP sub agent 当前仍按一级缩进展示。
+
+无法匹配到已有 parent session 或父子关系异常时，sub agent session 按普通顶层 session 展示。
+
 每次打开 Builder Panel APP 时，session 列表先从进程内空状态开始；Codex APP 可随后通过当前已加载 thread id、`thread/read` 或 `thread/list` 元数据以及 recent active rollout 补出当前 APP thread。
 
 Codex APP 通过已加载 thread id 和 thread 元数据补出当前 APP thread 时，可补出当前 loaded active 空内容运行中 thread；不补出无可信 cwd 的空白 thread。

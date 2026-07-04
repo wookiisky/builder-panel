@@ -50,6 +50,8 @@ view model 动作由 session 状态、pending interaction 和 capability 共同�
 
 session detail view model 显式暴露 pending interaction ID 和 pending interaction 类型。
 
+session list item view model 显式暴露 `indent_level`，UI 只消费该字段，不自行推导父子层级。
+
 session list item view model 显式暴露行内交互摘要。
 
 跳回动作只在 session 具备跳回能力且存在跳回目标时生成。
@@ -79,6 +81,14 @@ Codex APP runtime 在事件入口拒绝 `agent_kind` 不是 Codex APP 的归一�
 Codex APP runtime 收录新的 `thread_id` 后，必须通过注入式回调通知 Codex CLI runtime 清理同 `(cwd, thread_id)` 的孤儿 session；通知必须在更新 `thread_id -> cwd` 映射后立即触发。
 
 Codex APP runtime 必须用 `thread_id -> cwd` 映射统一 hook 通道和 app-server 通道的 `SessionKey`。
+
+Codex APP runtime 可维护 `thread_id -> parent_thread_id` 缓存，用于把 Codex APP sub agent thread 挂到对应已有 parent session 下。
+
+Codex APP parent-only metadata 不得创建 session，只能记录父子关系并等待可信 cwd 或已有 session 补齐。
+
+Codex APP 只有在 child 和 parent 都能解析为已有 session 时，才向 Domain 写入 `HierarchyUpdated`。
+
+Codex APP 清理 thread 缓存时必须同步清理相关 parent-child 缓存；已存在 child session 指向被清理 parent 时必须回退为顶层并发布 session 更新通知。
 
 Codex APP runtime 只能用可信 cwd 建立真实项目 session key；可信 cwd 来源包括 hook payload、app-server message、app-server `thread/read` 或 `thread/list` 元数据和 Codex rollout `session_meta`。
 
@@ -257,6 +267,8 @@ Tauri command 使用进程内 Codex APP runtime 锁收口 Codex APP 状态访问
 前端在 panel 打开期间定时刷新 Codex CLI 和 Codex APP session，避免真实 hook 或 app-server 事件在首次加载后不可见。
 
 Codex APP 后台 metadata、session index 或 rollout 历史补齐已有 session 的可见字段时，后端必须发布 `session_updated` 事件。
+
+Codex APP 写入或清理 session 层级关系时，后端必须发布 `session_updated` 事件。
 
 前端收到实时更新后必须短延迟刷新 session 列表。
 

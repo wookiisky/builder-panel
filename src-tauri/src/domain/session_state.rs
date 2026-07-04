@@ -1,6 +1,6 @@
 //! 会话状态 reducer。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -8,6 +8,8 @@ use crate::domain::agent_event::AgentEvent;
 use crate::domain::agent_interaction::AgentInteraction;
 use crate::domain::agent_session::{AgentSession, SessionKey, SessionStatus};
 use crate::domain::usage::UnixMillis;
+
+const MAX_HIERARCHY_DEPTH: u8 = 8;
 
 /// 所有会话状态。
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -37,12 +39,17 @@ impl SessionState {
 
     /// 按首次捕捉顺序返回 session key，新捕捉到的 session 在前。
     pub fn sorted_session_keys(&self) -> Vec<SessionKey> {
-        let mut sessions = self.sessions.values().collect::<Vec<_>>();
-
-        sessions.sort_by(|left, right| compare_sessions_by_capture_order(left, right));
-        sessions
+        self.sorted_session_entries()
             .into_iter()
-            .map(|session| session.session_key.clone())
+            .map(|entry| entry.session_key)
+            .collect()
+    }
+
+    /// 返回当前有效展示缩进层级。
+    pub fn effective_session_indent_levels(&self) -> BTreeMap<SessionKey, u8> {
+        self.sorted_session_entries()
+            .into_iter()
+            .map(|entry| (entry.session_key, entry.indent_level))
             .collect()
     }
 
@@ -181,7 +188,125 @@ impl SessionState {
                 session.jump_target = event.jump_target;
                 session.updated_at = event.updated_at;
             }
+            AgentEvent::HierarchyUpdated(event) => {
+                let Some(session) = self.sessions.get_mut(&event.session_key) else {
+                    return;
+                };
+                let parent_session_key = event
+                    .parent_session_key
+                    .filter(|parent_key| parent_key != &event.session_key);
+                session.hierarchy_depth =
+                    normalized_hierarchy_depth(parent_session_key.as_ref(), event.hierarchy_depth);
+                session.parent_session_key = parent_session_key;
+                session.updated_at = event.updated_at;
+            }
         }
+    }
+
+    /// 按父子展示顺序返回 session key 与有效缩进。
+    fn sorted_session_entries(&self) -> Vec<SortedSessionEntry> {
+        let mut children_by_parent: BTreeMap<SessionKey, Vec<SessionKey>> = BTreeMap::new();
+        let mut attached_children = BTreeSet::new();
+
+        for (session_key, session) in &self.sessions {
+            let Some(parent_key) = self.valid_parent_key(session_key, session) else {
+                continue;
+            };
+            attached_children.insert(session_key.clone());
+            children_by_parent
+                .entry(parent_key)
+                .or_default()
+                .push(session_key.clone());
+        }
+        for children in children_by_parent.values_mut() {
+            self.sort_session_keys_by_capture_order(children);
+        }
+
+        let mut roots = self
+            .sessions
+            .keys()
+            .filter(|session_key| !attached_children.contains(*session_key))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.sort_session_keys_by_capture_order(&mut roots);
+
+        let mut output = Vec::new();
+        for root in roots {
+            self.push_sorted_session_entries(&root, 0, &children_by_parent, &mut output);
+        }
+
+        output
+    }
+
+    /// 返回当前 session 的有效父级；无父级、父级缺失或存在环时返回空。
+    fn valid_parent_key(
+        &self,
+        session_key: &SessionKey,
+        session: &AgentSession,
+    ) -> Option<SessionKey> {
+        let parent_key = session.parent_session_key.as_ref()?;
+        if parent_key == session_key || !self.sessions.contains_key(parent_key) {
+            return None;
+        }
+        if self.has_parent_cycle(session_key) {
+            return None;
+        }
+
+        Some(parent_key.clone())
+    }
+
+    /// 判断父级链路是否成环。
+    fn has_parent_cycle(&self, session_key: &SessionKey) -> bool {
+        let mut seen = BTreeSet::new();
+        let mut current_key = session_key;
+        loop {
+            if !seen.insert(current_key.clone()) {
+                return true;
+            }
+            let Some(session) = self.sessions.get(current_key) else {
+                return false;
+            };
+            let Some(parent_key) = session.parent_session_key.as_ref() else {
+                return false;
+            };
+            current_key = parent_key;
+        }
+    }
+
+    /// 递归输出父子相邻的排序结果。
+    fn push_sorted_session_entries(
+        &self,
+        session_key: &SessionKey,
+        indent_level: u8,
+        children_by_parent: &BTreeMap<SessionKey, Vec<SessionKey>>,
+        output: &mut Vec<SortedSessionEntry>,
+    ) {
+        output.push(SortedSessionEntry {
+            session_key: session_key.clone(),
+            indent_level,
+        });
+        let Some(children) = children_by_parent.get(session_key) else {
+            return;
+        };
+        let child_indent = indent_level.saturating_add(1);
+        for child_key in children {
+            self.push_sorted_session_entries(child_key, child_indent, children_by_parent, output);
+        }
+    }
+
+    /// 按捕捉顺序排序 key。
+    fn sort_session_keys_by_capture_order(&self, session_keys: &mut [SessionKey]) {
+        session_keys.sort_by(|left_key, right_key| {
+            let left = self
+                .sessions
+                .get(left_key)
+                .expect("left session key should exist");
+            let right = self
+                .sessions
+                .get(right_key)
+                .expect("right session key should exist");
+            compare_sessions_by_capture_order(left, right)
+        });
     }
 
     /// 获取已有 session 或创建占位 session。
@@ -215,6 +340,23 @@ impl SessionState {
         self.next_capture_sequence = self.next_capture_sequence.saturating_add(1);
         session
     }
+}
+
+/// 排序后的 session 条目。
+struct SortedSessionEntry {
+    /// 会话唯一键。
+    session_key: SessionKey,
+    /// 当前有效缩进层级。
+    indent_level: u8,
+}
+
+/// 归一化存储层级。
+fn normalized_hierarchy_depth(parent_key: Option<&SessionKey>, hierarchy_depth: u8) -> u8 {
+    if parent_key.is_none() {
+        return 0;
+    }
+
+    hierarchy_depth.clamp(1, MAX_HIERARCHY_DEPTH)
 }
 
 /// 保留有 pending interaction 的等待状态。
@@ -257,8 +399,9 @@ mod tests {
     use super::SessionState;
     use crate::domain::agent_event::{
         ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, ApprovalRequestedEvent,
-        CapabilitiesUpdatedEvent, DetachedEvent, FailedEvent, InteractionCompletedEvent,
-        SessionStartedEvent, TurnCompletedEvent, UsageUpdatedEvent, UserMessageUpdatedEvent,
+        CapabilitiesUpdatedEvent, DetachedEvent, FailedEvent, HierarchyUpdatedEvent,
+        InteractionCompletedEvent, SessionStartedEvent, TurnCompletedEvent, UsageUpdatedEvent,
+        UserMessageUpdatedEvent,
     };
     use crate::domain::agent_interaction::{
         AnswerInteraction, ApprovalInteraction, ChoiceInteraction, ClipboardFallbackTarget,
@@ -618,6 +761,95 @@ mod tests {
         assert_eq!(state.sorted_session_keys(), vec![third, second, first],);
     }
 
+    #[test]
+    fn hierarchy_update_does_not_create_unknown_child_session() {
+        let parent = session_key("project-a", "parent");
+        let child = session_key("project-a", "child");
+        let state = SessionState::empty()
+            .apply_event(started_event(parent, 1))
+            .apply_event(hierarchy_event(child.clone(), None, 1, 2));
+
+        assert!(!state.sessions.contains_key(&child));
+    }
+
+    #[test]
+    fn sorted_sessions_place_child_after_existing_parent() {
+        let older_parent = session_key("project-a", "older-parent");
+        let child = session_key("project-a", "child");
+        let newer_root = session_key("project-a", "newer-root");
+        let state = SessionState::empty()
+            .apply_event(started_event(older_parent.clone(), 1))
+            .apply_event(started_event(child.clone(), 2))
+            .apply_event(started_event(newer_root.clone(), 3))
+            .apply_event(hierarchy_event(
+                child.clone(),
+                Some(older_parent.clone()),
+                1,
+                4,
+            ));
+
+        assert_eq!(
+            state.sorted_session_keys(),
+            vec![newer_root, older_parent.clone(), child.clone()]
+        );
+        assert_eq!(
+            state.effective_session_indent_levels().get(&child),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn hierarchy_update_keeps_session_behavior_state() {
+        let parent = session_key("project-a", "parent");
+        let child = session_key("project-a", "child");
+        let state = SessionState::empty()
+            .apply_event(started_event(parent.clone(), 1))
+            .apply_event(started_event(child.clone(), 2))
+            .apply_event(approval_event(child.clone(), 3))
+            .apply_event(hierarchy_event(child.clone(), Some(parent), 4, 4));
+        let session = state.sessions.get(&child).expect("child should exist");
+
+        assert_eq!(session.status, SessionStatus::WaitingForApproval);
+        assert!(session.pending_interaction.is_some());
+        assert_eq!(session.capture_sequence, 1);
+        assert_eq!(session.hierarchy_depth, 4);
+        assert_eq!(session.updated_at, UnixMillis::new(4));
+    }
+
+    #[test]
+    fn missing_parent_session_makes_child_top_level() {
+        let parent = session_key("project-a", "missing-parent");
+        let child = session_key("project-a", "child");
+        let state = SessionState::empty()
+            .apply_event(started_event(child.clone(), 1))
+            .apply_event(hierarchy_event(child.clone(), Some(parent), 1, 2));
+
+        assert_eq!(state.sorted_session_keys(), vec![child.clone()]);
+        assert_eq!(
+            state.effective_session_indent_levels().get(&child),
+            Some(&0)
+        );
+    }
+
+    #[test]
+    fn hierarchy_cycle_makes_sessions_top_level() {
+        let first = session_key("project-a", "first");
+        let second = session_key("project-a", "second");
+        let state = SessionState::empty()
+            .apply_event(started_event(first.clone(), 1))
+            .apply_event(started_event(second.clone(), 2))
+            .apply_event(hierarchy_event(first.clone(), Some(second.clone()), 1, 3))
+            .apply_event(hierarchy_event(second.clone(), Some(first.clone()), 1, 4));
+
+        assert_eq!(
+            state.sorted_session_keys(),
+            vec![second.clone(), first.clone()]
+        );
+        let indent_levels = state.effective_session_indent_levels();
+        assert_eq!(indent_levels.get(&first), Some(&0));
+        assert_eq!(indent_levels.get(&second), Some(&0));
+    }
+
     fn session_key(project: &str, conversation: &str) -> SessionKey {
         SessionKey::new(
             AgentKind::CodexCli,
@@ -635,6 +867,20 @@ mod tests {
             summary: None,
             capabilities: SessionCapabilities::none(),
             usage: UsageSnapshot::unavailable(),
+            updated_at: UnixMillis::new(updated_at),
+        })
+    }
+
+    fn hierarchy_event(
+        session_key: SessionKey,
+        parent_session_key: Option<SessionKey>,
+        hierarchy_depth: u8,
+        updated_at: u64,
+    ) -> AgentEvent {
+        AgentEvent::HierarchyUpdated(HierarchyUpdatedEvent {
+            session_key,
+            parent_session_key,
+            hierarchy_depth,
             updated_at: UnixMillis::new(updated_at),
         })
     }

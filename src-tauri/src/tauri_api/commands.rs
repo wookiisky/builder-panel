@@ -1864,6 +1864,7 @@ mod tests {
     fn history_threads_keep_path_only_unresolved_candidates() {
         let threads = vec![CodexAppThreadMetadata {
             id: "unresolved-thread".to_string(),
+            parent_thread_id: None,
             cwd: None,
             name: None,
             preview: None,
@@ -2087,6 +2088,7 @@ mod tests {
     fn thread_metadata(id: &str, cwd: &str) -> CodexAppThreadMetadata {
         CodexAppThreadMetadata {
             id: id.to_string(),
+            parent_thread_id: None,
             cwd: Some(cwd.to_string()),
             name: Some("Thread 1".to_string()),
             preview: Some("已完成".to_string()),

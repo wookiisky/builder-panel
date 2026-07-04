@@ -120,6 +120,8 @@ export interface SessionListItemViewModel {
   readonly actions: readonly UiAction[];
   /// 行内交互展示。
   readonly inline_interaction: InlineInteractionViewModel;
+  /// UI 展示缩进层级。
+  readonly indent_level: number;
 }
 
 /// 行内交互展示。

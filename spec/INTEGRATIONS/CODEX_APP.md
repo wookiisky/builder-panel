@@ -102,6 +102,14 @@ Codex APP thread metadata 的预览文本命中内部提示词过滤规则时，
 
 Codex APP 不恢复 `ephemeral` thread metadata。
 
+Codex APP thread metadata 可清洗 `parentThreadId` 或 `parent_thread_id` 作为子 thread 与父 thread 的关系来源。
+
+Codex APP parent-only thread metadata 只记录 thread 父子关系，不单独创建 session。
+
+Codex APP 只在 child thread 和 parent thread 都能映射到已有 session 时写入 session 层级关系。
+
+Codex APP session 层级关系变化会发布轻量 `session_updated` 事件。
+
 Codex APP `notLoaded` metadata 只折叠已有 session 或待识别 session，不为未知无内容 thread 创建失联 session；已有运行中 session 不因后台 `notLoaded` metadata 降级为失联。
 
 Codex APP path-only thread metadata 不创建新 session；runtime 已有该 thread 可信 cwd 时，path-only metadata 可补齐标题和 rollout path。
@@ -159,6 +167,8 @@ Codex APP hook 权限请求可在 pending approval 摘要中保留清洗后的�
 Codex APP hook `SessionStart` 若只创建了无标题、无摘要、无 pending 的空壳 session，且随后同 thread 的 `UserPromptSubmit` 命中内部提示词模式，该空壳 session 会被清理，不进入 session 列表。
 
 Codex APP 清理内部提示词空壳 session 时，会同步清理该 thread 的 runtime 缓存和 rollout tail 目标，并发布轻量 `session_updated` 事件。
+
+Codex APP 清理空壳 session 时，会同步清理与该 thread 相关的 parent-child 缓存；已有 child session 指向被清理 parent 时会回退为顶层展示。
 
 Codex APP app-server 实时事件可以为当前进程创建 session，即使对应 thread 早于 Builder Panel APP 启动。
 

@@ -86,6 +86,10 @@ Rust Codex APP adapter 测试验证无可信 cwd 的 app-server 实时事件不�
 
 Rust Codex APP adapter 测试验证 app-server thread 元数据可迁移待识别 session，且不覆盖 pending、summary 或状态。
 
+Rust Codex APP adapter 测试验证 parent-only thread metadata 只记录父子关系不创建 session，child 和 parent session 都存在后会发布层级更新。
+
+Rust Codex APP adapter 测试验证清理 parent 空壳 session 会同步清理 child 层级关系。
+
 Rust Codex APP adapter 测试验证 app-server `thread/list` 元数据可在存在真实标题、预览文本或系统错误时创建当前 session。
 
 Rust Codex APP adapter 测试验证当前 loaded `active` thread metadata 即使无标题、无预览也可创建运行中 session、跳回目标和 rollout watch target。
@@ -189,6 +193,8 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 前端 Builder Panel 测试验证合并后的 session 首次捕捉顺序稳定、新 session 插入顶部、统计数量和动作标签。
 
 前端 Builder Panel 测试验证已有 session 摘要刷新后不改变首次捕捉顺序。
+
+前端 Builder Panel 测试验证后端刷新顺序可保持 parent-child 相邻，且 child session 按一级缩进展示。
 
 前端 Builder Panel 测试验证列表刷新调度器在刷新中收到实时事件时会补刷，且连续事件不会无限后延。
 

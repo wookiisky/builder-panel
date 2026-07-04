@@ -393,6 +393,7 @@ button:disabled {
 }
 
 .session-table-row {
+  --session-indent: 0px;
   display: grid;
   gap: 0;
   min-width: 0;
@@ -417,7 +418,7 @@ button:disabled {
   align-items: stretch;
   gap: 8px;
   min-height: 56px;
-  padding: 5px 8px;
+  padding: 5px 8px 5px calc(8px + var(--session-indent));
 }
 
 .session-identity,
@@ -1231,6 +1232,10 @@ button:disabled {
   .session-row,
   .session-row-main {
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .session-row-main {
+    padding-left: calc(8px + min(var(--session-indent), 10px));
   }
 
   .session-row-action.session-row-action-followup {

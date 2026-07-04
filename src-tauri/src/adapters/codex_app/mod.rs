@@ -24,8 +24,9 @@ use crate::adapters::bridge::codec::{
 };
 use crate::domain::agent_event::{
     ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, ApprovalRequestedEvent, DetachedEvent,
-    FailedEvent, InteractionCompletedEvent, JumpTargetUpdatedEvent, SessionStartedEvent,
-    TitleUpdatedEvent, TurnCompletedEvent, UsageUpdatedEvent, UserMessageUpdatedEvent,
+    FailedEvent, HierarchyUpdatedEvent, InteractionCompletedEvent, JumpTargetUpdatedEvent,
+    SessionStartedEvent, TitleUpdatedEvent, TurnCompletedEvent, UsageUpdatedEvent,
+    UserMessageUpdatedEvent,
 };
 use crate::domain::agent_interaction::{
     AgentInteraction, AnswerInteraction, ApprovalInteraction, ChoiceInteraction,
@@ -466,6 +467,8 @@ impl CodexAppAdapter {
 pub struct CodexAppThreadMetadata {
     /// Thread ID。
     pub id: String,
+    /// 可选父 thread ID。
+    pub parent_thread_id: Option<String>,
     /// 可选真实 cwd；缺失时只能作为 rollout path 候选。
     pub cwd: Option<String>,
     /// 可选标题。
@@ -496,11 +499,17 @@ impl CodexAppThreadMetadata {
             .as_object()
             .ok_or(CodexAppAdapterError::InvalidField("thread"))?;
         let id = required_string(object.get("id"), "thread.id")?;
+        let parent_thread_id = optional_non_empty_string(
+            object
+                .get("parentThreadId")
+                .or_else(|| object.get("parent_thread_id")),
+            "thread.parentThreadId",
+        )?;
         let cwd = optional_non_empty_string(object.get("cwd"), "thread.cwd")?;
         let name = optional_thread_title(object.get("name"), "thread.name")?;
         let preview = optional_preview(object.get("preview"), "thread.preview")?;
         let path = optional_non_empty_string(object.get("path"), "thread.path")?.map(PathBuf::from);
-        if cwd.is_none() && path.is_none() {
+        if cwd.is_none() && path.is_none() && parent_thread_id.is_none() {
             return Err(CodexAppAdapterError::MissingField("thread.cwd"));
         }
         let status_type = thread_metadata_status_type(object.get("status"))?;
@@ -511,6 +520,7 @@ impl CodexAppThreadMetadata {
 
         Ok(Self {
             id,
+            parent_thread_id,
             cwd,
             name,
             preview,
@@ -634,6 +644,8 @@ pub struct CodexAppRuntime {
     thread_cwds: BTreeMap<String, String>,
     /// Codex APP thread 元数据缓存。
     thread_metadata: BTreeMap<String, CodexAppThreadMetadata>,
+    /// 子 thread 到父 thread 的清洗后映射。
+    child_thread_parents: BTreeMap<String, String>,
     /// Codex APP thread 到 rollout path 的映射。
     thread_rollout_paths: BTreeMap<String, PathBuf>,
     /// 当前 turn 已累积的 Agent 输出。
@@ -664,6 +676,7 @@ impl CodexAppRuntime {
             pending_rpc_submissions: BTreeSet::new(),
             thread_cwds: BTreeMap::new(),
             thread_metadata: BTreeMap::new(),
+            child_thread_parents: BTreeMap::new(),
             thread_rollout_paths: BTreeMap::new(),
             current_turn_agent_outputs: BTreeMap::new(),
             empty_shell_candidates: BTreeSet::new(),
@@ -827,7 +840,8 @@ impl CodexAppRuntime {
         if let Some(callback) = self.orphan_eviction_callback.clone() {
             callback(&payload.cwd, &payload.session_id, updated_at);
         }
-        let _ = self.migrate_codex_app_thread_to_cwd(&payload.session_id, &payload.cwd)?;
+        let _ =
+            self.migrate_codex_app_thread_to_cwd(&payload.session_id, &payload.cwd, updated_at)?;
         let events =
             CodexAppAdapter::events_from_hook_payload(&request.request_id, payload, updated_at)
                 .map_err(|_| protocol_error("Codex APP hook payload 不受支持"))?;
@@ -882,7 +896,7 @@ impl CodexAppRuntime {
             .as_object()
             .ok_or_else(|| protocol_error("Codex APP app-server 消息不是对象"))?;
         if let Some((thread_id, cwd)) = self.record_message_thread_cwd(message) {
-            let _ = self.migrate_codex_app_thread_to_cwd(&thread_id, &cwd)?;
+            let _ = self.migrate_codex_app_thread_to_cwd(&thread_id, &cwd, updated_at)?;
         }
         if let Some(metadata) = message_thread_metadata(message) {
             self.apply_thread_metadata(metadata, updated_at)?;
@@ -1233,6 +1247,7 @@ impl CodexAppRuntime {
             if let Some(notification) = notification {
                 self.update_sink.publish_session_update(notification);
             }
+            self.try_apply_related_thread_hierarchies(&thread_id, updated_at)?;
         }
         Ok(())
     }
@@ -1256,6 +1271,7 @@ impl CodexAppRuntime {
         self.thread_cwds.remove(&thread_id);
         self.thread_metadata.remove(&thread_id);
         self.thread_rollout_paths.remove(&thread_id);
+        self.clear_thread_hierarchy_references(&thread_id, session_key, updated_at);
         self.current_turn_agent_outputs.remove(&thread_id);
         self.pending_followup_turns.remove(session_key);
         self.pending_hook_approvals
@@ -1428,11 +1444,13 @@ impl CodexAppRuntime {
         }
 
         let thread_id = metadata.id.clone();
+        self.record_thread_parent(&metadata);
         let Some(cwd) = metadata
             .cwd
             .clone()
             .or_else(|| self.known_cwd_for_thread(&thread_id))
         else {
+            self.try_apply_related_thread_hierarchies(&thread_id, updated_at)?;
             return Ok(());
         };
         let target_key = session_key(&cwd, &thread_id);
@@ -1470,7 +1488,7 @@ impl CodexAppRuntime {
         if let Some(callback) = self.orphan_eviction_callback.clone() {
             callback(&cwd, &thread_id, updated_at);
         }
-        let migrated = self.migrate_codex_app_thread_to_cwd(&thread_id, &cwd)?;
+        let migrated = self.migrate_codex_app_thread_to_cwd(&thread_id, &cwd, updated_at)?;
 
         if let Some(session) = self.session_state.sessions.get_mut(&target_key) {
             let mut changed = migrated;
@@ -1509,6 +1527,7 @@ impl CodexAppRuntime {
             if changed {
                 self.publish_codex_app_session_update(&target_key, updated_at);
             }
+            self.try_apply_related_thread_hierarchies(&thread_id, updated_at)?;
             return Ok(());
         }
 
@@ -1523,7 +1542,8 @@ impl CodexAppRuntime {
             updated_at,
         }))?;
 
-        self.apply_thread_metadata_status(&target_key, &metadata.status_type, summary, updated_at)
+        self.apply_thread_metadata_status(&target_key, &metadata.status_type, summary, updated_at)?;
+        self.try_apply_related_thread_hierarchies(&thread_id, updated_at)
     }
 
     /// 返回 runtime 已信任的 thread cwd。
@@ -1555,6 +1575,135 @@ impl CodexAppRuntime {
                 key.agent_kind == AgentKind::CodexApp && key.conversation_id.value == thread_id
             })
             .cloned()
+    }
+
+    /// 记录清洗后的父子 thread 关系。
+    fn record_thread_parent(&mut self, metadata: &CodexAppThreadMetadata) {
+        let Some(parent_thread_id) = metadata.parent_thread_id.as_ref() else {
+            return;
+        };
+        if parent_thread_id == &metadata.id {
+            return;
+        }
+
+        self.child_thread_parents
+            .insert(metadata.id.clone(), parent_thread_id.clone());
+    }
+
+    /// 清理指向已移除 thread 的父子关系。
+    fn clear_thread_hierarchy_references(
+        &mut self,
+        removed_thread_id: &str,
+        removed_session_key: &SessionKey,
+        updated_at: UnixMillis,
+    ) {
+        self.child_thread_parents.remove(removed_thread_id);
+        self.child_thread_parents
+            .retain(|_, parent_thread_id| parent_thread_id != removed_thread_id);
+
+        let child_session_keys = self
+            .session_state
+            .sessions
+            .iter()
+            .filter_map(|(session_key, session)| {
+                let parent_key = session.parent_session_key.as_ref()?;
+                if parent_key == removed_session_key
+                    || parent_key.conversation_id.value == removed_thread_id
+                {
+                    Some(session_key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        for child_session_key in child_session_keys {
+            if let Some(session) = self.session_state.sessions.get_mut(&child_session_key) {
+                session.parent_session_key = None;
+                session.hierarchy_depth = 0;
+                session.updated_at = updated_at;
+            }
+            self.publish_codex_app_session_update(&child_session_key, updated_at);
+        }
+    }
+
+    /// 尝试应用与指定 thread 相关的层级关系。
+    fn try_apply_related_thread_hierarchies(
+        &mut self,
+        thread_id: &str,
+        updated_at: UnixMillis,
+    ) -> Result<(), AppError> {
+        let related_child_ids = self
+            .child_thread_parents
+            .iter()
+            .filter_map(|(child_thread_id, parent_thread_id)| {
+                if child_thread_id == thread_id || parent_thread_id == thread_id {
+                    Some(child_thread_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        for child_thread_id in related_child_ids {
+            self.try_apply_thread_hierarchy(&child_thread_id, updated_at)?;
+        }
+
+        Ok(())
+    }
+
+    /// 尝试将单个 child thread 挂到已确认的父 session 下。
+    fn try_apply_thread_hierarchy(
+        &mut self,
+        child_thread_id: &str,
+        updated_at: UnixMillis,
+    ) -> Result<(), AppError> {
+        let Some(child_session_key) = self.session_key_for_thread(child_thread_id) else {
+            return Ok(());
+        };
+        let Some(parent_thread_id) = self.child_thread_parents.get(child_thread_id).cloned() else {
+            return Ok(());
+        };
+        let Some(parent_session_key) = self.parent_session_key_for_thread(&parent_thread_id) else {
+            return Ok(());
+        };
+        if parent_session_key == child_session_key {
+            return Ok(());
+        }
+        let next_depth = self
+            .session_state
+            .sessions
+            .get(&parent_session_key)
+            .map(|session| session.hierarchy_depth.saturating_add(1).max(1))
+            .unwrap_or(1);
+
+        if self
+            .session_state
+            .sessions
+            .get(&child_session_key)
+            .is_some_and(|session| {
+                session.parent_session_key.as_ref() == Some(&parent_session_key)
+                    && session.hierarchy_depth == next_depth
+            })
+        {
+            return Ok(());
+        }
+
+        self.apply_event_direct(AgentEvent::HierarchyUpdated(HierarchyUpdatedEvent {
+            session_key: child_session_key,
+            parent_session_key: Some(parent_session_key),
+            hierarchy_depth: next_depth,
+            updated_at,
+        }))
+    }
+
+    /// 根据父 thread ID 获取可信父 session key。
+    fn parent_session_key_for_thread(&self, parent_thread_id: &str) -> Option<SessionKey> {
+        self.session_key_for_thread(parent_thread_id).or_else(|| {
+            self.thread_cwds
+                .get(parent_thread_id)
+                .map(|cwd| session_key(cwd, parent_thread_id))
+                .filter(|session_key| self.session_state.sessions.contains_key(session_key))
+        })
     }
 
     /// 按 app-server thread 元数据受控折叠 session 状态。
@@ -1730,7 +1879,7 @@ impl CodexAppRuntime {
         if let Some(callback) = self.orphan_eviction_callback.clone() {
             callback(cwd, thread_id, updated_at);
         }
-        self.migrate_codex_app_thread_to_cwd(thread_id, cwd)
+        self.migrate_codex_app_thread_to_cwd(thread_id, cwd, updated_at)
     }
 
     fn reserve_rpc_submission(&mut self, interaction_id: &InteractionId) -> Result<(), AppError> {
@@ -1874,6 +2023,7 @@ impl CodexAppRuntime {
         &mut self,
         thread_id: &str,
         cwd: &str,
+        updated_at: UnixMillis,
     ) -> Result<bool, AppError> {
         let target_key = session_key(cwd, thread_id);
         let stale_keys = self
@@ -1890,8 +2040,9 @@ impl CodexAppRuntime {
 
         let mut changed = false;
         for stale_key in stale_keys {
-            changed = self.migrate_session_key(&stale_key, &target_key)? || changed;
+            changed = self.migrate_session_key(&stale_key, &target_key, updated_at)? || changed;
         }
+        self.try_apply_related_thread_hierarchies(thread_id, updated_at)?;
 
         Ok(changed)
     }
@@ -1900,6 +2051,7 @@ impl CodexAppRuntime {
         &mut self,
         stale_key: &SessionKey,
         target_key: &SessionKey,
+        updated_at: UnixMillis,
     ) -> Result<bool, AppError> {
         let Some(mut stale_session) = self.session_state.sessions.remove(stale_key) else {
             return Ok(false);
@@ -1941,6 +2093,10 @@ impl CodexAppRuntime {
             if target_session.jump_target.is_none() {
                 target_session.jump_target = stale_session.jump_target;
             }
+            if target_session.parent_session_key.is_none() {
+                target_session.parent_session_key = stale_session.parent_session_key;
+                target_session.hierarchy_depth = stale_session.hierarchy_depth;
+            }
             if target_session.updated_at < stale_session.updated_at {
                 target_session.status = stale_session.status;
                 target_session.usage = stale_session.usage;
@@ -1969,6 +2125,25 @@ impl CodexAppRuntime {
             if pending.session_key == *stale_key {
                 pending.session_key = target_key.clone();
             }
+        }
+        let child_keys = self
+            .session_state
+            .sessions
+            .iter()
+            .filter_map(|(session_key, session)| {
+                if session.parent_session_key.as_ref() == Some(stale_key) {
+                    Some(session_key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        for child_key in child_keys {
+            if let Some(session) = self.session_state.sessions.get_mut(&child_key) {
+                session.parent_session_key = Some(target_key.clone());
+                session.updated_at = updated_at;
+            }
+            self.publish_codex_app_session_update(&child_key, updated_at);
         }
         if let Some(prompt) = self.pending_followup_turns.remove(stale_key) {
             self.pending_followup_turns
@@ -3232,6 +3407,7 @@ fn event_updated_at(event: &AgentEvent) -> UnixMillis {
         AgentEvent::CapabilitiesUpdated(event) => event.updated_at,
         AgentEvent::UsageUpdated(event) => event.updated_at,
         AgentEvent::JumpTargetUpdated(event) => event.updated_at,
+        AgentEvent::HierarchyUpdated(event) => event.updated_at,
     }
 }
 
@@ -3774,7 +3950,8 @@ fn event_makes_session_visible(event: &AgentEvent) -> bool {
         }
         AgentEvent::CapabilitiesUpdated(_)
         | AgentEvent::UsageUpdated(_)
-        | AgentEvent::JumpTargetUpdated(_) => false,
+        | AgentEvent::JumpTargetUpdated(_)
+        | AgentEvent::HierarchyUpdated(_) => false,
     }
 }
 
@@ -4758,6 +4935,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("真实显示名称很长".to_string()),
                     preview: None,
@@ -4892,6 +5070,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: None,
                     name: Some("历史标题".to_string()),
                     preview: None,
@@ -4906,6 +5085,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "unrelated-thread".to_string(),
+                    parent_thread_id: None,
                     cwd: None,
                     name: Some("无关标题".to_string()),
                     preview: None,
@@ -4930,6 +5110,7 @@ mod tests {
     fn session_index_thread_name_overrides_app_server_model_name() {
         let mut metadata = vec![CodexAppThreadMetadata {
             id: "thread-1".to_string(),
+            parent_thread_id: None,
             cwd: Some("/tmp/builder-panel".to_string()),
             name: Some("gpt-5.5".to_string()),
             preview: None,
@@ -4962,6 +5143,7 @@ mod tests {
     fn session_index_thread_name_ignores_model_name() {
         let mut metadata = vec![CodexAppThreadMetadata {
             id: "thread-1".to_string(),
+            parent_thread_id: None,
             cwd: Some("/tmp/builder-panel".to_string()),
             name: None,
             preview: None,
@@ -5006,6 +5188,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("说明身份".to_string()),
                     preview: None,
@@ -5049,6 +5232,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("说明身份".to_string()),
                     preview: None,
@@ -5130,6 +5314,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("真实显示名称".to_string()),
                     preview: None,
@@ -5166,6 +5351,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: None,
                     preview: None,
@@ -5180,6 +5366,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("真实显示名称".to_string()),
                     preview: None,
@@ -5677,6 +5864,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("Builder Panel".to_string()),
                     preview: Some("历史预览".to_string()),
@@ -5738,6 +5926,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: None,
                     preview: None,
@@ -5756,6 +5945,198 @@ mod tests {
         assert!(notifications.len() > notification_count);
         assert!(notifications.iter().any(|notification| {
             notification.session_key == real_key && notification.updated_at == UnixMillis::new(2)
+        }));
+    }
+
+    #[test]
+    fn parent_only_thread_metadata_records_relation_without_creating_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "child-thread".to_string(),
+                    parent_thread_id: Some("parent-thread".to_string()),
+                    cwd: None,
+                    name: None,
+                    preview: None,
+                    path: None,
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("parent-only metadata should apply");
+
+        assert!(runtime.session_state().sessions.is_empty());
+        assert_eq!(
+            runtime.child_thread_parents.get("child-thread"),
+            Some(&"parent-thread".to_string())
+        );
+    }
+
+    #[test]
+    fn child_thread_metadata_attaches_after_parent_session_exists() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_loaded_thread_metadata(
+                thread_metadata_with_cwd("child-thread", "/tmp/builder-panel"),
+                UnixMillis::new(1),
+            )
+            .expect("child should apply");
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "child-thread".to_string(),
+                    parent_thread_id: Some("parent-thread".to_string()),
+                    cwd: None,
+                    name: None,
+                    preview: None,
+                    path: None,
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(2),
+            )
+            .expect("relation should apply");
+
+        let child_key = session_key("/tmp/builder-panel", "child-thread");
+        assert_eq!(
+            runtime
+                .session_state()
+                .sessions
+                .get(&child_key)
+                .expect("child should exist")
+                .parent_session_key,
+            None
+        );
+
+        runtime
+            .apply_loaded_thread_metadata(
+                thread_metadata_with_cwd("parent-thread", "/tmp/builder-panel"),
+                UnixMillis::new(3),
+            )
+            .expect("parent should apply");
+
+        let parent_key = session_key("/tmp/builder-panel", "parent-thread");
+        let child = runtime
+            .session_state()
+            .sessions
+            .get(&child_key)
+            .expect("child should exist");
+        assert_eq!(child.parent_session_key, Some(parent_key));
+        assert_eq!(child.hierarchy_depth, 1);
+    }
+
+    #[test]
+    fn hierarchy_only_change_publishes_session_update() {
+        let sink = Arc::new(RecordingSessionUpdateSink::default());
+        let mut runtime = CodexAppRuntime::with_update_sink(sink.clone());
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "parent-thread".to_string(),
+                    parent_thread_id: None,
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: None,
+                    preview: None,
+                    path: None,
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("parent should apply");
+        runtime
+            .apply_loaded_thread_metadata(
+                thread_metadata_with_cwd("child-thread", "/tmp/builder-panel"),
+                UnixMillis::new(2),
+            )
+            .expect("child should apply");
+        let notification_count = sink.notifications().len();
+
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "child-thread".to_string(),
+                    parent_thread_id: Some("parent-thread".to_string()),
+                    cwd: None,
+                    name: None,
+                    preview: None,
+                    path: None,
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(3),
+            )
+            .expect("relation should apply");
+
+        let child_key = session_key("/tmp/builder-panel", "child-thread");
+        let notifications = sink.notifications();
+        assert!(notifications.len() > notification_count);
+        assert!(notifications.iter().any(|notification| {
+            notification.session_key == child_key && notification.updated_at == UnixMillis::new(3)
+        }));
+    }
+
+    #[test]
+    fn removing_parent_shell_clears_existing_child_hierarchy() {
+        let sink = Arc::new(RecordingSessionUpdateSink::default());
+        let mut runtime = CodexAppRuntime::with_update_sink(sink.clone());
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "parent-thread".to_string(),
+                    parent_thread_id: None,
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: None,
+                    preview: None,
+                    path: None,
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("parent should apply");
+        runtime
+            .apply_loaded_thread_metadata(
+                thread_metadata_with_cwd("child-thread", "/tmp/builder-panel"),
+                UnixMillis::new(2),
+            )
+            .expect("child should apply");
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "child-thread".to_string(),
+                    parent_thread_id: Some("parent-thread".to_string()),
+                    cwd: None,
+                    name: None,
+                    preview: None,
+                    path: None,
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                },
+                UnixMillis::new(3),
+            )
+            .expect("relation should apply");
+        let parent_key = session_key("/tmp/builder-panel", "parent-thread");
+        let child_key = session_key("/tmp/builder-panel", "child-thread");
+        let notification_count = sink.notifications().len();
+
+        runtime.remove_empty_shell_session(&parent_key, UnixMillis::new(4));
+
+        let child = runtime
+            .session_state()
+            .sessions
+            .get(&child_key)
+            .expect("child should remain");
+        assert_eq!(child.parent_session_key, None);
+        assert_eq!(child.hierarchy_depth, 0);
+        let notifications = sink.notifications();
+        assert!(notifications.len() > notification_count);
+        assert!(notifications.iter().any(|notification| {
+            notification.session_key == child_key && notification.updated_at == UnixMillis::new(4)
         }));
     }
 
@@ -5818,6 +6199,7 @@ mod tests {
             .apply_loaded_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("Thread 1".to_string()),
                     preview: Some("最新输出".to_string()),
@@ -5856,6 +6238,7 @@ mod tests {
             .apply_loaded_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: None,
                     preview: None,
@@ -5902,6 +6285,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: None,
                     preview: None,
@@ -5925,6 +6309,7 @@ mod tests {
             .apply_loaded_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("Suggestions".to_string()),
                     preview: Some(
@@ -5951,6 +6336,7 @@ mod tests {
             .apply_loaded_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: None,
                     preview: None,
@@ -5969,6 +6355,7 @@ mod tests {
             .apply_loaded_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: None,
                     preview: Some(
@@ -5995,6 +6382,7 @@ mod tests {
             .apply_loaded_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("Thread 1".to_string()),
                     preview: Some("最新输出".to_string()),
@@ -6017,6 +6405,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: None,
                     preview: None,
@@ -6044,6 +6433,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: None,
                     preview: Some("   ".to_string()),
@@ -6066,6 +6456,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: None,
                     preview: None,
@@ -6088,6 +6479,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: None,
                     preview: None,
@@ -6115,6 +6507,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("Thread 1".to_string()),
                     preview: Some("运行中".to_string()),
@@ -6129,6 +6522,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("Thread 1".to_string()),
                     preview: Some("最终输出".to_string()),
@@ -6391,6 +6785,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-1".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("Thread 1".to_string()),
                     preview: Some("正在处理".to_string()),
@@ -7604,6 +7999,7 @@ mod tests {
             .apply_thread_metadata(
                 CodexAppThreadMetadata {
                     id: "thread-app".to_string(),
+                    parent_thread_id: None,
                     cwd: Some("/tmp/builder-panel".to_string()),
                     name: Some("codex app".to_string()),
                     preview: None,
@@ -7704,6 +8100,7 @@ mod tests {
     fn thread_metadata_with_cwd(id: &str, cwd: &str) -> CodexAppThreadMetadata {
         CodexAppThreadMetadata {
             id: id.to_string(),
+            parent_thread_id: None,
             cwd: Some(cwd.to_string()),
             name: Some("可展示 thread".to_string()),
             preview: None,

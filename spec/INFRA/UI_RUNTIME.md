@@ -18,6 +18,10 @@ Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
 
 刷新时新捕捉到的 session 插入列表顶部；已捕捉 session 的状态或更新时间变化不触发重排。
 
+前端跨来源合并 session 时保持首次捕捉顺序；当后端已把 Codex APP sub agent 排在 parent 下方时，前端把该 parent-child 相邻段作为不可拆散的展示块。
+
+前端 session 行按 `indent_level` 设置左侧缩进，当前最多展示 1 级缩进。
+
 前端读取 session 时按来源独立收敛失败；单一来源失败不会阻断其它来源展示。
 
 前端 session 列表刷新由统一调度器收口定时刷新和实时事件刷新。

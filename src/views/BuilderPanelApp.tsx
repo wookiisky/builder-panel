@@ -3,6 +3,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -947,23 +948,87 @@ export const fetchSessionsForSource = async (
   }
 };
 
-/// 按首次捕捉顺序合并 session，新的 session 放到列表顶部。
+type SessionOrderBlock = {
+  readonly sessions: readonly PanelSessionListItem[];
+  readonly memberIds: ReadonlySet<string>;
+};
+
+/// 按后端返回顺序把 Codex APP parent-child session 合成不可拆散的展示块。
+const sessionOrderBlocks = (
+  sessions: readonly PanelSessionListItem[],
+): readonly SessionOrderBlock[] => {
+  const blocks: SessionOrderBlock[] = [];
+  let currentBlock: PanelSessionListItem[] = [];
+
+  const flushCurrentBlock = () => {
+    if (currentBlock.length === 0) {
+      return;
+    }
+    blocks.push({
+      sessions: currentBlock,
+      memberIds: new Set(currentBlock.map(panelSessionToId)),
+    });
+    currentBlock = [];
+  };
+
+  for (const session of sessions) {
+    const canAttachToCurrentCodexAppBlock =
+      session.runtimeSource === "codex_app" &&
+      session.indent_level > 0 &&
+      currentBlock[0]?.runtimeSource === "codex_app";
+    if (!canAttachToCurrentCodexAppBlock) {
+      flushCurrentBlock();
+    }
+    currentBlock.push(session);
+  }
+
+  flushCurrentBlock();
+  return blocks;
+};
+
+/// 按首次捕捉顺序合并 session，并保持 Codex APP 父子块相邻。
 export const mergePanelSessionsByCaptureOrder = (
   previousSessions: readonly PanelSessionListItem[],
   nextSessions: readonly PanelSessionListItem[],
 ): readonly PanelSessionListItem[] => {
   const previousIds = new Set(previousSessions.map(panelSessionToId));
-  const nextById = new Map(
-    nextSessions.map((session) => [panelSessionToId(session), session]),
-  );
-  const newlyCaptured = nextSessions.filter(
-    (session) => !previousIds.has(panelSessionToId(session)),
-  );
-  const existingInCaptureOrder = previousSessions
-    .map((session) => nextById.get(panelSessionToId(session)) ?? null)
-    .filter((session) => session !== null);
+  const blocks = sessionOrderBlocks(nextSessions);
+  const blockIndexBySessionId = new Map<string, number>();
+  blocks.forEach((block, blockIndex) => {
+    block.memberIds.forEach((sessionId) => {
+      blockIndexBySessionId.set(sessionId, blockIndex);
+    });
+  });
 
-  return [...newlyCaptured, ...existingInCaptureOrder];
+  const emittedBlockIndexes = new Set<number>();
+  const mergedSessions: PanelSessionListItem[] = [];
+  const emitBlock = (blockIndex: number) => {
+    if (emittedBlockIndexes.has(blockIndex)) {
+      return;
+    }
+    emittedBlockIndexes.add(blockIndex);
+    mergedSessions.push(...blocks[blockIndex].sessions);
+  };
+
+  blocks.forEach((block, blockIndex) => {
+    const isNewBlock = [...block.memberIds].every(
+      (sessionId) => !previousIds.has(sessionId),
+    );
+    if (isNewBlock) {
+      emitBlock(blockIndex);
+    }
+  });
+
+  for (const previousSession of previousSessions) {
+    const blockIndex = blockIndexBySessionId.get(
+      panelSessionToId(previousSession),
+    );
+    if (blockIndex !== undefined) {
+      emitBlock(blockIndex);
+    }
+  }
+
+  return mergedSessions;
 };
 
 /// 统计等待和运行中的 session 数量。
@@ -1640,6 +1705,9 @@ const SessionRow = ({
   const actionSummaryTooltip =
     interaction.summary ?? summaryParagraph.tooltipText;
   const sideLabel = sessionSideTimeLabel(session, currentTimeMs);
+  const rowStyle = {
+    "--session-indent": `${Math.min(session.indent_level, 1) * 14}px`,
+  } as CSSProperties;
 
   return (
     <article
@@ -1648,6 +1716,7 @@ const SessionRow = ({
           ? "session-table-row session-table-row-selected"
           : "session-table-row"
       }
+      style={rowStyle}
       onClick={() => {
         onJump(session);
       }}

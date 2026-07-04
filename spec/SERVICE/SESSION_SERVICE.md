@@ -44,6 +44,8 @@ Session view model 的 `TextDisplay` 同时提供截断展示文本和当前 vie
 
 Session 列表 view model 提供当前 turn 开始时间和结束时间，供前端展示运行耗时和结束后的相对时间。
 
+Session 列表 view model 提供 `indent_level`，供前端按后端已计算的有效层级展示少量缩进。
+
 前端 session 行可见摘要只展示最后一段，并按列表展示上限截断。
 
 前端 session 行摘要 tooltip 使用 `TextDisplay.full_text` 最近若干段完整文本，段数由展示设置决定。
@@ -61,6 +63,8 @@ Session 状态主事实位于 `SessionState`。
 同一个 `SessionKey` 的重复读取不会改变 runtime 状态。
 
 列表排序以 Domain reducer 的排序规则为准。
+
+前端不重新计算 parent-child 排序；Session Service 输出的列表顺序已经包含 Domain 的父子相邻规则。
 
 ## 错误收敛
 

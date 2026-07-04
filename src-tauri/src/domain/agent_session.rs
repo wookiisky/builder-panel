@@ -181,6 +181,11 @@ pub struct AgentSession {
     pub last_error: Option<AppError>,
     /// 可选跳回目标。
     pub jump_target: Option<JumpTarget>,
+    /// 可选父会话，用于展示由当前会话派生出的子 Agent。
+    pub parent_session_key: Option<SessionKey>,
+    /// 清洗后的层级深度。
+    #[serde(default)]
+    pub hierarchy_depth: u8,
     /// 首次被当前状态捕捉到的稳定顺序。
     #[serde(default)]
     pub capture_sequence: u64,
@@ -212,6 +217,8 @@ impl AgentSession {
             pending_interaction: None,
             last_error: None,
             jump_target: None,
+            parent_session_key: None,
+            hierarchy_depth: 0,
             capture_sequence: 0,
             started_at: updated_at,
             completed_at: None,

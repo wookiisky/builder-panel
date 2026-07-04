@@ -160,6 +160,19 @@ pub struct JumpTargetUpdatedEvent {
     pub updated_at: UnixMillis,
 }
 
+/// 会话层级更新事件。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct HierarchyUpdatedEvent {
+    /// 会话唯一键。
+    pub session_key: SessionKey,
+    /// 可选父会话。
+    pub parent_session_key: Option<SessionKey>,
+    /// 清洗后的层级深度。
+    pub hierarchy_depth: u8,
+    /// 事件更新时间。
+    pub updated_at: UnixMillis,
+}
+
 /// 归一后的 agent 事件。
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -190,6 +203,8 @@ pub enum AgentEvent {
     UsageUpdated(UsageUpdatedEvent),
     /// 跳回目标更新。
     JumpTargetUpdated(JumpTargetUpdatedEvent),
+    /// 会话层级更新。
+    HierarchyUpdated(HierarchyUpdatedEvent),
 }
 
 impl AgentEvent {
@@ -209,6 +224,7 @@ impl AgentEvent {
             Self::CapabilitiesUpdated(event) => &event.session_key,
             Self::UsageUpdated(event) => &event.session_key,
             Self::JumpTargetUpdated(event) => &event.session_key,
+            Self::HierarchyUpdated(event) => &event.session_key,
         }
     }
 }

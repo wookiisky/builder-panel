@@ -277,6 +277,46 @@ describe("BuilderPanelApp session refresh", () => {
     expect(refreshed[1].summary.full_text).toBe("新的 Agent 摘要");
   });
 
+  it("keeps Codex APP parent-child block together without reordering unrelated CLI sessions", () => {
+    const parent = sessionItem(
+      sessionKey("project-a", "parent"),
+      "codex_app",
+      "running",
+      "运行中",
+      1000,
+    );
+    const cli = sessionItem(
+      sessionKey("project-b", "cli"),
+      "codex_cli",
+      "running",
+      "运行中",
+      1000,
+    );
+    const child = {
+      ...sessionItem(
+        sessionKey("project-a", "child"),
+        "codex_app",
+        "running",
+        "运行中",
+        1000,
+      ),
+      indent_level: 1,
+    };
+    const previous = mergePanelSessionsByCaptureOrder([], [parent, cli]);
+    const refreshed = mergePanelSessionsByCaptureOrder(previous, [
+      parent,
+      child,
+      cli,
+    ]);
+
+    expect(refreshed.map((session) => session.conversation_label)).toEqual([
+      "parent",
+      "child",
+      "cli",
+    ]);
+    expect(refreshed[1].indent_level).toBe(1);
+  });
+
   it("renders the refreshed list row summary for the same session", async () => {
     const reactActGlobal = globalThis as typeof globalThis & {
       IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -318,6 +358,57 @@ describe("BuilderPanelApp session refresh", () => {
       root.render(renderStream([refreshed]));
     });
     expect(container.textContent).toContain("新的 Agent 摘要");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders child session with one-level indent", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const parent = sessionItem(
+      sessionKey("project-a", "parent"),
+      "codex_app",
+      "running",
+      "运行中",
+    );
+    const child = {
+      ...sessionItem(
+        sessionKey("project-a", "child"),
+        "codex_app",
+        "running",
+        "运行中",
+      ),
+      indent_level: 1,
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [parent, child],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const rows = container.querySelectorAll<HTMLElement>(".session-table-row");
+    expect(rows[0].style.getPropertyValue("--session-indent")).toBe("0px");
+    expect(rows[1].style.getPropertyValue("--session-indent")).toBe("14px");
 
     await act(async () => {
       root.unmount();
@@ -1027,6 +1118,7 @@ const sessionItem = (
       disabled_reason: "当前会话没有选项交互",
     },
   },
+  indent_level: 0,
 });
 
 const sessionKey = (projectId: string, conversationId: string): SessionKey => ({

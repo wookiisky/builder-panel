@@ -492,6 +492,7 @@ fn event_updated_at(event: &AgentEvent) -> UnixMillis {
         AgentEvent::CapabilitiesUpdated(event) => event.updated_at,
         AgentEvent::UsageUpdated(event) => event.updated_at,
         AgentEvent::JumpTargetUpdated(event) => event.updated_at,
+        AgentEvent::HierarchyUpdated(event) => event.updated_at,
     }
 }
 

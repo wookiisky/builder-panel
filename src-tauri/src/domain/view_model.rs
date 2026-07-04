@@ -7,6 +7,8 @@ use crate::domain::agent_session::{AgentSession, SessionCapabilities, SessionKey
 use crate::domain::session_state::SessionState;
 use crate::domain::usage::{UnixMillis, UsageScope, UsageValue};
 
+const MAX_DISPLAY_INDENT_LEVEL: u8 = 1;
+
 /// UI 动作。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -86,6 +88,8 @@ pub struct SessionListItemViewModel {
     pub actions: Vec<UiAction>,
     /// 行内交互展示。
     pub inline_interaction: InlineInteractionViewModel,
+    /// UI 展示缩进层级。
+    pub indent_level: u8,
 }
 
 /// 行内交互 view model。
@@ -183,16 +187,29 @@ pub struct ChoiceBoxViewModel {
 
 /// 将 session state 转为列表 view model。
 pub fn session_list_view_models(state: &SessionState) -> Vec<SessionListItemViewModel> {
+    let indent_levels = state.effective_session_indent_levels();
     state
         .sorted_session_keys()
         .into_iter()
-        .filter_map(|key| state.sessions.get(&key))
-        .map(session_list_item_view_model)
+        .filter_map(|key| {
+            state.sessions.get(&key).map(|session| {
+                let indent_level = *indent_levels.get(&key).unwrap_or(&0);
+                session_list_item_view_model_with_indent(session, indent_level)
+            })
+        })
         .collect()
 }
 
 /// 将 session 转为列表项 view model。
 pub fn session_list_item_view_model(session: &AgentSession) -> SessionListItemViewModel {
+    session_list_item_view_model_with_indent(session, 0)
+}
+
+/// 将 session 转为列表项 view model，并应用有效展示缩进。
+fn session_list_item_view_model_with_indent(
+    session: &AgentSession,
+    indent_level: u8,
+) -> SessionListItemViewModel {
     SessionListItemViewModel {
         session_key: session.session_key.clone(),
         agent_label: session.session_key.agent_kind.label().to_string(),
@@ -209,6 +226,7 @@ pub fn session_list_item_view_model(session: &AgentSession) -> SessionListItemVi
         usage_weekly: usage_value_view_model(&session.usage.usage_weekly),
         actions: actions_for_session(session),
         inline_interaction: inline_interaction_view_model(session),
+        indent_level: indent_level.min(MAX_DISPLAY_INDENT_LEVEL),
     }
 }
 
@@ -454,8 +472,9 @@ fn choice_view_model(choice: &InteractionChoice) -> InteractionChoiceViewModel {
 mod tests {
     use super::{
         actions_from_capabilities, session_detail_view_model, session_list_item_view_model,
-        text_display, UiAction,
+        session_list_view_models, text_display, UiAction,
     };
+    use crate::domain::agent_event::{AgentEvent, HierarchyUpdatedEvent, SessionStartedEvent};
     use crate::domain::agent_interaction::{
         AgentInteraction, ChoiceInteraction, ClipboardFallbackTarget, InteractionChoice,
         InteractionId, InteractionStatus, ReplyTarget, TextReplyInteraction,
@@ -464,6 +483,7 @@ mod tests {
         AgentKind, AgentSession, ConversationId, JumpTarget, ProjectId, SessionCapabilities,
         SessionKey, SessionStatus,
     };
+    use crate::domain::session_state::SessionState;
     use crate::domain::usage::{
         UnixMillis, UsageAmount, UsageSnapshot, UsageValue, VerifiedUsageValue,
     };
@@ -551,6 +571,56 @@ mod tests {
 
         assert_eq!(list_view_model.started_at, UnixMillis::new(10));
         assert_eq!(list_view_model.completed_at, Some(UnixMillis::new(20)));
+    }
+
+    #[test]
+    fn list_view_models_expose_effective_indent_level() {
+        let parent_key = SessionKey::new(
+            AgentKind::CodexApp,
+            ProjectId::new("project"),
+            ConversationId::new("parent"),
+        );
+        let child_key = SessionKey::new(
+            AgentKind::CodexApp,
+            ProjectId::new("project"),
+            ConversationId::new("child"),
+        );
+        let state = SessionState::empty()
+            .apply_event(started_event(parent_key.clone(), 1))
+            .apply_event(started_event(child_key.clone(), 2))
+            .apply_event(hierarchy_event(child_key.clone(), Some(parent_key), 3, 3));
+        let view_models = session_list_view_models(&state);
+
+        let child = view_models
+            .iter()
+            .find(|item| item.session_key == child_key)
+            .expect("child view model should exist");
+        assert_eq!(child.indent_level, 1);
+    }
+
+    #[test]
+    fn list_view_models_reset_indent_when_parent_is_invalid() {
+        let missing_parent = SessionKey::new(
+            AgentKind::CodexApp,
+            ProjectId::new("project"),
+            ConversationId::new("missing"),
+        );
+        let child_key = SessionKey::new(
+            AgentKind::CodexApp,
+            ProjectId::new("project"),
+            ConversationId::new("child"),
+        );
+        let state = SessionState::empty()
+            .apply_event(started_event(child_key.clone(), 1))
+            .apply_event(hierarchy_event(
+                child_key.clone(),
+                Some(missing_parent),
+                1,
+                2,
+            ));
+        let view_models = session_list_view_models(&state);
+
+        assert_eq!(view_models[0].indent_level, 0);
     }
 
     #[test]
@@ -770,6 +840,33 @@ mod tests {
         session.usage = usage;
         session.summary = Some("摘要".to_string());
         session
+    }
+
+    fn started_event(session_key: SessionKey, updated_at: u64) -> AgentEvent {
+        AgentEvent::SessionStarted(SessionStartedEvent {
+            project_label: session_key.project_id.value.clone(),
+            conversation_label: session_key.conversation_id.value.clone(),
+            session_key,
+            title: None,
+            summary: None,
+            capabilities: SessionCapabilities::none(),
+            usage: UsageSnapshot::unavailable(),
+            updated_at: UnixMillis::new(updated_at),
+        })
+    }
+
+    fn hierarchy_event(
+        session_key: SessionKey,
+        parent_session_key: Option<SessionKey>,
+        hierarchy_depth: u8,
+        updated_at: u64,
+    ) -> AgentEvent {
+        AgentEvent::HierarchyUpdated(HierarchyUpdatedEvent {
+            session_key,
+            parent_session_key,
+            hierarchy_depth,
+            updated_at: UnixMillis::new(updated_at),
+        })
     }
 
     fn choice_interaction(session_key: &SessionKey, allows_multiple: bool) -> ChoiceInteraction {
