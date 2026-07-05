@@ -15,6 +15,7 @@ import {
   createPanelSessionCaptureOrderStore,
   createSessionRefreshScheduler,
   elapsedDurationLabel,
+  elementHasBlockOverflow,
   elementHasInlineOverflow,
   fetchSessionsForSource,
   handleTooltipPanelDoubleClick,
@@ -814,9 +815,7 @@ describe("BuilderPanelApp session refresh", () => {
 
   it("allows the desktop session thread column to shrink before the summary", () => {
     const styles = readFileSync("src/styles.css", "utf8");
-    const rowMainBlock = styles.match(
-      /\.session-row-main\s*{(?<body>[^}]*)}/,
-    );
+    const rowMainBlock = styles.match(/\.session-row-main\s*{(?<body>[^}]*)}/);
     const tooltipWrapperBlock = styles.match(
       /\.session-identity\s*>\s*\.markdown-tooltip,\s*\.session-row-main\s*>\s*\.markdown-tooltip,\s*\.session-row-action\s*>\s*\.markdown-tooltip\s*{(?<body>[^}]*)}/,
     );
@@ -983,6 +982,19 @@ describe("BuilderPanelApp session refresh", () => {
     ).toBe(true);
   });
 
+  it("detects block overflow from rendered text dimensions", () => {
+    expect(elementHasBlockOverflow(null)).toBe(false);
+    expect(elementHasBlockOverflow({ clientHeight: 0, scrollHeight: 0 })).toBe(
+      false,
+    );
+    expect(
+      elementHasBlockOverflow({ clientHeight: 40, scrollHeight: 40 }),
+    ).toBe(false);
+    expect(
+      elementHasBlockOverflow({ clientHeight: 40, scrollHeight: 41 }),
+    ).toBe(true);
+  });
+
   it("only enables project and thread tooltips when their visible text overflows", async () => {
     const reactActGlobal = globalThis as typeof globalThis & {
       IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -1120,6 +1132,126 @@ describe("BuilderPanelApp session refresh", () => {
     });
   });
 
+  it("does not enable summary tooltip when the complete summary is visible", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const restoreBlockSize = mockTooltipLabelBlockSize(40, 40);
+    const session = {
+      ...sessionItem(codexAppSessionKey, "codex_app", "running", "运行中"),
+      summary: {
+        text: "摘要完整内容",
+        full_text: "摘要完整内容",
+        truncated: false,
+        max_chars: 120,
+      },
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(SessionStream, {
+            mockUiState: createDefaultMockPanelUiState(),
+            currentTimeMs: 2000,
+            sessions: [session],
+            settings: defaultSettings(),
+            selectedSessionId: null,
+            onCreateFollowupTurn: () => undefined,
+            onDraftChange: () => undefined,
+            onJump: () => undefined,
+            onResolveApproval: () => undefined,
+            onSendReply: () => undefined,
+            onSubmitChoice: () => undefined,
+            onToggleChoice: () => undefined,
+          }),
+        );
+      });
+
+      const summaryTooltip = container.querySelector(
+        ".session-summary-tooltip",
+      );
+      expect(
+        summaryTooltip?.classList.contains("markdown-tooltip-enabled"),
+      ).toBe(false);
+
+      await act(async () => {
+        summaryTooltip?.dispatchEvent(
+          new MouseEvent("mouseover", { bubbles: true }),
+        );
+      });
+
+      expect(document.body.querySelector(".markdown-tooltip-panel")).toBeNull();
+    } finally {
+      restoreBlockSize.restore();
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
+  it("enables summary tooltip when the complete paragraph is visually clipped", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const restoreBlockSize = mockTooltipLabelBlockSize(80, 40);
+    const session = {
+      ...sessionItem(codexAppSessionKey, "codex_app", "running", "运行中"),
+      summary: {
+        text: "摘要完整内容",
+        full_text: "摘要完整内容",
+        truncated: false,
+        max_chars: 120,
+      },
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(SessionStream, {
+            mockUiState: createDefaultMockPanelUiState(),
+            currentTimeMs: 2000,
+            sessions: [session],
+            settings: defaultSettings(),
+            selectedSessionId: null,
+            onCreateFollowupTurn: () => undefined,
+            onDraftChange: () => undefined,
+            onJump: () => undefined,
+            onResolveApproval: () => undefined,
+            onSendReply: () => undefined,
+            onSubmitChoice: () => undefined,
+            onToggleChoice: () => undefined,
+          }),
+        );
+      });
+
+      const summaryTooltip = container.querySelector(
+        ".session-summary-tooltip",
+      );
+      expect(
+        summaryTooltip?.classList.contains("markdown-tooltip-enabled"),
+      ).toBe(true);
+
+      await act(async () => {
+        summaryTooltip?.dispatchEvent(
+          new MouseEvent("mouseover", { bubbles: true }),
+        );
+      });
+
+      expect(document.body.textContent).toContain("摘要完整内容");
+    } finally {
+      restoreBlockSize.restore();
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
   it("jumps when double-clicking the visible summary tooltip panel", async () => {
     const reactActGlobal = globalThis as typeof globalThis & {
       IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -1132,7 +1264,7 @@ describe("BuilderPanelApp session refresh", () => {
         text: "摘要",
         full_text: "摘要完整内容",
         truncated: false,
-        max_chars: 120,
+        max_chars: 2,
       },
     };
     const onJump = vi.fn();
@@ -1192,7 +1324,7 @@ describe("BuilderPanelApp session refresh", () => {
         text: "摘要",
         full_text: "查看 [链接](https://example.com)",
         truncated: false,
-        max_chars: 120,
+        max_chars: 2,
       },
     };
     const onJump = vi.fn();
@@ -1464,6 +1596,7 @@ describe("BuilderPanelApp session refresh", () => {
     expect(display.visibleText).toBe("第六段内");
     expect(display.fullParagraph).toBe("第六段内容很长");
     expect(display.paragraphTruncated).toBe(true);
+    expect(display.hasHiddenTooltipContent).toBe(true);
     expect(display.tooltipText).toBe(
       "第二段\n\n第三段\n\n第四段\n\n第五段\n\n第六段内容很长",
     );
@@ -1479,6 +1612,7 @@ describe("BuilderPanelApp session refresh", () => {
 
     expect(display.visibleText).toBe("- 第一项\n- ");
     expect(display.fullParagraph).toBe("- 第一项\n- **第二项**\n继续说明");
+    expect(display.hasHiddenTooltipContent).toBe(true);
     expect(display.tooltipText).toBe(
       "第一段\n\n- 第一项\n- **第二项**\n继续说明",
     );
@@ -1494,10 +1628,11 @@ describe("BuilderPanelApp session refresh", () => {
 
     expect(display.visibleText).toBe("第二段");
     expect(display.paragraphTruncated).toBe(true);
+    expect(display.hasHiddenTooltipContent).toBe(true);
     expect(display.tooltipText).toBe("第一段完整内容\n\n第二段完整内容很长");
   });
 
-  it("keeps tooltip text even when the paragraph is not max-char truncated", () => {
+  it("keeps tooltip text but marks single complete paragraph as fully visible", () => {
     const display = textDisplayParagraph({
       text: "短文本",
       full_text: "短文本但可能被行宽省略",
@@ -1507,6 +1642,7 @@ describe("BuilderPanelApp session refresh", () => {
 
     expect(display.visibleText).toBe("短文本但可能被行宽省略");
     expect(display.paragraphTruncated).toBe(false);
+    expect(display.hasHiddenTooltipContent).toBe(false);
     expect(display.tooltipText).toBe("短文本但可能被行宽省略");
   });
 
@@ -1523,7 +1659,25 @@ describe("BuilderPanelApp session refresh", () => {
 
     expect(display.visibleText).toBe("第三段");
     expect(display.fullParagraph).toBe("第三段");
+    expect(display.hasHiddenTooltipContent).toBe(true);
     expect(display.tooltipText).toBe("第二段\n\n第三段");
+  });
+
+  it("does not mark content hidden when tooltip count keeps only the complete last paragraph", () => {
+    const display = textDisplayParagraph(
+      {
+        text: "第三段",
+        full_text: "第一段\n\n第二段\n\n第三段",
+        truncated: false,
+        max_chars: 100,
+      },
+      1,
+    );
+
+    expect(display.visibleText).toBe("第三段");
+    expect(display.fullParagraph).toBe("第三段");
+    expect(display.hasHiddenTooltipContent).toBe(false);
+    expect(display.tooltipText).toBe("第三段");
   });
 
   it("returns all paragraphs when fewer than the requested tooltip count", () => {
@@ -1538,6 +1692,7 @@ describe("BuilderPanelApp session refresh", () => {
     );
 
     expect(display.visibleText).toBe("第二段");
+    expect(display.hasHiddenTooltipContent).toBe(true);
     expect(display.tooltipText).toBe("第一段\n\n第二段");
   });
 
@@ -2640,6 +2795,62 @@ const mockTooltipLabelInlineSize = (
     setSize: (nextScrollWidth, nextClientWidth) => {
       scrollWidth = nextScrollWidth;
       clientWidth = nextClientWidth;
+    },
+  };
+};
+
+const mockTooltipLabelBlockSize = (
+  initialScrollHeight: number,
+  initialClientHeight: number,
+): {
+  readonly restore: () => void;
+  readonly setSize: (scrollHeight: number, clientHeight: number) => void;
+} => {
+  let scrollHeight = initialScrollHeight;
+  let clientHeight = initialClientHeight;
+  const originalScrollHeight = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "scrollHeight",
+  );
+  const originalClientHeight = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "clientHeight",
+  );
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get() {
+      return this instanceof Element &&
+        this.classList.contains("markdown-tooltip-label")
+        ? scrollHeight
+        : 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get() {
+      return this instanceof Element &&
+        this.classList.contains("markdown-tooltip-label")
+        ? clientHeight
+        : 0;
+    },
+  });
+
+  return {
+    restore: () => {
+      restorePropertyDescriptor(
+        HTMLElement.prototype,
+        "scrollHeight",
+        originalScrollHeight,
+      );
+      restorePropertyDescriptor(
+        HTMLElement.prototype,
+        "clientHeight",
+        originalClientHeight,
+      );
+    },
+    setSize: (nextScrollHeight, nextClientHeight) => {
+      scrollHeight = nextScrollHeight;
+      clientHeight = nextClientHeight;
     },
   };
 };

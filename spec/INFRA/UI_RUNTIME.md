@@ -82,6 +82,8 @@ session 来源标记按运行时来源派生并以无填充样式展示：来自
 
 当前输出文本 tooltip 由前端自绘，hover 或 focus 后立即展示，保留段内换行并按 Markdown 渲染。
 
+当前输出文本 tooltip 只在摘要存在未展示段落、字符截断或两行视觉截断时启用；单段摘要已经完整展示时不启用 tooltip。
+
 当前输出文本 tooltip 通过视口 fixed 浮层展示，并在下方空间不足时翻到触发文本上方，避免被 session 列表和 panel 容器裁剪。
 
 当前输出文本 tooltip 的非链接区域双击复用 session 行跳回入口；Markdown 链接区域保留链接行为。

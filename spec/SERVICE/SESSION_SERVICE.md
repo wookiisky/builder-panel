@@ -50,6 +50,8 @@ Session 列表 view model 提供 `indent_level`，供前端按后端已计算的
 
 前端 session 行摘要 tooltip 使用 `TextDisplay.full_text` 最近若干段完整文本，段数由展示设置决定。
 
+前端 session 行摘要 tooltip 只在最近完整段落包含行内未展示内容，或摘要发生两行视觉截断时启用。
+
 Session 详情可使用 `TextDisplay` 的完整清洗文本展示多段摘要。
 
 产品 Tauri command 当前不通过 Session Service 读取 mock runtime。

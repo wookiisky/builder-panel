@@ -1870,6 +1870,8 @@ const SessionRow = ({
         <MarkdownTooltip
           className="session-summary-tooltip"
           content={summaryParagraph.tooltipText}
+          tooltipWhenBlockOverflow={true}
+          tooltipWhenContentHidden={summaryParagraph.hasHiddenTooltipContent}
           onTooltipDoubleClick={() => {
             onJump(session);
           }}
@@ -2140,6 +2142,8 @@ export interface ParagraphDisplay {
   readonly fullParagraph: string;
   /// 当前段落是否被截断。
   readonly paragraphTruncated: boolean;
+  /// tooltip 是否包含当前行内未完整展示的内容。
+  readonly hasHiddenTooltipContent: boolean;
   /// 最近完整段落 tooltip 文本。
   readonly tooltipText: string | null;
 }
@@ -2156,11 +2160,15 @@ export const textDisplayParagraph = (
   const paragraphTruncated =
     Array.from(fullParagraph).length > display.max_chars;
   const tooltipText = recentParagraphs(display.full_text, tooltipParagraphs);
+  const hasHiddenTooltipContent =
+    tooltipText.length > 0 &&
+    (paragraphTruncated || tooltipText !== fullParagraph);
 
   return {
     visibleText,
     fullParagraph,
     paragraphTruncated,
+    hasHiddenTooltipContent,
     tooltipText: tooltipText.length > 0 ? tooltipText : null,
   };
 };
@@ -2176,10 +2184,19 @@ const truncateText = (text: string, maxChars: number): string => {
 };
 
 interface MarkdownTooltipProps {
+  /// 触发文本。
   readonly children: ReactNode;
+  /// 附加样式类。
   readonly className?: string;
+  /// tooltip 展示内容。
   readonly content: string | null | undefined;
+  /// tooltip 面板非链接区域双击回调。
   readonly onTooltipDoubleClick?: () => void;
+  /// 是否仅在块方向视觉截断时启用 tooltip。
+  readonly tooltipWhenBlockOverflow?: boolean;
+  /// 是否因内容模型存在隐藏内容而启用 tooltip。
+  readonly tooltipWhenContentHidden?: boolean;
+  /// 是否仅在单行视觉截断时启用 tooltip。
   readonly tooltipWhenOverflow?: boolean;
 }
 
@@ -2308,18 +2325,40 @@ export const elementHasInlineOverflow = (
   return element.scrollWidth > element.clientWidth;
 };
 
+/// 判断多行文本是否发生块方向视觉截断。
+export const elementHasBlockOverflow = (
+  element: Pick<HTMLElement, "clientHeight" | "scrollHeight"> | null,
+): boolean => {
+  if (element === null) {
+    return false;
+  }
+
+  return element.scrollHeight > element.clientHeight;
+};
+
 const MarkdownTooltip = ({
   children,
   className,
   content,
   onTooltipDoubleClick,
+  tooltipWhenBlockOverflow = false,
+  tooltipWhenContentHidden,
   tooltipWhenOverflow = false,
 }: MarkdownTooltipProps) => {
   const hasTooltipContent =
     content !== null && content !== undefined && content !== "";
-  const [labelOverflows, setLabelOverflows] = useState(false);
+  const [labelInlineOverflows, setLabelInlineOverflows] = useState(false);
+  const [labelBlockOverflows, setLabelBlockOverflows] = useState(false);
+  const hasConditionalTooltip =
+    tooltipWhenContentHidden !== undefined ||
+    tooltipWhenOverflow ||
+    tooltipWhenBlockOverflow;
   const hasTooltip =
-    hasTooltipContent && (!tooltipWhenOverflow || labelOverflows);
+    hasTooltipContent &&
+    (!hasConditionalTooltip ||
+      tooltipWhenContentHidden === true ||
+      (tooltipWhenOverflow && labelInlineOverflows) ||
+      (tooltipWhenBlockOverflow && labelBlockOverflows));
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<TooltipPanelPosition | null>(null);
   const anchorRef = useRef<HTMLDivElement | null>(null);
@@ -2361,13 +2400,22 @@ const MarkdownTooltip = ({
 
   const updateLabelOverflow = (): void => {
     if (!tooltipWhenOverflow) {
-      setLabelOverflows(false);
+      setLabelInlineOverflows(false);
+    } else {
+      const nextOverflows = elementHasInlineOverflow(labelRef.current);
+      setLabelInlineOverflows((current) =>
+        current === nextOverflows ? current : nextOverflows,
+      );
+    }
+
+    if (!tooltipWhenBlockOverflow) {
+      setLabelBlockOverflows(false);
       return;
     }
 
-    const nextOverflows = elementHasInlineOverflow(labelRef.current);
-    setLabelOverflows((current) =>
-      current === nextOverflows ? current : nextOverflows,
+    const nextBlockOverflows = elementHasBlockOverflow(labelRef.current);
+    setLabelBlockOverflows((current) =>
+      current === nextBlockOverflows ? current : nextBlockOverflows,
     );
   };
 
@@ -2378,10 +2426,10 @@ const MarkdownTooltip = ({
 
   useLayoutEffect(() => {
     updateLabelOverflow();
-  }, [content, tooltipWhenOverflow]);
+  }, [content, tooltipWhenBlockOverflow, tooltipWhenOverflow]);
 
   useEffect(() => {
-    if (!tooltipWhenOverflow) {
+    if (!tooltipWhenOverflow && !tooltipWhenBlockOverflow) {
       return;
     }
 
@@ -2416,7 +2464,7 @@ const MarkdownTooltip = ({
       observer.disconnect();
       window.removeEventListener("resize", handleViewportChange);
     };
-  }, [content, tooltipWhenOverflow]);
+  }, [content, tooltipWhenBlockOverflow, tooltipWhenOverflow]);
 
   useEffect(() => {
     if (!hasTooltip && open) {
