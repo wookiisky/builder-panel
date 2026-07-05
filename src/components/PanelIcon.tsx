@@ -54,6 +54,8 @@ const sessionStatusIconByStatus: Record<SessionStatus, LucideIcon> = {
   detached: Minus,
 };
 
+const PANEL_ICON_STROKE_WIDTH = 1.5;
+
 /// 渲染开源图标资源中的通用 panel 图标。
 export const PanelIcon = ({ name, className }: PanelIconProps) => {
   const Icon = panelIconByName[name];
@@ -65,7 +67,7 @@ export const PanelIcon = ({ name, className }: PanelIconProps) => {
       className={className}
       focusable="false"
       size={14}
-      strokeWidth={2}
+      strokeWidth={PANEL_ICON_STROKE_WIDTH}
     />
   );
 };
@@ -84,7 +86,7 @@ export const PanelSessionStatusIcon = ({
       className={className}
       focusable="false"
       size={13}
-      strokeWidth={2.4}
+      strokeWidth={PANEL_ICON_STROKE_WIDTH}
     />
   );
 };

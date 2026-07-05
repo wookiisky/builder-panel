@@ -58,6 +58,8 @@ Codex APP parent-child 展示块内任一 session 未完成时，整个块进入
 
 前端状态 icon 和窗口操作 icon 使用开源图标资源，不由 CSS 绘制基础形状。
 
+状态 icon 和 panel 操作 icon 使用细线 SVG 笔画展示，不依赖粗体字重表达。
+
 等待用户回复状态使用区别于等待审批状态的图标和状态色。
 
 状态 icon 位于主行最左侧独立列，并跟随当前 session 缩进层级移动。

@@ -687,7 +687,6 @@ button:disabled {
   border-radius: 3px;
   font-size: var(--font-size-xs);
   font-style: normal;
-  font-weight: 800;
   line-height: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -740,6 +739,7 @@ button:disabled {
   padding: 0 5px;
   color: var(--accent-strong);
   background: transparent;
+  font-weight: 800;
 }
 
 @keyframes session-status-spin {

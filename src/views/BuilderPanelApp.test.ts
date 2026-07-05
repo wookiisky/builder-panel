@@ -56,9 +56,16 @@ import type {
 } from "../api/mockPanelContract";
 import { defaultSettings } from "../api/settingsApi";
 import {
+  PanelIcon,
+  PanelSessionStatusIcon,
+  type PanelIconName,
+} from "../components/PanelIcon";
+import {
   createDefaultMockPanelUiState,
   sessionKeyToId,
 } from "../stores/mockPanelStore";
+
+const EXPECTED_ICON_VISUAL_STROKE_WIDTH = 1.5;
 
 const codexSessionKey: SessionKey = {
   agent_kind: "codex_cli",
@@ -70,6 +77,19 @@ const codexAppSessionKey: SessionKey = {
   agent_kind: "codex_app",
   project_id: { value: "/tmp/builder-panel-app" },
   conversation_id: { value: "codex-app-session-1" },
+};
+
+const expectThinAbsoluteSvgStroke = (svg: SVGElement | null): void => {
+  expect(svg).not.toBeNull();
+  if (svg === null) {
+    return;
+  }
+
+  const strokeWidth = Number(svg.getAttribute("stroke-width"));
+  const width = Number(svg.getAttribute("width"));
+  const visualStrokeWidth = (strokeWidth * width) / 24;
+
+  expect(visualStrokeWidth).toBeCloseTo(EXPECTED_ICON_VISUAL_STROKE_WIDTH, 5);
 };
 
 describe("BuilderPanelApp session refresh", () => {
@@ -684,9 +704,11 @@ describe("BuilderPanelApp session refresh", () => {
     expect(stopButton?.getAttribute("title")).toBe("停止能力尚未接入");
     expect(stopButton?.textContent).toBe("");
     expect(stopButton?.querySelector("span")).toBeNull();
-    const stopIcon = stopButton?.querySelector("svg[aria-hidden='true']");
+    const stopIcon =
+      stopButton?.querySelector<SVGElement>("svg[aria-hidden='true']") ?? null;
     expect(stopIcon).not.toBeNull();
     expect(stopIcon?.classList.contains("lucide-octagon-x")).toBe(true);
+    expectThinAbsoluteSvgStroke(stopIcon);
     expect(stopIcon?.querySelectorAll("path")).toHaveLength(3);
     expect(stopIcon?.querySelector("rect")).toBeNull();
     expect(stopIcon?.querySelector("circle")).toBeNull();
@@ -752,7 +774,9 @@ describe("BuilderPanelApp session refresh", () => {
       expect(icon.getAttribute("role")).toBe("img");
       expect(icon.getAttribute("title")).toBe(label);
       expect(icon.textContent).toBe("");
-      expect(icon.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+      expectThinAbsoluteSvgStroke(
+        icon.querySelector<SVGElement>("svg[aria-hidden='true']"),
+      );
     });
     const approvalSvg = statusIcons[1].querySelector("svg[aria-hidden='true']");
     const answerSvg = statusIcons[2].querySelector("svg[aria-hidden='true']");
@@ -772,6 +796,107 @@ describe("BuilderPanelApp session refresh", () => {
     expect(styles).toMatch(
       /\.session-status-waiting_for_answer\s*{\s*--status-color:\s*var\(--accent-strong\);\s*}/,
     );
+  });
+
+  it("keeps status icons separate from source label bold text", () => {
+    const styles = readFileSync("src/styles.css", "utf8");
+    const sharedIconAndSourceBlock = styles.match(
+      /\.session-status-icon,\s*\.session-source\s*{(?<body>[^}]*)}/,
+    );
+    const sourceBlocks = Array.from(
+      styles.matchAll(/\.session-source\s*{(?<body>[^}]*)}/g),
+    );
+    const sourceBlock = sourceBlocks.at(-1);
+
+    expect(sharedIconAndSourceBlock?.groups?.body).not.toContain("font-weight");
+    expect(sourceBlock?.groups?.body).toMatch(/font-weight:\s*800;/);
+  });
+
+  it("renders reusable panel icons with thin absolute strokes", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const iconNames: readonly PanelIconName[] = [
+      "window-minimize",
+      "window-settings",
+      "window-close",
+      "send",
+      "stop-placeholder",
+    ];
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(
+          "div",
+          null,
+          iconNames.map((name) =>
+            createElement(PanelIcon, {
+              key: name,
+              name,
+            }),
+          ),
+        ),
+      );
+    });
+
+    const svgs = Array.from(
+      container.querySelectorAll<SVGElement>("svg[aria-hidden='true']"),
+    );
+    expect(svgs).toHaveLength(iconNames.length);
+    svgs.forEach((svg) => {
+      expectThinAbsoluteSvgStroke(svg);
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders all session status icons with thin absolute strokes", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const statuses: readonly SessionStatus[] = [
+      "running",
+      "waiting_for_approval",
+      "waiting_for_answer",
+      "completed",
+      "failed",
+      "detached",
+    ];
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(
+          "div",
+          null,
+          statuses.map((status) =>
+            createElement(PanelSessionStatusIcon, {
+              key: status,
+              status,
+            }),
+          ),
+        ),
+      );
+    });
+
+    const svgs = Array.from(
+      container.querySelectorAll<SVGElement>("svg[aria-hidden='true']"),
+    );
+    expect(svgs).toHaveLength(statuses.length);
+    svgs.forEach((svg) => {
+      expectThinAbsoluteSvgStroke(svg);
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("renders title actions as icon buttons without character labels", async () => {
@@ -803,7 +928,9 @@ describe("BuilderPanelApp session refresh", () => {
         expect(button.getAttribute("aria-label")).toBe(label);
         expect(button.getAttribute("title")).toBe(label);
         expect(button.textContent).toBe("");
-        expect(button.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+        expectThinAbsoluteSvgStroke(
+          button.querySelector<SVGElement>("svg[aria-hidden='true']"),
+        );
       },
     );
     expect(
@@ -1996,7 +2123,9 @@ describe("BuilderPanelApp session refresh", () => {
     expect(followupChildren[1]).toBe(sendButton);
     expect(sendButton?.getAttribute("title")).toBe("发送");
     expect(sendButton?.textContent).toBe("");
-    expect(sendButton?.querySelector("svg")).not.toBeNull();
+    expectThinAbsoluteSvgStroke(
+      sendButton?.querySelector<SVGElement>("svg") ?? null,
+    );
 
     await act(async () => {
       sendButton?.click();
