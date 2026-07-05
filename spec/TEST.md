@@ -214,6 +214,8 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证项目名和 thread 名只在单行视觉截断时启用 tooltip。
 
+前端 Builder Panel 测试验证桌面 session 主行允许 thread 列收缩，并由 thread 文本截断保护摘要列。
+
 前端 Builder Panel 测试验证当前输出文本 tooltip 非链接区域双击会触发对应 session 跳回入口。
 
 前端 Builder Panel 测试验证当前输出文本 tooltip 内 Markdown 链接区域双击不触发 session 跳回且不取消链接默认行为。

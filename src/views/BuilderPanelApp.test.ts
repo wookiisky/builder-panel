@@ -812,6 +812,22 @@ describe("BuilderPanelApp session refresh", () => {
     expect(sourceBlock?.groups?.body).toMatch(/font-weight:\s*800;/);
   });
 
+  it("allows the desktop session thread column to shrink before the summary", () => {
+    const styles = readFileSync("src/styles.css", "utf8");
+    const rowMainBlock = styles.match(
+      /\.session-row-main\s*{(?<body>[^}]*)}/,
+    );
+    const tooltipWrapperBlock = styles.match(
+      /\.session-identity\s*>\s*\.markdown-tooltip,\s*\.session-row-main\s*>\s*\.markdown-tooltip,\s*\.session-row-action\s*>\s*\.markdown-tooltip\s*{(?<body>[^}]*)}/,
+    );
+
+    expect(rowMainBlock?.groups?.body).toMatch(
+      /grid-template-columns:\s*20px\s+minmax\(0,\s*0\.34fr\)\s+minmax\(0,\s*1fr\)\s+auto;/,
+    );
+    expect(rowMainBlock?.groups?.body).not.toContain("minmax(176px, 0.34fr)");
+    expect(tooltipWrapperBlock?.groups?.body).toMatch(/min-width:\s*0;/);
+  });
+
   it("renders reusable panel icons with thin absolute strokes", async () => {
     const reactActGlobal = globalThis as typeof globalThis & {
       IS_REACT_ACT_ENVIRONMENT?: boolean;

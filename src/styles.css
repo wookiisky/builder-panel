@@ -435,7 +435,7 @@ button:disabled {
 
 .session-row-main {
   display: grid;
-  grid-template-columns: 20px minmax(176px, 0.34fr) minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 0.34fr) minmax(0, 1fr) auto;
   align-items: stretch;
   gap: 8px;
   min-height: 56px;
@@ -557,6 +557,7 @@ button:disabled {
 .session-row-main > .markdown-tooltip,
 .session-row-action > .markdown-tooltip {
   position: relative;
+  min-width: 0;
   overflow: visible;
   text-overflow: clip;
   outline: none;
