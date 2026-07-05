@@ -53,6 +53,29 @@ impl SessionState {
             .collect()
     }
 
+    /// 返回超过保留窗口的已完成 session key。
+    pub fn expired_completed_session_keys(
+        &self,
+        now: UnixMillis,
+        retention_millis: u64,
+    ) -> Vec<SessionKey> {
+        let cutoff = now.value.saturating_sub(retention_millis);
+        self.sessions
+            .iter()
+            .filter_map(|(session_key, session)| {
+                if session.status != SessionStatus::Completed {
+                    return None;
+                }
+                let completed_at = session.completed_at?;
+                if completed_at.value < cutoff {
+                    return Some(session_key.clone());
+                }
+
+                None
+            })
+            .collect()
+    }
+
     /// 就地应用 agent 事件。
     fn apply_event_in_place(&mut self, event: AgentEvent) {
         match event {
@@ -914,6 +937,44 @@ mod tests {
                 completed
             ]
         );
+    }
+
+    #[test]
+    fn expired_completed_session_keys_only_returns_completed_after_retention() {
+        let expired = session_key("project-a", "expired");
+        let exact = session_key("project-a", "exact");
+        let fresh = session_key("project-a", "fresh");
+        let failed = session_key("project-a", "failed");
+        let detached = session_key("project-a", "detached");
+        let running = session_key("project-a", "running");
+        let state = SessionState::empty()
+            .apply_event(started_event(expired.clone(), 1))
+            .apply_event(completed_event(expired.clone(), 99))
+            .apply_event(started_event(exact.clone(), 2))
+            .apply_event(completed_event(exact, 100))
+            .apply_event(started_event(fresh.clone(), 3))
+            .apply_event(completed_event(fresh, 101))
+            .apply_event(started_event(failed.clone(), 4))
+            .apply_event(failed_event(failed, 50))
+            .apply_event(started_event(detached.clone(), 5))
+            .apply_event(detached_event(detached, 50))
+            .apply_event(started_event(running, 6));
+
+        let expired_keys = state.expired_completed_session_keys(UnixMillis::new(200), 100);
+
+        assert_eq!(expired_keys, vec![expired]);
+    }
+
+    #[test]
+    fn expired_completed_session_keys_keeps_future_completed_time() {
+        let future = session_key("project-a", "future");
+        let state = SessionState::empty()
+            .apply_event(started_event(future.clone(), 1))
+            .apply_event(completed_event(future, 300));
+
+        assert!(state
+            .expired_completed_session_keys(UnixMillis::new(200), 100)
+            .is_empty());
     }
 
     #[test]

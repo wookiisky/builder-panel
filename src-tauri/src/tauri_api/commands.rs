@@ -70,6 +70,8 @@ const CODEX_APP_MAX_LOADED_THREAD_READS: usize = 40;
 const CODEX_APP_ACTIVE_ROLLOUT_WINDOW_ENV: &str =
     "BUILDER_PANEL_CODEX_APP_ACTIVE_ROLLOUT_WINDOW_MINUTES";
 const CODEX_APP_ACTIVE_ROLLOUT_DEFAULT_WINDOW: Duration = Duration::from_secs(5 * 60);
+const COMPLETED_SESSION_RETENTION_ENV: &str = "BUILDER_PANEL_COMPLETED_SESSION_RETENTION_MINUTES";
+const COMPLETED_SESSION_DEFAULT_RETENTION: Duration = Duration::from_secs(20 * 60);
 
 /// Codex APP app-server 启动失败退避记录。
 struct CodexAppStartupFailure {
@@ -326,7 +328,8 @@ fn hook_agent_label(agent: &HookInstallAgent) -> &'static str {
 pub fn get_codex_cli_sessions() -> Result<Vec<SessionListItemViewModel>, String> {
     ensure_codex_cli_bridge_started()?;
     schedule_codex_app_context_sync();
-    let runtime = lock_codex_cli_runtime()?;
+    let mut runtime = lock_codex_cli_runtime()?;
+    cleanup_expired_codex_cli_completed_sessions(&mut runtime);
 
     Ok(runtime.session_list())
 }
@@ -336,7 +339,8 @@ pub fn get_codex_cli_sessions() -> Result<Vec<SessionListItemViewModel>, String>
 pub fn get_codex_app_sessions() -> Result<Vec<SessionListItemViewModel>, String> {
     ensure_codex_cli_bridge_started()?;
     schedule_codex_app_context_sync();
-    let runtime = lock_codex_app_runtime()?;
+    let mut runtime = lock_codex_app_runtime()?;
+    cleanup_expired_codex_app_completed_sessions(&mut runtime);
 
     Ok(runtime.session_list())
 }
@@ -353,7 +357,8 @@ pub fn get_codex_cli_session_detail(
     session_key: SessionKey,
 ) -> Result<Option<SessionDetailViewModel>, String> {
     ensure_codex_cli_bridge_started()?;
-    let runtime = lock_codex_cli_runtime()?;
+    let mut runtime = lock_codex_cli_runtime()?;
+    cleanup_expired_codex_cli_completed_sessions(&mut runtime);
 
     Ok(runtime.session_detail(&session_key))
 }
@@ -365,7 +370,8 @@ pub fn get_codex_app_session_detail(
 ) -> Result<Option<SessionDetailViewModel>, String> {
     ensure_codex_cli_bridge_started()?;
     schedule_codex_app_context_sync();
-    let runtime = lock_codex_app_runtime()?;
+    let mut runtime = lock_codex_app_runtime()?;
+    cleanup_expired_codex_app_completed_sessions(&mut runtime);
 
     Ok(runtime.session_detail(&session_key))
 }
@@ -1191,6 +1197,28 @@ fn current_codex_rollout_watch_targets() -> Vec<CodexRolloutWatchTarget> {
     targets
 }
 
+/// 清理过期的 Codex CLI 已完成 session。
+fn cleanup_expired_codex_cli_completed_sessions(runtime: &mut CodexCliHookRuntime) {
+    let removed = runtime.cleanup_expired_completed_sessions(
+        command_unix_now(),
+        configured_completed_session_retention().as_millis() as u64,
+    );
+    if !removed.is_empty() {
+        refresh_rollout_watcher_targets();
+    }
+}
+
+/// 清理过期的 Codex APP 已完成 session。
+fn cleanup_expired_codex_app_completed_sessions(runtime: &mut CodexAppRuntime) {
+    let removed = runtime.cleanup_expired_completed_sessions(
+        command_unix_now(),
+        configured_completed_session_retention().as_millis() as u64,
+    );
+    if !removed.is_empty() {
+        refresh_rollout_watcher_targets();
+    }
+}
+
 /// 确保 Codex APP hook bridge 和 app-server 已启动。
 fn ensure_codex_app_started() -> Result<(), String> {
     ensure_codex_cli_bridge_started()?;
@@ -1582,6 +1610,11 @@ fn configured_active_rollout_window() -> Duration {
     parse_active_rollout_window_minutes(std::env::var(CODEX_APP_ACTIVE_ROLLOUT_WINDOW_ENV).ok())
 }
 
+/// 读取已完成 session 保留窗口。
+fn configured_completed_session_retention() -> Duration {
+    parse_completed_session_retention_minutes(std::env::var(COMPLETED_SESSION_RETENTION_ENV).ok())
+}
+
 /// 解析最近活跃 rollout 恢复窗口，非法配置回退到默认值。
 fn parse_active_rollout_window_minutes(value: Option<String>) -> Duration {
     let Some(value) = value else {
@@ -1592,6 +1625,21 @@ fn parse_active_rollout_window_minutes(value: Option<String>) -> Duration {
     };
     if minutes == 0 {
         return CODEX_APP_ACTIVE_ROLLOUT_DEFAULT_WINDOW;
+    }
+
+    Duration::from_secs(minutes.saturating_mul(60))
+}
+
+/// 解析已完成 session 保留窗口，非法配置回退到默认值。
+fn parse_completed_session_retention_minutes(value: Option<String>) -> Duration {
+    let Some(value) = value else {
+        return COMPLETED_SESSION_DEFAULT_RETENTION;
+    };
+    let Ok(minutes) = value.trim().parse::<u64>() else {
+        return COMPLETED_SESSION_DEFAULT_RETENTION;
+    };
+    if minutes == 0 {
+        return COMPLETED_SESSION_DEFAULT_RETENTION;
     }
 
     Duration::from_secs(minutes.saturating_mul(60))
@@ -1821,6 +1869,34 @@ mod tests {
     };
     use crate::domain::agent_session::{AgentKind, ConversationId, ProjectId};
     use crate::domain::app_error::{AppError, AppErrorCode};
+
+    #[test]
+    fn completed_session_retention_minutes_uses_default_for_missing_or_invalid_values() {
+        assert_eq!(
+            parse_completed_session_retention_minutes(None),
+            COMPLETED_SESSION_DEFAULT_RETENTION
+        );
+        assert_eq!(
+            parse_completed_session_retention_minutes(Some("   ".to_string())),
+            COMPLETED_SESSION_DEFAULT_RETENTION
+        );
+        assert_eq!(
+            parse_completed_session_retention_minutes(Some("invalid".to_string())),
+            COMPLETED_SESSION_DEFAULT_RETENTION
+        );
+        assert_eq!(
+            parse_completed_session_retention_minutes(Some("0".to_string())),
+            COMPLETED_SESSION_DEFAULT_RETENTION
+        );
+    }
+
+    #[test]
+    fn completed_session_retention_minutes_accepts_positive_integer_minutes() {
+        assert_eq!(
+            parse_completed_session_retention_minutes(Some(" 7 ".to_string())),
+            Duration::from_secs(7 * 60)
+        );
+    }
 
     #[test]
     fn rollout_candidates_only_include_known_thread_ids() {

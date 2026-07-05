@@ -46,6 +46,8 @@ Codex APP rollout 文件可能不存在、过旧、过大、格式无效或缺�
 
 Codex rollout tail 目标可能不存在、被截断、被替换、超出大小上限、出现超长行或出现无效 JSON 行。
 
+已完成 session 保留窗口环境变量可能缺失、为空、为 0 或不是合法正整数分钟。
+
 Tauri session 更新事件可能发送失败。
 
 阶段 0 本地验证可能因缺少 Rust 工具链失败。
@@ -177,6 +179,8 @@ Codex rollout tail 目标不在 Codex sessions root 内、文件名不匹配、�
 Codex rollout tail 清洗出的事件写入 runtime 失败时丢弃该事件，不阻塞 watcher 后续轮询。
 
 Tauri session 更新事件发送失败时不写 session 失败状态，前端继续依赖定时刷新兜底。
+
+已完成 session 保留窗口环境变量缺失、为空、为 0 或非法时回退默认 20 分钟，不写 session 失败状态。
 
 Codex APP rollout 命中不存在且不可迁移的 session 时丢弃该快照，不创建新的当前 session。
 

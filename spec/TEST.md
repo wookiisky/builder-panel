@@ -54,6 +54,8 @@
 
 Rust 单元测试验证 Domain 纯规则。
 
+Rust Domain 测试验证已完成 session 过期 key 纯计算规则，包括严格超过窗口、刚好到达窗口保留、未来完成时间保留和非完成状态保留。
+
 前端单元测试验证 UI store 的纯状态转换。
 
 前端单元测试验证合并 session 的展示分组、首次观察序、父子展示块锚点和 store 隔离。
@@ -72,6 +74,8 @@ Rust Codex CLI runtime 测试验证迟到 UI 决策早于 bridge 超时清理时
 
 Rust Codex CLI runtime 测试验证同一 session 新审批会让旧审批等待器过期。
 
+Rust Codex CLI runtime 测试验证超过保留窗口的已完成 session 会被清理，并同步移除 rollout watch target、发布 session 更新通知。
+
 Rust Codex CLI adapter 测试验证 hook payload 的模型字段不作为 thread 标题展示。
 
 Rust Codex APP adapter 测试验证 app-server schema 探针、request 编码、notification 到归一事件转换、Codex APP hook 分流和完整能力 capability。
@@ -89,6 +93,8 @@ Rust Codex APP adapter 测试验证 app-server thread 元数据可迁移待识�
 Rust Codex APP adapter 测试验证 parent-only thread metadata 只记录父子关系不创建 session，child 和 parent session 都存在后会发布层级更新。
 
 Rust Codex APP adapter 测试验证清理 parent 空壳 session 会同步清理 child 层级关系。
+
+Rust Codex APP runtime 测试验证超过保留窗口的已完成 session 会被清理，并同步移除 thread 缓存、rollout watch target、当前输出、follow-up 占位，且 parent 被清理时 child 回退为顶层并发布更新通知。
 
 Rust Codex APP adapter 测试验证 app-server `thread/list` 元数据可在存在真实标题、预览文本或系统错误时创建当前 session。
 
@@ -147,6 +153,8 @@ Rust Codex APP adapter 测试验证后台 `notLoaded` metadata 不把 recent act
 Rust Tauri command 测试验证 rollout recent scan 候选集合只包含已加载、历史返回、当前待识别 thread 和当前已知但缺标题的 thread。
 
 Rust Tauri command 测试验证 recent active rollout 活跃窗口默认 5 分钟、支持正整数分钟配置，并过滤完成、过期或未来时间快照。
+
+Rust Tauri command 测试验证已完成 session 保留窗口默认 20 分钟，且缺失、空白、非法或 0 配置会回退默认值，正整数分钟配置会生效。
 
 Rust Tauri command 测试验证 `thread/read` 方法不可用时会触发 `thread/list` 降级判定，普通详情清洗错误不触发该降级。
 

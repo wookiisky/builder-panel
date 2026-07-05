@@ -62,6 +62,8 @@ Builder Panel APP 由 Tauri 启动，前端由 Vite 构建。
 
 当前产品运行时只读取 Codex CLI 和 Codex APP session。
 
+当前已完成状态 session 超过保留窗口后会从运行时内存列表自动清理；保留窗口可通过 `BUILDER_PANEL_COMPLETED_SESSION_RETENTION_MINUTES` 配置，默认 20 分钟。
+
 Codex CLI session 读取只以当前 Builder Panel 进程启动后的实时 hook 为来源。
 
 Codex APP session 读取可通过 app-server 已加载 thread id 列表定位当前 APP thread，并通过 `thread/read`、`thread/list` 元数据或 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出。

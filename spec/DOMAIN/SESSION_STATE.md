@@ -86,6 +86,12 @@ Session 保存当前 turn 的开始时间和结束时间。
 
 `TurnCompleted` 只有携带摘要时才更新 session 摘要；空摘要不得生成完成兜底文案。
 
+Session State 可按当前时间和保留窗口纯计算超过窗口的已完成 session key。
+
+超过保留窗口的判断只适用于 `Completed` 状态，且必须严格超过窗口；刚好达到窗口边界的 session 不视为过期。
+
+没有结束时间、结束时间晚于当前时间、`Failed` 或 `Detached` 状态的 session 不属于已完成 session 自动清理范围。
+
 `Failed` 设置失败状态，记录错误，并清理 pending interaction。
 
 `Failed` 用事件时间记录当前 turn 结束时间。

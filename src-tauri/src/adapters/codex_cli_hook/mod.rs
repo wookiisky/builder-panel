@@ -257,6 +257,30 @@ impl CodexCliHookRuntime {
         &self.session_state
     }
 
+    /// 清理超过保留窗口的已完成 session。
+    pub fn cleanup_expired_completed_sessions(
+        &mut self,
+        now: UnixMillis,
+        retention_millis: u64,
+    ) -> Vec<SessionKey> {
+        let removed_keys = self
+            .session_state
+            .expired_completed_session_keys(now, retention_millis);
+        for session_key in &removed_keys {
+            self.session_state.sessions.remove(session_key);
+            self.rollout_paths.remove(session_key);
+            self.expire_pending_approvals_for_session(session_key);
+            self.update_sink
+                .publish_session_update(SessionUpdateNotification {
+                    runtime_source: SessionRuntimeSource::CodexCli,
+                    session_key: session_key.clone(),
+                    updated_at: now,
+                });
+        }
+
+        removed_keys
+    }
+
     /// 应用 Codex hook request，并返回可能需要等待的审批。
     pub fn apply_hook_request(
         &mut self,
@@ -426,6 +450,22 @@ impl CodexCliHookRuntime {
             .filter(|(interaction_id, pending)| {
                 pending.session_key == *session_key && *interaction_id != current_interaction_id
             })
+            .map(|(interaction_id, _)| interaction_id.clone())
+            .collect();
+
+        for stale_id in stale_ids {
+            if let Some(pending) = self.pending_approvals.remove(&stale_id) {
+                pending.waiter.expire();
+            }
+        }
+    }
+
+    /// 过期指定 session 的所有 pending approval waiter。
+    fn expire_pending_approvals_for_session(&mut self, session_key: &SessionKey) {
+        let stale_ids: Vec<InteractionId> = self
+            .pending_approvals
+            .iter()
+            .filter(|(_, pending)| pending.session_key == *session_key)
             .map(|(interaction_id, _)| interaction_id.clone())
             .collect();
 
@@ -939,6 +979,33 @@ mod tests {
     use crate::domain::agent_session::{AgentKind, SessionStatus};
     use crate::domain::usage::UnixMillis;
     use crate::ports::agent_adapter_port::ApprovalDecision;
+    use crate::ports::session_update_port::{
+        SessionRuntimeSource, SessionUpdateNotification, SessionUpdateSinkPort,
+    };
+
+    #[derive(Default)]
+    struct RecordingSessionUpdateSink {
+        /// 已记录的 session 更新通知。
+        notifications: Mutex<Vec<SessionUpdateNotification>>,
+    }
+
+    impl RecordingSessionUpdateSink {
+        fn notifications(&self) -> Vec<SessionUpdateNotification> {
+            self.notifications
+                .lock()
+                .expect("notifications should lock")
+                .clone()
+        }
+    }
+
+    impl SessionUpdateSinkPort for RecordingSessionUpdateSink {
+        fn publish_session_update(&self, notification: SessionUpdateNotification) {
+            self.notifications
+                .lock()
+                .expect("notifications should lock")
+                .push(notification);
+        }
+    }
 
     #[test]
     fn session_start_maps_to_started_event_without_raw_payload() {
@@ -1400,6 +1467,36 @@ mod tests {
             UnixMillis::new(1),
         );
         assert!(!evicted);
+    }
+
+    #[test]
+    fn cleanup_expired_completed_sessions_removes_cli_session_and_rollout_target() {
+        let sink = Arc::new(RecordingSessionUpdateSink::default());
+        let mut runtime = CodexCliHookRuntime::with_update_sink(sink.clone());
+        let mut request = request(BridgeHookEventName::Stop, "request-1");
+        request.payload.validated_payload.transcript_path =
+            Some("/tmp/rollout-session-1.jsonl".to_string());
+        runtime
+            .apply_hook_request(&request, UnixMillis::new(1))
+            .expect("stop should apply");
+        let key = runtime
+            .session_state()
+            .sessions
+            .keys()
+            .next()
+            .expect("session should exist")
+            .clone();
+
+        let removed = runtime.cleanup_expired_completed_sessions(UnixMillis::new(1_202), 1_200);
+
+        assert_eq!(removed, vec![key.clone()]);
+        assert!(runtime.session_state().sessions.is_empty());
+        assert!(runtime.rollout_watch_targets().is_empty());
+        assert!(sink.notifications().iter().any(|notification| {
+            notification.runtime_source == SessionRuntimeSource::CodexCli
+                && notification.session_key == key
+                && notification.updated_at == UnixMillis::new(1_202)
+        }));
     }
 
     fn payload(event_name: BridgeHookEventName) -> ValidatedHookPayload {

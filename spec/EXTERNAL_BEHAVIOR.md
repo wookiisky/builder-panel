@@ -62,6 +62,12 @@ session 行来源标签和项目名同一行展示，thread 名下一行单行�
 
 完成和失败 session 行展示当前 turn 结束到现在的相对时间。
 
+已完成状态 session 超过保留窗口后会从 session 列表和详情读取结果中移除；默认保留 20 分钟，可通过 `BUILDER_PANEL_COMPLETED_SESSION_RETENTION_MINUTES` 配置。
+
+已完成状态 session 刚好达到保留窗口边界时仍会保留；只有严格超过保留窗口才会移除。
+
+失败和失联 session 不受已完成 session 自动清理规则影响。
+
 session 行当前输出文本在后端 session 更新事件后短延迟刷新。
 
 高频输出期间，session 行当前输出文本允许一到两秒体验延迟，但不得等到输出完全停止才刷新。

@@ -20,6 +20,8 @@ Tauri 事件发送失败不写 session 失败状态。
 
 `session_updated` 表示某个 Codex CLI 或 Codex APP session 的摘要、状态、动作、标题、项目、跳回目标或展示层级发生变化。
 
+`session_updated` 也可表示某个 session 已被后端清理，前端必须通过刷新列表确认该 session 是否仍存在。
+
 Codex APP 后台 thread metadata、session index 或 rollout 历史补齐已有 session 的标题、项目、跳回目标、能力或摘要时，也会发送 `session_updated`。
 
 Codex APP 识别或清理 sub agent parent-child 关系，导致 session 展示缩进变化时，也会发送 `session_updated`。

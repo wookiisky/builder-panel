@@ -68,6 +68,8 @@ Codex CLI runtime 提供按 `(cwd, thread_id)` 删除孤儿 session 的入口；
 
 Codex CLI runtime 可记录已知 session 的 rollout path，用于实时 tail 该 session 的新增追加行。
 
+Codex CLI runtime 在 session 列表或详情读取前会清理超过保留窗口的已完成 session；清理时同步移除对应 rollout path、过期同 session 的 pending approval waiter，并发布 session 更新通知。
+
 Codex CLI pending approval 必须同时匹配 `SessionKey` 和 `InteractionId` 后才能唤醒 hook request。
 
 Codex CLI pending approval 超时后必须从 runtime 移除，并清理 session pending interaction。
@@ -113,6 +115,10 @@ Codex APP adapter 过滤 Codex 内部生成的隐藏 turn（如建议生成任�
 Codex APP runtime 对只由启动信号创建且尚未出现真实标题、摘要、pending、失败或失联原因的 session 维护内部空壳候选；真实用户输入、assistant 输出、审批、回复、失败或真实标题会移除候选标记。
 
 Codex APP runtime 在内部提示词或内部 source 到达时只清理仍带空壳候选标记的同 thread session；清理时必须同步移除对应 cwd、metadata、rollout path、当前 turn 输出和 pending 缓存，避免后续归属判定或 rollout watcher 再次带回空白 session。
+
+Codex APP runtime 在 session 列表或详情读取前会清理超过保留窗口的已完成 session；清理时同步移除对应 thread cwd、metadata、rollout path、当前 turn 输出、hook start 快照、follow-up 占位、empty shell 标记、hook approval waiter 和 RPC pending 缓存。
+
+Codex APP runtime 清理过期已完成 parent session 时，必须同步清理相关 parent-child 缓存；仍存在的 child session 指向被清理 parent 时必须回退为顶层并发布 session 更新通知。
 
 Codex CLI 和 Codex APP adapter 使用可信 cwd 派生项目展示名；`.claude/worktrees` 和 `.git/worktrees` 路径显示项目根目录名。
 

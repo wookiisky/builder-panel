@@ -814,6 +814,22 @@ impl CodexAppRuntime {
         &self.session_state
     }
 
+    /// 清理超过保留窗口的已完成 session。
+    pub fn cleanup_expired_completed_sessions(
+        &mut self,
+        now: UnixMillis,
+        retention_millis: u64,
+    ) -> Vec<SessionKey> {
+        let removed_keys = self
+            .session_state
+            .expired_completed_session_keys(now, retention_millis);
+        for session_key in &removed_keys {
+            self.remove_expired_completed_session(session_key, now);
+        }
+
+        removed_keys
+    }
+
     /// 返回当前已知 rollout tail 目标。
     pub fn rollout_watch_targets(&self) -> Vec<CodexRolloutWatchTarget> {
         self.thread_rollout_paths
@@ -1437,6 +1453,32 @@ impl CodexAppRuntime {
                 session_key: session_key.clone(),
                 updated_at,
             });
+    }
+
+    /// 移除单个过期已完成 session 并清理 runtime 缓存。
+    fn remove_expired_completed_session(
+        &mut self,
+        session_key: &SessionKey,
+        updated_at: UnixMillis,
+    ) {
+        if self.session_state.sessions.remove(session_key).is_none() {
+            return;
+        }
+
+        let thread_id = session_key.conversation_id.value.clone();
+        self.empty_shell_candidates.remove(session_key);
+        self.pending_hook_start_snapshots.remove(session_key);
+        self.pending_followup_turns.remove(session_key);
+        self.clear_rpc_pending_for_session(session_key);
+        self.expire_hook_approvals_for_session(session_key);
+        if !self.has_session_for_thread(&thread_id) {
+            self.thread_cwds.remove(&thread_id);
+            self.thread_metadata.remove(&thread_id);
+            self.thread_rollout_paths.remove(&thread_id);
+            self.current_turn_agent_outputs.remove(&thread_id);
+        }
+        self.clear_thread_hierarchy_references(&thread_id, session_key, updated_at);
+        self.publish_codex_app_session_update(session_key, updated_at);
     }
 
     fn pending_interaction(
@@ -2114,6 +2156,22 @@ impl CodexAppRuntime {
             .filter(|(interaction_id, pending)| {
                 pending.session_key == *session_key && *interaction_id != current_interaction_id
             })
+            .map(|(interaction_id, _)| interaction_id.clone())
+            .collect();
+
+        for stale_id in stale_ids {
+            if let Some(pending) = self.pending_hook_approvals.remove(&stale_id) {
+                pending.waiter.expire();
+            }
+        }
+    }
+
+    /// 过期指定 session 的所有 hook approval waiter。
+    fn expire_hook_approvals_for_session(&mut self, session_key: &SessionKey) {
+        let stale_ids: Vec<InteractionId> = self
+            .pending_hook_approvals
+            .iter()
+            .filter(|(_, pending)| pending.session_key == *session_key)
             .map(|(interaction_id, _)| interaction_id.clone())
             .collect();
 
@@ -4308,7 +4366,9 @@ mod tests {
     use crate::adapters::bridge::codec::{
         BridgeHookEventName, BridgeRequestEnvelope, ValidatedHookPayload,
     };
-    use crate::domain::agent_event::{AgentEvent, SessionStartedEvent, TurnCompletedEvent};
+    use crate::domain::agent_event::{
+        AgentEvent, HierarchyUpdatedEvent, SessionStartedEvent, TurnCompletedEvent,
+    };
     use crate::domain::agent_interaction::{
         AgentInteraction, AnswerInteraction, InteractionChoice, ReplyTarget,
     };
@@ -7414,6 +7474,108 @@ mod tests {
             calls.as_slice(),
             [("/tmp/builder-panel".to_string(), "thread-app".to_string())]
         );
+    }
+
+    #[test]
+    fn cleanup_expired_completed_sessions_removes_app_cache_and_detaches_children() {
+        let sink = Arc::new(RecordingSessionUpdateSink::default());
+        let mut runtime = CodexAppRuntime::with_update_sink(sink.clone());
+        let parent_key = session_key("/tmp/project", "parent-thread");
+        let child_key = session_key("/tmp/project", "child-thread");
+        runtime
+            .apply_event_direct(AgentEvent::SessionStarted(SessionStartedEvent {
+                session_key: parent_key.clone(),
+                project_label: "project".to_string(),
+                conversation_label: "parent-thread".to_string(),
+                title: Some("父任务".to_string()),
+                summary: Some("完成".to_string()),
+                capabilities: codex_app_capabilities(),
+                usage: UsageSnapshot::unavailable(),
+                updated_at: UnixMillis::new(1),
+            }))
+            .expect("parent should start");
+        runtime
+            .apply_event_direct(AgentEvent::TurnCompleted(TurnCompletedEvent {
+                session_key: parent_key.clone(),
+                summary: Some("完成".to_string()),
+                updated_at: UnixMillis::new(1),
+            }))
+            .expect("parent should complete");
+        runtime
+            .apply_event_direct(AgentEvent::SessionStarted(SessionStartedEvent {
+                session_key: child_key.clone(),
+                project_label: "project".to_string(),
+                conversation_label: "child-thread".to_string(),
+                title: Some("子任务".to_string()),
+                summary: Some("运行".to_string()),
+                capabilities: codex_app_capabilities(),
+                usage: UsageSnapshot::unavailable(),
+                updated_at: UnixMillis::new(2),
+            }))
+            .expect("child should start");
+        runtime
+            .apply_event_direct(AgentEvent::HierarchyUpdated(HierarchyUpdatedEvent {
+                session_key: child_key.clone(),
+                parent_session_key: Some(parent_key.clone()),
+                hierarchy_depth: 1,
+                updated_at: UnixMillis::new(3),
+            }))
+            .expect("hierarchy should apply");
+        runtime
+            .thread_cwds
+            .insert("parent-thread".to_string(), "/tmp/project".to_string());
+        runtime.thread_metadata.insert(
+            "parent-thread".to_string(),
+            CodexAppThreadMetadata {
+                id: "parent-thread".to_string(),
+                parent_thread_id: None,
+                cwd: Some("/tmp/project".to_string()),
+                name: Some("父任务".to_string()),
+                preview: Some("完成".to_string()),
+                path: Some(PathBuf::from("/tmp/rollout-parent-thread.jsonl")),
+                status_type: "idle".to_string(),
+                ephemeral: false,
+                source_kind: CodexAppThreadSourceKind::UserVisible,
+            },
+        );
+        runtime.thread_rollout_paths.insert(
+            "parent-thread".to_string(),
+            PathBuf::from("/tmp/rollout-parent-thread.jsonl"),
+        );
+        runtime
+            .current_turn_agent_outputs
+            .insert("parent-thread".to_string(), "旧输出".to_string());
+        runtime
+            .pending_followup_turns
+            .insert(parent_key.clone(), "继续".to_string());
+
+        let removed = runtime.cleanup_expired_completed_sessions(UnixMillis::new(1_202), 1_200);
+
+        assert_eq!(removed, vec![parent_key.clone()]);
+        assert!(!runtime.session_state().sessions.contains_key(&parent_key));
+        assert!(!runtime.thread_cwds.contains_key("parent-thread"));
+        assert!(!runtime.thread_metadata.contains_key("parent-thread"));
+        assert!(!runtime.thread_rollout_paths.contains_key("parent-thread"));
+        assert!(!runtime
+            .current_turn_agent_outputs
+            .contains_key("parent-thread"));
+        assert!(!runtime.pending_followup_turns.contains_key(&parent_key));
+        let child = runtime
+            .session_state()
+            .sessions
+            .get(&child_key)
+            .expect("child should remain");
+        assert_eq!(child.parent_session_key, None);
+        assert_eq!(child.hierarchy_depth, 0);
+        let notifications = sink.notifications();
+        assert!(notifications.iter().any(|notification| {
+            notification.runtime_source == SessionRuntimeSource::CodexApp
+                && notification.session_key == parent_key
+        }));
+        assert!(notifications.iter().any(|notification| {
+            notification.runtime_source == SessionRuntimeSource::CodexApp
+                && notification.session_key == child_key
+        }));
     }
 
     #[test]
