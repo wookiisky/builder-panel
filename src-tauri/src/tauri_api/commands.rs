@@ -2113,6 +2113,7 @@ mod tests {
             path: PathBuf::from(format!("/tmp/rollout-{session_id}.jsonl")),
             updated_at,
             completed,
+            pending_user_input: None,
         }
     }
 

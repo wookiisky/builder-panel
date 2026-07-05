@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
@@ -37,6 +38,8 @@ import {
   SessionStream,
   sessionActionRowClassName,
   shouldAutoShowSessionActionRow,
+  shouldHoverExpandSessionActionRow,
+  shouldShowInteractionSummary,
   shouldShowSessionActionRow,
   shouldSubmitReplyOnKeyDown,
   shouldUseFollowupShortcut,
@@ -751,10 +754,24 @@ describe("BuilderPanelApp session refresh", () => {
       expect(icon.textContent).toBe("");
       expect(icon.querySelector("svg[aria-hidden='true']")).not.toBeNull();
     });
+    const approvalSvg = statusIcons[1].querySelector("svg[aria-hidden='true']");
+    const answerSvg = statusIcons[2].querySelector("svg[aria-hidden='true']");
+    expect(approvalSvg?.outerHTML).not.toBe(answerSvg?.outerHTML);
 
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("keeps waiting answer and approval status colors distinct", () => {
+    const styles = readFileSync("src/styles.css", "utf8");
+
+    expect(styles).toMatch(
+      /\.session-status-waiting_for_approval\s*{\s*--status-color:\s*var\(--warn\);\s*}/,
+    );
+    expect(styles).toMatch(
+      /\.session-status-waiting_for_answer\s*{\s*--status-color:\s*var\(--accent-strong\);\s*}/,
+    );
   });
 
   it("renders title actions as icon buttons without character labels", async () => {
@@ -1536,7 +1553,6 @@ describe("BuilderPanelApp session refresh", () => {
           onDraftChange: () => undefined,
           onResolveApproval: () => undefined,
           onSendReply: () => undefined,
-          onUseShortcutReply: () => undefined,
           onToggleChoice: () => undefined,
           onSubmitChoice: () => undefined,
           onCreateFollowupTurn: () => undefined,
@@ -1567,11 +1583,167 @@ describe("BuilderPanelApp session refresh", () => {
     });
   });
 
-  it("only auto-shows action rows for waiting sessions", () => {
+  it("removes shortcut inputs from waiting text reply detail", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const selectedSession = waitingTextReplySession();
+    const detail: SessionDetailViewModel = {
+      header: "等待回复",
+      identity: "/tmp/builder-panel-app / 等待回复",
+      usage: "5H --，本周 --",
+      summary: {
+        text: "请选择下一步",
+        full_text: "请选择下一步",
+        truncated: false,
+        max_chars: 240,
+      },
+      execution_info: "等待回复",
+      pending_interaction: "请选择下一步",
+      pending_interaction_id: { value: "reply-1" },
+      pending_interaction_kind: "text_reply",
+      reply_box: {
+        enabled: true,
+        disabled_reason: null,
+      },
+      choice_box: {
+        enabled: false,
+        allows_multiple: false,
+        choices: [],
+        disabled_reason: "当前会话没有选项交互",
+      },
+      toolbar_actions: ["send_reply"],
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionDetail, {
+          detail,
+          selectedSession,
+          draft: "",
+          selectedChoiceValues: [],
+          settings: defaultSettings(),
+          submittingInteractionId: null,
+          onDraftChange: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onToggleChoice: () => undefined,
+          onSubmitChoice: () => undefined,
+          onCreateFollowupTurn: () => undefined,
+        }),
+      );
+    });
+
+    const replyInline = container.querySelector(".reply-inline");
+    const buttons = Array.from(replyInline?.querySelectorAll("button") ?? []);
+
+    expect(replyInline?.querySelector(".shortcut-row")).toBeNull();
+    expect(buttons.map((button) => button.textContent)).toEqual(["打开回复"]);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("adds choice tooltips in session detail", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const selectedSession = waitingChoiceSession();
+    const detail: SessionDetailViewModel = {
+      header: "等待选择",
+      identity: "/tmp/builder-panel-app / 等待选择",
+      usage: "5H --，本周 --",
+      summary: {
+        text: "请选择下一步",
+        full_text: "请选择下一步",
+        truncated: false,
+        max_chars: 240,
+      },
+      execution_info: "等待回复",
+      pending_interaction: "请选择下一步",
+      pending_interaction_id: { value: "choice-1" },
+      pending_interaction_kind: "choice",
+      reply_box: {
+        enabled: false,
+        disabled_reason: "当前会话没有文本回复交互",
+      },
+      choice_box: {
+        enabled: true,
+        allows_multiple: false,
+        choices: selectedSession.inline_interaction.choice_box.choices,
+        disabled_reason: null,
+      },
+      toolbar_actions: ["send_reply"],
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionDetail, {
+          detail,
+          selectedSession,
+          draft: "",
+          selectedChoiceValues: [],
+          settings: defaultSettings(),
+          submittingInteractionId: null,
+          onDraftChange: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onToggleChoice: () => undefined,
+          onSubmitChoice: () => undefined,
+          onCreateFollowupTurn: () => undefined,
+        }),
+      );
+    });
+
+    const choiceRows = Array.from(
+      container.querySelectorAll<HTMLLabelElement>(".choice-row"),
+    );
+
+    expect(choiceRows[0].getAttribute("title")).toBe(
+      "接入已验证的 app-server `turn/interrupt`；Codex CLI 继续显示禁用占位，风险最小。",
+    );
+    expect(choiceRows[1].getAttribute("title")).toBe(
+      "同时规划 CLI 停止能力；但当前仓库没有稳定 CLI 停止协议事实，需要额外探查和更大改动。",
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("only auto-shows approval action rows", () => {
     expect(shouldAutoShowSessionActionRow("waiting_for_approval")).toBe(true);
-    expect(shouldAutoShowSessionActionRow("waiting_for_answer")).toBe(true);
+    expect(shouldAutoShowSessionActionRow("waiting_for_answer")).toBe(false);
     expect(shouldAutoShowSessionActionRow("completed")).toBe(false);
     expect(shouldAutoShowSessionActionRow("failed")).toBe(false);
+  });
+
+  it("uses hover expansion for waiting answers and follow-up rows", () => {
+    expect(
+      shouldHoverExpandSessionActionRow("waiting_for_answer", false, true),
+    ).toBe(true);
+    expect(
+      shouldHoverExpandSessionActionRow("waiting_for_answer", false, false),
+    ).toBe(false);
+    expect(
+      shouldHoverExpandSessionActionRow("waiting_for_approval", false),
+    ).toBe(false);
+    expect(shouldHoverExpandSessionActionRow("completed", true)).toBe(true);
+    expect(shouldHoverExpandSessionActionRow("failed", true)).toBe(true);
+    expect(shouldHoverExpandSessionActionRow("completed", false)).toBe(false);
+  });
+
+  it("keeps interaction summaries for approval and answer rows", () => {
+    expect(shouldShowInteractionSummary("waiting_for_approval")).toBe(true);
+    expect(shouldShowInteractionSummary("waiting_for_answer")).toBe(true);
+    expect(shouldShowInteractionSummary("completed")).toBe(false);
   });
 
   it("renders completed and failed follow-up rows for hover expansion", () => {
@@ -1593,9 +1765,184 @@ describe("BuilderPanelApp session refresh", () => {
     expect(sessionActionRowClassName("failed")).toContain(
       "session-row-action-followup",
     );
-    expect(sessionActionRowClassName("waiting_for_answer")).toBe(
-      "session-row-action",
+    expect(sessionActionRowClassName("waiting_for_answer", true)).toContain(
+      "session-row-action-hover",
     );
+    expect(sessionActionRowClassName("waiting_for_answer", true)).toContain(
+      "session-row-action-choice",
+    );
+  });
+
+  it("renders waiting choice options in hover row without shortcut inputs", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = waitingChoiceSession();
+    const onToggleChoice = vi.fn();
+    const onSubmitChoice = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const mockUiState = {
+      ...createDefaultMockPanelUiState(),
+      selectedChoicesByInteractionId: {
+        "choice-1": ["仅 Codex APP (Recommended)"],
+      },
+    };
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState,
+          currentTimeMs: 2000,
+          sessions: [session],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice,
+          onToggleChoice,
+        }),
+      );
+    });
+
+    const row = container.querySelector<HTMLElement>(".session-table-row");
+    const actionRow = container.querySelector(".session-row-action-hover");
+    const choiceRows = Array.from(
+      container.querySelectorAll<HTMLLabelElement>(".choice-row"),
+    );
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "提交选择",
+    );
+
+    expect(row?.getAttribute("tabindex")).toBe("0");
+    expect(row?.getAttribute("aria-label")).toContain("等待回复");
+    expect(actionRow).not.toBeNull();
+    expect(actionRow?.querySelector(".shortcut-row")).toBeNull();
+    expect(choiceRows).toHaveLength(2);
+    expect(choiceRows[0].textContent).toBe("仅 Codex APP (Recommended)");
+    expect(choiceRows[1].textContent).toBe("Codex APP + CLI");
+    expect(choiceRows[0].getAttribute("title")).toBe(
+      "接入已验证的 app-server `turn/interrupt`；Codex CLI 继续显示禁用占位，风险最小。",
+    );
+    expect(choiceRows[1].getAttribute("title")).toBe(
+      "同时规划 CLI 停止能力；但当前仓库没有稳定 CLI 停止协议事实，需要额外探查和更大改动。",
+    );
+
+    await act(async () => {
+      choiceRows[1].querySelector("input")?.click();
+    });
+
+    expect(onToggleChoice).toHaveBeenCalledWith(
+      { value: "choice-1" },
+      "Codex APP + CLI",
+      false,
+    );
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(onSubmitChoice).toHaveBeenCalledWith(
+      session,
+      { value: "choice-1" },
+      ["仅 Codex APP (Recommended)"],
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the second row for external-only waiting answers", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = waitingExternalTextReplySession();
+    const onToggleChoice = vi.fn();
+    const onSubmitChoice = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [session],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice,
+          onToggleChoice,
+        }),
+      );
+    });
+
+    expect(container.textContent).toContain("请选择停止能力范围");
+    expect(container.querySelector(".session-row-action-hover")).toBeNull();
+    expect(container.querySelector(".choice-row")).toBeNull();
+    expect(container.textContent).not.toContain("仅 Codex APP");
+    expect(container.textContent).not.toContain("Codex APP + CLI");
+    expect(container.textContent).not.toContain("提交选择");
+
+    expect(onToggleChoice).not.toHaveBeenCalled();
+    expect(onSubmitChoice).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders waiting text reply without shortcut inputs", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const session = waitingTextReplySession();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [session],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const actionRow = container.querySelector(".session-row-action-hover");
+    const textArea = actionRow?.querySelector("textarea");
+    const sendButton = Array.from(
+      actionRow?.querySelectorAll("button") ?? [],
+    ).find((button) => button.textContent === "发送");
+
+    expect(actionRow?.querySelector(".shortcut-row")).toBeNull();
+    expect(textArea?.getAttribute("placeholder")).toBe("输入回复");
+    expect(sendButton).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("renders completed follow-up input before shortcut inputs", async () => {
@@ -1981,6 +2328,106 @@ const followupSession = (
     can_send_reply: false,
     can_resolve_approval: false,
     can_create_followup_turn: true,
+    choice_box: {
+      enabled: false,
+      allows_multiple: false,
+      choices: [],
+      disabled_reason: "当前会话没有选项交互",
+    },
+  },
+});
+
+const waitingChoiceSession = (): PanelSessionListItem => ({
+  ...sessionItem(
+    codexAppSessionKey,
+    "codex_app",
+    "waiting_for_answer",
+    "等待回复",
+  ),
+  actions: ["send_reply"],
+  summary: {
+    text: "请选择下一步",
+    full_text: "请选择下一步",
+    truncated: false,
+    max_chars: 120,
+  },
+  inline_interaction: {
+    summary: "请选择下一步",
+    interaction_id: { value: "choice-1" },
+    kind: "choice",
+    can_jump: false,
+    can_send_reply: true,
+    can_resolve_approval: false,
+    can_create_followup_turn: false,
+    choice_box: {
+      enabled: true,
+      allows_multiple: false,
+      choices: [
+        {
+          value: "仅 Codex APP (Recommended)",
+          label: "仅 Codex APP (Recommended)",
+          tooltip:
+            "接入已验证的 app-server `turn/interrupt`；Codex CLI 继续显示禁用占位，风险最小。",
+        },
+        {
+          value: "Codex APP + CLI",
+          label: "Codex APP + CLI",
+          tooltip:
+            "同时规划 CLI 停止能力；但当前仓库没有稳定 CLI 停止协议事实，需要额外探查和更大改动。",
+        },
+      ],
+      disabled_reason: null,
+    },
+  },
+});
+
+const waitingExternalTextReplySession = (): PanelSessionListItem => ({
+  ...sessionItem(
+    codexAppSessionKey,
+    "codex_app",
+    "waiting_for_answer",
+    "等待回复",
+  ),
+  actions: [],
+  summary: {
+    text: "请选择停止能力范围",
+    full_text: "请选择停止能力范围",
+    truncated: false,
+    max_chars: 120,
+  },
+  inline_interaction: {
+    summary: "请选择停止能力范围",
+    interaction_id: { value: "external-reply-1" },
+    kind: "text_reply",
+    can_jump: false,
+    can_send_reply: false,
+    can_resolve_approval: false,
+    can_create_followup_turn: false,
+    choice_box: {
+      enabled: false,
+      allows_multiple: false,
+      choices: [],
+      disabled_reason: "当前会话没有选项交互",
+    },
+  },
+});
+
+const waitingTextReplySession = (): PanelSessionListItem => ({
+  ...sessionItem(
+    codexAppSessionKey,
+    "codex_app",
+    "waiting_for_answer",
+    "等待回复",
+  ),
+  actions: ["send_reply"],
+  inline_interaction: {
+    summary: "请输入回复",
+    interaction_id: { value: "reply-1" },
+    kind: "text_reply",
+    can_jump: false,
+    can_send_reply: true,
+    can_resolve_approval: false,
+    can_create_followup_turn: false,
     choice_box: {
       enabled: false,
       allows_multiple: false,

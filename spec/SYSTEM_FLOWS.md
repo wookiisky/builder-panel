@@ -82,13 +82,19 @@ APP 启动后仍在运行的任务如果继续发出 hook、notification 或 ser
 
 前端主体以单列列表展示所有 session。
 
-等待用户回复的 session 在行内展示最后一段输出和回复区。
+等待用户回复的 session 在主行展示已清洗摘要。
 
-完成或失败且可 follow-up 的 Codex APP session 默认保持单行，点击右侧展开按钮后展示自由输入区。
+具备可回写目标的等待用户回复 session 在 hover、focus 或无 hover 环境的第二行展示回复区。
 
-有选项的回复区展示选项按钮。
+外部只读等待用户回复 session 不展示第二行。
 
-无选项的回复区展示设置中的自定义快捷输入。
+完成或失败且可 follow-up 的 Codex APP session 默认保持单行，hover 或 focus 后展示自由输入区。
+
+可回写且有选项的回复区展示选项按钮。
+
+等待用户回复的回复区不展示设置中的自定义快捷输入。
+
+完成或失败且可 follow-up 的 Codex APP session 可展示设置中的自定义快捷输入。
 
 ## session 实时更新流程
 
@@ -454,9 +460,9 @@ Shortcut Reply Service 根据启用状态、agent 类型、项目 ID 和排序�
 
 设置保存边界会清洗非法自定义快捷输入。
 
-前端只在无选项且文本可回写或可创建 follow-up 时展示自定义快捷输入。
+前端只在完成或失败且可创建 follow-up 时展示自定义快捷输入。
 
-自定义快捷输入点击后复用文本回复或 follow-up 提交流程。
+自定义快捷输入点击后复用 follow-up 提交流程。
 
 提交失败时，自定义快捷输入内容填回当前 session 草稿。
 

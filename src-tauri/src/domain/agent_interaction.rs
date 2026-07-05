@@ -68,6 +68,15 @@ pub struct ClipboardFallbackTarget {
     pub reason: String,
 }
 
+/// 外部只读回复目标。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExternalReplyTarget {
+    /// 实际处理方展示名。
+    pub handler_label: String,
+    /// 只读原因。
+    pub reason: String,
+}
+
 /// 回复目标。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,6 +91,8 @@ pub enum ReplyTarget {
     ControlledTerminal(ControlledTerminalTarget),
     /// 不支持自动回写，只能复制。
     ClipboardOnly(ClipboardFallbackTarget),
+    /// 仅能在外部界面处理，当前面板只展示。
+    ExternalOnly(ExternalReplyTarget),
 }
 
 /// 审批请求交互。

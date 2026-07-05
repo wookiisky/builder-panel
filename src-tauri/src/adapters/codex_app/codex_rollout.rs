@@ -15,7 +15,12 @@ use serde_json::Value;
 
 use super::internal_prompt::is_codex_internal_prompt;
 use crate::domain::agent_event::{
-    ActivityUpdatedEvent, AgentEvent, TurnCompletedEvent, UserMessageUpdatedEvent,
+    ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, InteractionCompletedEvent,
+    TurnCompletedEvent, UserMessageUpdatedEvent,
+};
+use crate::domain::agent_interaction::{
+    AnswerInteraction, ExternalReplyTarget, InteractionId, InteractionStatus, ReplyTarget,
+    TextReplyInteraction,
 };
 use crate::domain::agent_session::SessionKey;
 use crate::domain::usage::UnixMillis;
@@ -45,6 +50,97 @@ pub struct CodexRolloutSnapshot {
     pub updated_at: UnixMillis,
     /// 当前 rollout 是否已经完成或中止。
     pub completed: bool,
+    /// 当前仍未处理的 request_user_input。
+    pub pending_user_input: Option<CodexRolloutPendingUserInput>,
+}
+
+/// Codex rollout 中恢复出的等待用户输入请求。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodexRolloutPendingUserInput {
+    /// Codex turn ID。
+    pub turn_id: String,
+    /// function_call call_id。
+    pub call_id: String,
+    /// 等待回答的问题列表。
+    pub questions: Vec<CodexRolloutPendingQuestion>,
+    /// 自动消解等待时间。
+    pub auto_resolution_ms: Option<u64>,
+}
+
+/// Codex rollout 中的单个等待输入问题。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodexRolloutPendingQuestion {
+    /// 问题稳定 ID。
+    pub id: String,
+    /// 可选短标题。
+    pub header: Option<String>,
+    /// 问题正文。
+    pub question: String,
+}
+
+impl CodexRolloutPendingUserInput {
+    /// 转换为只读回答请求事件。
+    pub fn answer_requested_event(
+        &self,
+        session_key: &SessionKey,
+        updated_at: UnixMillis,
+    ) -> AgentEvent {
+        AgentEvent::AnswerRequested(AnswerRequestedEvent {
+            session_key: session_key.clone(),
+            interaction: self.answer_interaction(session_key, updated_at),
+            updated_at,
+        })
+    }
+
+    /// 转换为只读回答交互。
+    fn answer_interaction(
+        &self,
+        session_key: &SessionKey,
+        updated_at: UnixMillis,
+    ) -> AnswerInteraction {
+        let summary = self.request_summary();
+        let reply_target = ReplyTarget::ExternalOnly(ExternalReplyTarget {
+            handler_label: "Codex App".to_string(),
+            reason: "Codex App 私有等待输入只能在原线程处理".to_string(),
+        });
+
+        AnswerInteraction::TextReply(TextReplyInteraction {
+            interaction_id: self.interaction_id(),
+            session_key: session_key.clone(),
+            created_at: updated_at,
+            expires_at: None,
+            reply_target,
+            status: InteractionStatus::Pending,
+            request_summary: summary.clone(),
+            prompt: summary,
+        })
+    }
+
+    /// 创建稳定交互 ID。
+    fn interaction_id(&self) -> InteractionId {
+        InteractionId::new(format!("rollout:{}:{}", self.turn_id, self.call_id))
+    }
+
+    /// 创建等待输入摘要。
+    pub fn request_summary(&self) -> String {
+        let first_question = self
+            .questions
+            .first()
+            .map(|question| question.question.as_str())
+            .unwrap_or("Codex App 等待输入");
+        if self.questions.len() <= 1 {
+            return truncate(first_question, 240);
+        }
+
+        truncate(
+            &format!(
+                "{}；另有 {} 个问题需在 Codex App 中处理",
+                first_question,
+                self.questions.len().saturating_sub(1)
+            ),
+            240,
+        )
+    }
 }
 
 /// Codex rollout 实时 tail 目标。
@@ -82,6 +178,8 @@ struct CodexRolloutTailState {
     completed: bool,
     /// 当前追加流是否处在 Codex 内部隐藏 turn 中。
     current_turn_is_internal: bool,
+    /// 当前等待输入 function call ID。
+    pending_user_input_call_id: Option<String>,
 }
 
 /// rollout 文件身份。
@@ -267,6 +365,7 @@ fn tail_state_at_eof(path: &Path, session_key: SessionKey) -> CodexRolloutTailSt
         .as_ref()
         .map(rollout_file_identity)
         .unwrap_or_else(empty_rollout_file_identity);
+    let scan_state = scan_rollout_tail_state(path);
     CodexRolloutTailState {
         session_key,
         offset,
@@ -274,22 +373,23 @@ fn tail_state_at_eof(path: &Path, session_key: SessionKey) -> CodexRolloutTailSt
         partial_line: Vec::new(),
         dropping_overlong_line: false,
         completed: false,
-        current_turn_is_internal: scan_current_internal_turn(path),
+        current_turn_is_internal: scan_state.current_turn_is_internal,
+        pending_user_input_call_id: scan_state.pending_user_input_call_id,
     }
 }
 
-fn scan_current_internal_turn(path: &Path) -> bool {
+fn scan_rollout_tail_state(path: &Path) -> CodexRolloutScanState {
     let Ok(file) = File::open(path) else {
-        return false;
+        return CodexRolloutScanState::default();
     };
-    let mut state = CodexRolloutInternalTurnState::default();
+    let mut state = CodexRolloutScanState::default();
     let mut reader = BufReader::new(file);
 
     for_each_bounded_line(&mut reader, |line| {
-        apply_internal_turn_line(&line, &mut state);
+        apply_scan_line(&line, &mut state);
     });
 
-    state.current_turn_is_internal
+    state
 }
 
 fn poll_path_events(
@@ -342,9 +442,11 @@ fn poll_path_events(
                 .value
                 .saturating_add(u64::try_from(events.len()).unwrap_or(u64::MAX)),
         );
-        if let Some(event) = live_event_from_rollout_line(&line, state, event_updated_at) {
-            events.push(event);
-        }
+        events.extend(live_events_from_rollout_line(
+            &line,
+            state,
+            event_updated_at,
+        ));
     }
 
     events
@@ -361,7 +463,9 @@ fn reset_tail_state_at_eof(
     state.partial_line.clear();
     state.dropping_overlong_line = false;
     state.completed = false;
-    state.current_turn_is_internal = scan_current_internal_turn(path);
+    let scan_state = scan_rollout_tail_state(path);
+    state.current_turn_is_internal = scan_state.current_turn_is_internal;
+    state.pending_user_input_call_id = scan_state.pending_user_input_call_id;
 }
 
 #[cfg(unix)]
@@ -456,105 +560,119 @@ fn append_tail_bytes(
     lines
 }
 
-fn live_event_from_rollout_line(
+fn live_events_from_rollout_line(
     line: &str,
     state: &mut CodexRolloutTailState,
     updated_at: UnixMillis,
-) -> Option<AgentEvent> {
-    let value = serde_json::from_str::<Value>(line).ok()?;
-    let object = value.as_object()?;
-    let payload = object.get("payload").and_then(Value::as_object)?;
+) -> Vec<AgentEvent> {
+    let Some(value) = serde_json::from_str::<Value>(line).ok() else {
+        return Vec::new();
+    };
+    let Some(object) = value.as_object() else {
+        return Vec::new();
+    };
+    let Some(payload) = object.get("payload").and_then(Value::as_object) else {
+        return Vec::new();
+    };
 
     match object.get("type").and_then(Value::as_str) {
-        Some("event_msg") => live_event_from_event_msg(payload, state, updated_at),
-        Some("response_item") => live_event_from_response_item(payload, state, updated_at),
-        _ => None,
+        Some("event_msg") => live_events_from_event_msg(payload, state, updated_at),
+        Some("response_item") => live_events_from_response_item(payload, state, updated_at),
+        _ => Vec::new(),
     }
 }
 
-fn live_event_from_event_msg(
+fn live_events_from_event_msg(
     payload: &serde_json::Map<String, Value>,
     state: &mut CodexRolloutTailState,
     updated_at: UnixMillis,
-) -> Option<AgentEvent> {
+) -> Vec<AgentEvent> {
     match payload.get("type").and_then(Value::as_str) {
         Some("turn_started") | Some("task_started") => {
             if !state.current_turn_is_internal {
                 state.completed = false;
             }
-            None
+            Vec::new()
         }
         Some("user_message") => {
-            let message = clean_string(payload.get("message"))?;
+            let Some(message) = clean_string(payload.get("message")) else {
+                return Vec::new();
+            };
             if is_codex_internal_prompt(&message) {
                 state.current_turn_is_internal = true;
-                return None;
+                return Vec::new();
             }
             state.current_turn_is_internal = false;
             state.completed = false;
-            Some(user_message_event(state, &message, updated_at))
+            let mut events = clear_pending_user_input_events(state, None, updated_at);
+            events.push(user_message_event(state, &message, updated_at));
+            events
         }
         Some("agent_message") if !state.current_turn_is_internal => {
-            clean_string(payload.get("message")).map(|message| {
-                activity_event(
-                    state,
-                    &truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS),
-                    updated_at,
-                )
-            })
+            clean_string(payload.get("message"))
+                .map(|message| {
+                    vec![activity_event(
+                        state,
+                        &truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS),
+                        updated_at,
+                    )]
+                })
+                .unwrap_or_default()
         }
-        Some("agent_message") => None,
+        Some("agent_message") => Vec::new(),
         Some("task_complete") | Some("turn_complete") => {
             if state.current_turn_is_internal {
-                return None;
+                return Vec::new();
             }
             state.completed = true;
             let summary = clean_string(payload.get("last_agent_message"))
                 .map(|message| truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS));
-            Some(AgentEvent::TurnCompleted(TurnCompletedEvent {
+            state.pending_user_input_call_id = None;
+            vec![AgentEvent::TurnCompleted(TurnCompletedEvent {
                 session_key: state.session_key.clone(),
                 summary,
                 updated_at,
-            }))
+            })]
         }
         Some("turn_aborted") => {
             if state.current_turn_is_internal {
-                return None;
+                return Vec::new();
             }
             state.completed = true;
-            Some(AgentEvent::TurnCompleted(TurnCompletedEvent {
+            state.pending_user_input_call_id = None;
+            vec![AgentEvent::TurnCompleted(TurnCompletedEvent {
                 session_key: state.session_key.clone(),
                 summary: None,
                 updated_at,
-            }))
+            })]
         }
         Some("exec_command_begin")
         | Some("terminal_interaction")
         | Some("patch_apply_begin")
         | Some("patch_apply_updated")
-        | Some("mcp_tool_call_begin") => None,
-        Some("dynamic_tool_call_request") => None,
-        Some("web_search_begin") => None,
-        Some("web_search_end") => None,
-        Some("image_generation_begin") => None,
-        Some("image_generation_end") => None,
-        Some("view_image_tool_call") => None,
-        Some("plan_update") => None,
+        | Some("mcp_tool_call_begin") => Vec::new(),
+        Some("dynamic_tool_call_request") => Vec::new(),
+        Some("web_search_begin") => Vec::new(),
+        Some("web_search_end") => Vec::new(),
+        Some("image_generation_begin") => Vec::new(),
+        Some("image_generation_end") => Vec::new(),
+        Some("view_image_tool_call") => Vec::new(),
+        Some("plan_update") => Vec::new(),
         Some("exec_command_end")
         | Some("patch_apply_end")
         | Some("mcp_tool_call_end")
-        | Some("dynamic_tool_call_response") => None,
-        _ => None,
+        | Some("dynamic_tool_call_response") => Vec::new(),
+        _ => Vec::new(),
     }
 }
 
-fn live_event_from_response_item(
+fn live_events_from_response_item(
     payload: &serde_json::Map<String, Value>,
     state: &mut CodexRolloutTailState,
     updated_at: UnixMillis,
-) -> Option<AgentEvent> {
+) -> Vec<AgentEvent> {
     if state.current_turn_is_internal {
-        return None;
+        return Vec::new();
     }
     let item = payload
         .get("item")
@@ -562,54 +680,205 @@ fn live_event_from_response_item(
         .unwrap_or(payload);
     match item.get("type").and_then(Value::as_str) {
         Some("message") if item.get("role").and_then(Value::as_str) == Some("assistant") => {
-            response_message_text(item, "output_text").map(|message| {
-                activity_event(
-                    state,
-                    &truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS),
-                    updated_at,
-                )
-            })
+            response_message_text(item, "output_text")
+                .map(|message| {
+                    vec![activity_event(
+                        state,
+                        &truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS),
+                        updated_at,
+                    )]
+                })
+                .unwrap_or_default()
         }
         Some("function_call") => {
-            function_call_activity(item).map(|summary| activity_event(state, &summary, updated_at))
+            if let Some(pending) = pending_user_input_from_response_item(payload, item) {
+                state.pending_user_input_call_id = Some(pending.call_id.clone());
+                return vec![
+                    activity_event(state, &pending.request_summary(), updated_at),
+                    pending.answer_requested_event(&state.session_key, updated_at),
+                ];
+            }
+            function_call_activity(item)
+                .map(|summary| vec![activity_event(state, &summary, updated_at)])
+                .unwrap_or_default()
         }
-        Some("local_shell_call") => Some(activity_event(state, "执行命令…", updated_at)),
-        Some("custom_tool_call") => None,
-        Some("tool_search_call") => Some(activity_event(state, "搜索工具中…", updated_at)),
-        Some("web_search_call") => Some(activity_event(state, "联网检索中…", updated_at)),
-        Some("image_generation_call") => Some(activity_event(state, "生成图像中…", updated_at)),
-        Some("function_call_output") | Some("custom_tool_call_output") => None,
-        _ => None,
+        Some("local_shell_call") => vec![activity_event(state, "执行命令…", updated_at)],
+        Some("custom_tool_call") => Vec::new(),
+        Some("tool_search_call") => vec![activity_event(state, "搜索工具中…", updated_at)],
+        Some("web_search_call") => vec![activity_event(state, "联网检索中…", updated_at)],
+        Some("image_generation_call") => vec![activity_event(state, "生成图像中…", updated_at)],
+        Some("function_call_output") | Some("custom_tool_call_output") => {
+            let call_id = clean_string(item.get("call_id"));
+            clear_pending_user_input_events(state, call_id.as_deref(), updated_at)
+        }
+        _ => Vec::new(),
     }
 }
 
-/// 只用于恢复 tailer 内部 turn 状态，不产生摘要或 UI 事件。
-#[derive(Default)]
-struct CodexRolloutInternalTurnState {
-    /// 当前是否处在 Codex 内部隐藏 turn。
-    current_turn_is_internal: bool,
+fn clear_pending_user_input_events(
+    state: &mut CodexRolloutTailState,
+    call_id: Option<&str>,
+    updated_at: UnixMillis,
+) -> Vec<AgentEvent> {
+    let Some(pending_call_id) = state.pending_user_input_call_id.as_deref() else {
+        return Vec::new();
+    };
+    if call_id.is_some_and(|value| value != pending_call_id) {
+        return Vec::new();
+    }
+
+    state.pending_user_input_call_id = None;
+    vec![AgentEvent::InteractionCompleted(
+        InteractionCompletedEvent {
+            session_key: state.session_key.clone(),
+            summary: None,
+            updated_at,
+        },
+    )]
 }
 
-fn apply_internal_turn_line(line: &str, state: &mut CodexRolloutInternalTurnState) {
+/// 从 function_call response_item 中提取 request_user_input。
+fn pending_user_input_from_response_item(
+    payload: &serde_json::Map<String, Value>,
+    item: &serde_json::Map<String, Value>,
+) -> Option<CodexRolloutPendingUserInput> {
+    if item.get("name").and_then(Value::as_str) != Some("request_user_input") {
+        return None;
+    }
+    let call_id = clean_string(item.get("call_id"))?;
+    let arguments = item
+        .get("arguments")
+        .and_then(parse_function_call_arguments)?;
+    let questions = pending_questions(arguments.get("questions"))?;
+    let turn_id = rollout_turn_id(payload)
+        .or_else(|| clean_string(item.get("id")))
+        .unwrap_or_else(|| "unknown-turn".to_string());
+    let auto_resolution_ms = arguments
+        .get("autoResolutionMs")
+        .or_else(|| arguments.get("auto_resolution_ms"))
+        .and_then(Value::as_u64);
+
+    Some(CodexRolloutPendingUserInput {
+        turn_id,
+        call_id,
+        questions,
+        auto_resolution_ms,
+    })
+}
+
+/// 提取 rollout 内部 turn ID。
+fn rollout_turn_id(payload: &serde_json::Map<String, Value>) -> Option<String> {
+    payload
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(Value::as_object)
+        .and_then(|metadata| clean_string(metadata.get("turn_id")))
+}
+
+/// 提取等待输入问题。
+fn pending_questions(value: Option<&Value>) -> Option<Vec<CodexRolloutPendingQuestion>> {
+    let questions = value?.as_array()?;
+    let mut output = Vec::new();
+    for (index, question) in questions.iter().enumerate() {
+        let Some(question_object) = question.as_object() else {
+            continue;
+        };
+        let question_text = clean_string(question_object.get("question"))
+            .or_else(|| clean_string(question_object.get("label")))
+            .unwrap_or_else(|| "Codex App 等待输入".to_string());
+        let id = clean_string(question_object.get("id"))
+            .unwrap_or_else(|| format!("question-{}", index.saturating_add(1)));
+        output.push(CodexRolloutPendingQuestion {
+            id,
+            header: clean_string(question_object.get("header")),
+            question: question_text,
+        });
+    }
+
+    if output.is_empty() {
+        None
+    } else {
+        Some(output)
+    }
+}
+
+/// 只用于恢复 tailer 内部状态，不产生摘要或 UI 事件。
+#[derive(Default)]
+struct CodexRolloutScanState {
+    /// 当前是否处在 Codex 内部隐藏 turn。
+    current_turn_is_internal: bool,
+    /// 当前未完成的 request_user_input call_id。
+    pending_user_input_call_id: Option<String>,
+}
+
+fn apply_scan_line(line: &str, state: &mut CodexRolloutScanState) {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return;
     };
     let Some(object) = value.as_object() else {
         return;
     };
-    if object.get("type").and_then(Value::as_str) != Some("event_msg") {
-        return;
-    }
     let Some(payload) = object.get("payload").and_then(Value::as_object) else {
         return;
     };
-    if payload.get("type").and_then(Value::as_str) != Some("user_message") {
+    match object.get("type").and_then(Value::as_str) {
+        Some("event_msg") => apply_scan_event_msg(payload, state),
+        Some("response_item") => apply_scan_response_item(payload, state),
+        _ => {}
+    }
+}
+
+fn apply_scan_event_msg(
+    payload: &serde_json::Map<String, Value>,
+    state: &mut CodexRolloutScanState,
+) {
+    match payload.get("type").and_then(Value::as_str) {
+        Some("user_message") => {
+            let Some(message) = clean_string(payload.get("message")) else {
+                return;
+            };
+            state.current_turn_is_internal = is_codex_internal_prompt(&message);
+            if !state.current_turn_is_internal {
+                state.pending_user_input_call_id = None;
+            }
+        }
+        Some("task_complete") | Some("turn_complete") | Some("turn_aborted") => {
+            if !state.current_turn_is_internal {
+                state.pending_user_input_call_id = None;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_scan_response_item(
+    payload: &serde_json::Map<String, Value>,
+    state: &mut CodexRolloutScanState,
+) {
+    if state.current_turn_is_internal {
         return;
     }
-    let Some(message) = clean_string(payload.get("message")) else {
-        return;
-    };
-    state.current_turn_is_internal = is_codex_internal_prompt(&message);
+    let item = payload
+        .get("item")
+        .and_then(Value::as_object)
+        .unwrap_or(payload);
+    match item.get("type").and_then(Value::as_str) {
+        Some("function_call") => {
+            if let Some(pending) = pending_user_input_from_response_item(payload, item) {
+                state.pending_user_input_call_id = Some(pending.call_id);
+            }
+        }
+        Some("function_call_output") | Some("custom_tool_call_output") => {
+            let call_id = clean_string(item.get("call_id"));
+            if state
+                .pending_user_input_call_id
+                .as_deref()
+                .is_some_and(|pending_call_id| call_id.as_deref() == Some(pending_call_id))
+            {
+                state.pending_user_input_call_id = None;
+            }
+        }
+        _ => {}
+    }
 }
 
 /// 根据 response_item.item 中的 function_call 字段，构造一条"正在执行什么"的简短摘要，
@@ -782,6 +1051,8 @@ struct CodexRolloutState {
     updated_at: UnixMillis,
     /// 当前 reducer 是否处在 Codex 内部隐藏 turn 中。
     current_turn_is_internal: bool,
+    /// 当前未完成的 Codex App 等待输入。
+    pending_user_input: Option<CodexRolloutPendingUserInput>,
 }
 
 impl CodexRolloutState {
@@ -796,6 +1067,7 @@ impl CodexRolloutState {
             path,
             updated_at,
             current_turn_is_internal: false,
+            pending_user_input: None,
         }
     }
 
@@ -809,6 +1081,7 @@ impl CodexRolloutState {
             path: self.path,
             updated_at: self.updated_at,
             completed: self.completed,
+            pending_user_input: self.pending_user_input,
         })
     }
 }
@@ -859,6 +1132,7 @@ fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRo
                 return;
             }
             state.completed = true;
+            state.pending_user_input = None;
             if let Some(message) = clean_string(payload.get("last_agent_message")) {
                 apply_agent_message(message, state);
             }
@@ -868,6 +1142,7 @@ fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRo
                 return;
             }
             state.completed = true;
+            state.pending_user_input = None;
         }
         Some("user_message") => {
             if let Some(message) = clean_string(payload.get("message")) {
@@ -880,6 +1155,7 @@ fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRo
                 if state.completed {
                     state.completed = false;
                 }
+                state.pending_user_input = None;
                 state.last_agent_message = None;
                 state.summary = Some(truncate(&message, 120));
             }
@@ -916,13 +1192,26 @@ fn apply_response_item(payload: &serde_json::Map<String, Value>, state: &mut Cod
                 apply_agent_message(message, state);
             }
         }
-        Some("function_call")
-        | Some("custom_tool_call")
+        Some("function_call") => {
+            if let Some(pending) = pending_user_input_from_response_item(payload, item) {
+                state.pending_user_input = Some(pending);
+            }
+        }
+        Some("custom_tool_call")
         | Some("local_shell_call")
         | Some("tool_search_call")
         | Some("web_search_call")
         | Some("image_generation_call") => {}
-        Some("function_call_output") | Some("custom_tool_call_output") => {}
+        Some("function_call_output") | Some("custom_tool_call_output") => {
+            let call_id = clean_string(item.get("call_id"));
+            if state
+                .pending_user_input
+                .as_ref()
+                .is_some_and(|pending| call_id.as_deref() == Some(pending.call_id.as_str()))
+            {
+                state.pending_user_input = None;
+            }
+        }
         _ => {}
     }
 }
@@ -1031,6 +1320,7 @@ mod tests {
         MAX_FINAL_OUTPUT_CHARS, MAX_LINE_BYTES,
     };
     use crate::domain::agent_event::AgentEvent;
+    use crate::domain::agent_interaction::{AnswerInteraction, ReplyTarget};
     use crate::domain::agent_session::{AgentKind, ConversationId, ProjectId, SessionKey};
     use crate::domain::usage::UnixMillis;
 
@@ -1142,6 +1432,109 @@ mod tests {
         ]);
 
         assert_eq!(snapshot.summary.as_deref(), Some("嵌套输出"));
+    }
+
+    #[test]
+    fn rollout_snapshot_recovers_pending_user_input_question() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"继续"}} "#,
+            r#"{"type":"response_item","payload":{"internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},"item":{"type":"function_call","name":"request_user_input","call_id":"call-1","arguments":"{\"questions\":[{\"id\":\"stop_scope\",\"header\":\"范围\",\"question\":\"选择停止能力范围\",\"options\":[{\"label\":\"仅 Codex APP (Recommended)\",\"description\":\"只接入 APP\"},{\"label\":\"Codex APP + CLI\",\"description\":\"同时接入 CLI\"}]}]}"}}}"#,
+        ]);
+
+        let pending = snapshot
+            .pending_user_input
+            .expect("pending user input should recover");
+
+        assert_eq!(pending.turn_id, "turn-1");
+        assert_eq!(pending.call_id, "call-1");
+        assert_eq!(pending.request_summary(), "选择停止能力范围");
+    }
+
+    #[test]
+    fn rollout_tailer_emits_pending_user_input_for_appended_request() {
+        let root = test_root("rollout-tail-user-input");
+        let file = root.join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(&root).expect("root should create");
+        std::fs::write(&file, "").expect("rollout should write");
+        let session_key = SessionKey::new(
+            AgentKind::CodexApp,
+            ProjectId::new("/tmp/builder-panel"),
+            ConversationId::new("thread-1"),
+        );
+        let mut tailer = CodexRolloutTailer::new(root.clone());
+        tailer.sync_targets(vec![CodexRolloutWatchTarget {
+            session_key: session_key.clone(),
+            path: file.clone(),
+        }]);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .expect("rollout should open")
+            .write_all(
+                r#"{"type":"response_item","payload":{"internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},"item":{"type":"function_call","name":"request_user_input","call_id":"call-1","arguments":"{\"questions\":[{\"id\":\"stop_scope\",\"question\":\"选择停止能力范围\",\"options\":[{\"label\":\"仅 Codex APP (Recommended)\",\"description\":\"只接入 APP\"},{\"label\":\"Codex APP + CLI\",\"description\":\"同时接入 CLI\"}]}]}"}}}
+"#
+                .as_bytes(),
+            )
+            .expect("rollout should append");
+
+        let events = tailer.poll_events(UnixMillis::new(2));
+        let [AgentEvent::ActivityUpdated(activity), AgentEvent::AnswerRequested(answer)] =
+            events.as_slice()
+        else {
+            panic!("tailer should emit summary and answer request");
+        };
+        let AnswerInteraction::TextReply(reply) = &answer.interaction else {
+            panic!("answer request should be text reply");
+        };
+
+        assert_eq!(activity.summary, "选择停止能力范围");
+        assert_eq!(answer.session_key, session_key);
+        assert_eq!(reply.request_summary, "选择停止能力范围");
+        assert!(matches!(reply.reply_target, ReplyTarget::ExternalOnly(_)));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollout_tailer_clears_scanned_pending_user_input_output() {
+        let root = test_root("rollout-tail-user-input-output");
+        let file = root.join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(&root).expect("root should create");
+        std::fs::write(
+            &file,
+            r#"{"type":"response_item","payload":{"internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},"item":{"type":"function_call","name":"request_user_input","call_id":"call-1","arguments":"{\"questions\":[{\"id\":\"stop_scope\",\"question\":\"选择停止能力范围\",\"options\":[{\"label\":\"仅 Codex APP (Recommended)\",\"description\":\"只接入 APP\"},{\"label\":\"Codex APP + CLI\",\"description\":\"同时接入 CLI\"}]}]}"}}}"#,
+        )
+        .expect("rollout should write");
+        let session_key = SessionKey::new(
+            AgentKind::CodexApp,
+            ProjectId::new("/tmp/builder-panel"),
+            ConversationId::new("thread-1"),
+        );
+        let mut tailer = CodexRolloutTailer::new(root.clone());
+        tailer.sync_targets(vec![CodexRolloutWatchTarget {
+            session_key: session_key.clone(),
+            path: file.clone(),
+        }]);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .expect("rollout should open")
+            .write_all(
+                r#"
+{"type":"response_item","payload":{"item":{"type":"function_call_output","call_id":"call-1","output":"{\"answers\":{}}"}}}
+"#
+                .as_bytes(),
+            )
+            .expect("rollout should append");
+
+        let events = tailer.poll_events(UnixMillis::new(2));
+        let [AgentEvent::InteractionCompleted(completed)] = events.as_slice() else {
+            panic!("tailer should emit interaction completion");
+        };
+
+        assert_eq!(completed.session_key, session_key);
+        assert_eq!(completed.summary, None);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -1346,9 +1346,7 @@ export const shouldSubmitReplyOnKeyDown = (
 export const shouldAutoShowSessionActionRow = (
   statusKind: PanelSessionListItem["status_kind"],
 ): boolean => {
-  return (
-    statusKind === "waiting_for_approval" || statusKind === "waiting_for_answer"
-  );
+  return statusKind === "waiting_for_approval";
 };
 
 /// 判断 session 是否可手动展开 follow-up 输入区。
@@ -1362,24 +1360,56 @@ export const canToggleFollowupRow = (
   );
 };
 
-/// 判断 session 第二行是否应显示。
-export const shouldShowSessionActionRow = (
+/// 判断 session 行是否通过 hover 或 focus 展示第二行。
+export const shouldHoverExpandSessionActionRow = (
   statusKind: PanelSessionListItem["status_kind"],
   canCreateFollowupTurn: boolean,
+  canSendReply = false,
 ): boolean => {
-  if (shouldAutoShowSessionActionRow(statusKind)) {
-    return true;
+  if (statusKind === "waiting_for_answer") {
+    return canSendReply;
   }
 
   return canToggleFollowupRow(statusKind, canCreateFollowupTurn);
 };
 
+/// 判断 session 第二行是否应显示。
+export const shouldShowSessionActionRow = (
+  statusKind: PanelSessionListItem["status_kind"],
+  canCreateFollowupTurn: boolean,
+  canSendReply = false,
+): boolean => {
+  if (shouldAutoShowSessionActionRow(statusKind)) {
+    return true;
+  }
+
+  return shouldHoverExpandSessionActionRow(
+    statusKind,
+    canCreateFollowupTurn,
+    canSendReply,
+  );
+};
+
+/// 判断第二行是否展示待处理交互摘要。
+export const shouldShowInteractionSummary = (
+  statusKind: PanelSessionListItem["status_kind"],
+): boolean => {
+  return (
+    statusKind === "waiting_for_approval" || statusKind === "waiting_for_answer"
+  );
+};
+
 /// 返回 session 第二行样式类名。
 export const sessionActionRowClassName = (
   statusKind: PanelSessionListItem["status_kind"],
+  canSendReply = false,
 ): string => {
   if (shouldAutoShowSessionActionRow(statusKind)) {
     return "session-row-action";
+  }
+
+  if (statusKind === "waiting_for_answer" && canSendReply) {
+    return "session-row-action session-row-action-hover session-row-action-choice";
   }
 
   return "session-row-action session-row-action-followup";
@@ -1766,12 +1796,18 @@ const SessionRow = ({
   const expanded = shouldShowSessionActionRow(
     session.status_kind,
     interaction.can_create_followup_turn,
+    interaction.can_send_reply,
+  );
+  const hoverExpanded = shouldHoverExpandSessionActionRow(
+    session.status_kind,
+    interaction.can_create_followup_turn,
+    interaction.can_send_reply,
   );
   const canCreateFollowup = shouldUseFollowupShortcut(
     session.status_kind,
     interaction.can_create_followup_turn,
   );
-  const showActionSummary = shouldAutoShowSessionActionRow(session.status_kind);
+  const showActionSummary = shouldShowInteractionSummary(session.status_kind);
   const shortcuts = sortedEnabledShortcuts(settings.replies.custom_shortcuts);
   const summaryParagraph = textDisplayParagraph(
     session.summary,
@@ -1787,12 +1823,18 @@ const SessionRow = ({
 
   return (
     <article
+      aria-label={
+        hoverExpanded
+          ? `${session.status_label} ${session.thread_label}`
+          : undefined
+      }
       className={
         selected
           ? "session-table-row session-table-row-selected"
           : "session-table-row"
       }
       style={rowStyle}
+      tabIndex={hoverExpanded ? 0 : undefined}
       onClick={() => {
         onJump(session);
       }}
@@ -1851,7 +1893,10 @@ const SessionRow = ({
       </div>
       {expanded && (
         <div
-          className={sessionActionRowClassName(session.status_kind)}
+          className={sessionActionRowClassName(
+            session.status_kind,
+            interaction.can_send_reply,
+          )}
           onClick={(event) => {
             event.stopPropagation();
           }}
@@ -1899,53 +1944,56 @@ const SessionRow = ({
               </button>
             </div>
           )}
-          {interaction.kind === "choice" && interactionId !== null && (
-            <div className="choice-box">
-              <div className="choice-list">
-                {interaction.choice_box.choices.map((choice) => (
-                  <label
-                    className="choice-row"
-                    key={choice.value}
-                    title={choice.tooltip ?? choice.label}
+          {interaction.kind === "choice" &&
+            interactionId !== null &&
+            interaction.choice_box.enabled &&
+            interaction.choice_box.choices.length > 0 && (
+              <div className="choice-box">
+                <div className="choice-list">
+                  {interaction.choice_box.choices.map((choice) => (
+                    <label
+                      className="choice-row"
+                      key={choice.value}
+                      title={choice.tooltip ?? choice.label}
+                    >
+                      <input
+                        checked={selectedChoiceValues.includes(choice.value)}
+                        name={interactionId.value}
+                        type={
+                          interaction.choice_box.allows_multiple
+                            ? "checkbox"
+                            : "radio"
+                        }
+                        value={choice.value}
+                        onChange={() => {
+                          onToggleChoice(
+                            interactionId,
+                            choice.value,
+                            interaction.choice_box.allows_multiple,
+                          );
+                        }}
+                      />
+                      <span>{choice.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="button-row">
+                  <button
+                    disabled={selectedChoiceValues.length === 0 || submitting}
+                    type="button"
+                    onClick={() => {
+                      onSubmitChoice(
+                        session,
+                        interactionId,
+                        selectedChoiceValues,
+                      );
+                    }}
                   >
-                    <input
-                      checked={selectedChoiceValues.includes(choice.value)}
-                      name={interactionId.value}
-                      type={
-                        interaction.choice_box.allows_multiple
-                          ? "checkbox"
-                          : "radio"
-                      }
-                      value={choice.value}
-                      onChange={() => {
-                        onToggleChoice(
-                          interactionId,
-                          choice.value,
-                          interaction.choice_box.allows_multiple,
-                        );
-                      }}
-                    />
-                    <span>{choice.label}</span>
-                  </label>
-                ))}
+                    提交选择
+                  </button>
+                </div>
               </div>
-              <div className="button-row">
-                <button
-                  disabled={selectedChoiceValues.length === 0 || submitting}
-                  type="button"
-                  onClick={() => {
-                    onSubmitChoice(
-                      session,
-                      interactionId,
-                      selectedChoiceValues,
-                    );
-                  }}
-                >
-                  提交选择
-                </button>
-              </div>
-            </div>
-          )}
+            )}
           {canCreateFollowup && (
             <div className="inline-reply inline-reply-followup">
               <textarea
@@ -1986,8 +2034,7 @@ const SessionRow = ({
             </div>
           )}
           {interaction.kind !== "choice" &&
-            (interaction.can_send_reply ||
-              interaction.can_create_followup_turn) &&
+            canCreateFollowup &&
             settings.replies.shortcut_replies_enabled &&
             shortcuts.length > 0 && (
               <div className="shortcut-row" aria-label="快捷输入">
@@ -2780,8 +2827,6 @@ interface SessionDetailProps {
   readonly onResolveApproval: (decision: ApprovalDecision) => void;
   /// 回复回调。
   readonly onSendReply: () => void;
-  /// 快捷回复回调。
-  readonly onUseShortcutReply: (content: string) => void;
   /// 切换选项回调。
   readonly onToggleChoice: (
     choiceValue: string,
@@ -2804,7 +2849,6 @@ export const SessionDetail = ({
   onDraftChange,
   onResolveApproval,
   onSendReply,
-  onUseShortcutReply,
   onToggleChoice,
   onSubmitChoice,
   onCreateFollowupTurn,
@@ -2830,6 +2874,10 @@ export const SessionDetail = ({
     detail.toolbar_actions.includes("send_reply") &&
     detail.pending_interaction_kind === "choice" &&
     detail.choice_box.enabled;
+  const shouldShowChoiceBox =
+    detail.pending_interaction_kind === "choice" &&
+    detail.choice_box.enabled &&
+    detail.choice_box.choices.length > 0;
   const canCreateFollowup =
     selectedSession.runtimeSource === "codex_app" &&
     detail.toolbar_actions.includes("create_followup_turn");
@@ -2901,44 +2949,31 @@ export const SessionDetail = ({
             )}
             {canSendReply && (
               <div className="reply-inline">
-                <div className="shortcut-row" aria-label="快捷回复">
-                  {settings.replies.shortcut_replies_enabled &&
-                    sortedEnabledShortcuts(
-                      settings.replies.custom_shortcuts,
-                    ).map((shortcut) => (
-                      <button
-                        key={shortcut.id}
-                        type="button"
-                        disabled={submitting}
-                        onClick={() => {
-                          onUseShortcutReply(shortcut.content);
-                        }}
-                      >
-                        {shortcut.label}
-                      </button>
-                    ))}
-                  <button
-                    type="button"
-                    disabled={submitting}
-                    onClick={() => {
-                      setReplyComposerOpen(true);
-                    }}
-                  >
-                    打开回复
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => {
+                    setReplyComposerOpen(true);
+                  }}
+                >
+                  打开回复
+                </button>
                 <span className={replyInvalid ? "reply-count-invalid" : ""}>
                   {replyCharCount}/1000
                 </span>
               </div>
             )}
-            {canSubmitChoice && (
+            {shouldShowChoiceBox && (
               <div className="choice-box">
                 <div className="choice-list">
                   {detail.choice_box.choices.map((choice) => {
                     const checked = selectedChoiceValues.includes(choice.value);
                     return (
-                      <label className="choice-row" key={choice.value}>
+                      <label
+                        className="choice-row"
+                        key={choice.value}
+                        title={choice.tooltip ?? choice.label}
+                      >
                         <input
                           checked={checked}
                           name={pendingId ?? "choice"}
@@ -2960,17 +2995,19 @@ export const SessionDetail = ({
                     );
                   })}
                 </div>
-                <div className="button-row">
-                  <button
-                    type="button"
-                    disabled={selectedChoiceValues.length === 0 || submitting}
-                    onClick={() => {
-                      onSubmitChoice();
-                    }}
-                  >
-                    提交选择
-                  </button>
-                </div>
+                {canSubmitChoice && (
+                  <div className="button-row">
+                    <button
+                      type="button"
+                      disabled={selectedChoiceValues.length === 0 || submitting}
+                      onClick={() => {
+                        onSubmitChoice();
+                      }}
+                    >
+                      提交选择
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

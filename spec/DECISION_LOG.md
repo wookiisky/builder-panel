@@ -318,29 +318,29 @@
 
 ## 决策 21
 
-决策：Codex CLI 和未接入 agent session 只来自当前 Builder Panel 进程启动后的实时事件；Codex APP 可通过 app-server `thread/list` 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；已知 Codex CLI 和 Codex APP session 可 tail rollout 新增追加行展示用户文本和 assistant 文本；Builder Panel 不持久化 session。
+决策：Codex CLI 和未接入 agent session 只来自当前 Builder Panel 进程启动后的实时事件；Codex APP 可通过 app-server `thread/list` 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；已知 Codex CLI 和 Codex APP session 可 tail rollout 新增追加行展示用户文本、assistant 文本和等待输入问题摘要；Codex APP rollout 中的等待输入只恢复问题摘要和等待回复状态，不展示第二行选项；Builder Panel 不持久化 session。
 
 原因：用户打开面板时需要一个干净的当前观察窗口，不能把普通历史记录误当成本次 APP 状态；但 Codex APP app-server 和 rollout 已提供 thread 级项目与最新输出事实，读取这些事实可以修正待识别项目和输出摘要缺失。
 
-约束：rollout tailer 只接收当前 runtime 已知 session 的 path，从新增目标当前 EOF 后开始读取；未知或历史 rollout 不得用于创建无关当前 session，最近未完成且仍活跃的 Codex APP rollout 只作为受限启动恢复例外。
+约束：rollout tailer 只接收当前 runtime 已知 session 的 path，从新增目标当前 EOF 后开始读取；未知或历史 rollout 不得用于创建无关当前 session，最近未完成且仍活跃的 Codex APP rollout 只作为受限启动恢复例外；rollout 恢复出的 `request_user_input` 没有已验证 app-server 回写上下文，必须使用外部只读回复目标，且不得解析或展示 options。
 
-代码影响：`src-tauri/src/tauri_api/commands.rs` 读取 Codex APP session 时可同步 app-server `thread/list` 元数据和 Codex rollout 历史，并启动 Codex rollout watcher；`src-tauri/src/adapters/codex_app/mod.rs` 编码 `thread/loaded/list`、`thread/list`、`thread/resume` 和 `turn/start`，并在实时事件首次到达时初始化 Codex APP session 交互能力；无可信 cwd 的 app-server 事件会先进入待识别项目，后续按 thread ID 迁移到真实 cwd session；`src-tauri/src/adapters/codex_cli_hook/mod.rs` 记录 Codex CLI 已知 rollout path；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 rollout 历史和已知 session 追加行。
+代码影响：`src-tauri/src/tauri_api/commands.rs` 读取 Codex APP session 时可同步 app-server `thread/list` 元数据和 Codex rollout 历史，并启动 Codex rollout watcher；`src-tauri/src/adapters/codex_app/mod.rs` 编码 `thread/loaded/list`、`thread/list`、`thread/resume` 和 `turn/start`，并在实时事件首次到达时初始化 Codex APP session 交互能力；无可信 cwd 的 app-server 事件会先进入待识别项目，后续按 thread ID 迁移到真实 cwd session；`src-tauri/src/adapters/codex_cli_hook/mod.rs` 记录 Codex CLI 已知 rollout path；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 rollout 历史和已知 session 追加行；`src-tauri/src/domain/agent_interaction.rs` 用 `ExternalOnly` 区分外部只读等待回复。
 
-测试影响：Rust Codex APP 测试覆盖首个实时审批或回复事件初始化可操作 session、无可信 cwd 不生成 jump、thread 元数据迁移、rollout 输出清洗、多 turn 输出不串联和 rollout tailer 只读取追加行；前端测试覆盖初始空列表后 Codex APP session 出现时自动选中和无 jump 行点击无反应。
+测试影响：Rust Codex APP 测试覆盖首个实时审批或回复事件初始化可操作 session、无可信 cwd 不生成 jump、thread 元数据迁移、rollout 输出清洗、多 turn 输出不串联、rollout tailer 只读取追加行、rollout 等待输入问题摘要和只读恢复；前端测试覆盖初始空列表后 Codex APP session 出现时自动选中、无 jump 行点击无反应和外部只读等待回复不展示第二行。
 
-排障影响：若 Codex APP session 显示待识别项目，先检查 app-server `thread/list` 元数据和 rollout 是否能提供可信 cwd；若实时输出没有更新，先检查 session 是否已有合法 rollout path、watcher 是否能读取新增追加行、前端是否收到 `session_updated` 事件；若其它 agent 旧任务未显示，先确认该任务在 APP 打开后是否继续发出实时事件。
+排障影响：若 Codex APP session 显示待识别项目，先检查 app-server `thread/list` 元数据和 rollout 是否能提供可信 cwd；若实时输出没有更新，先检查 session 是否已有合法 rollout path、watcher 是否能读取新增追加行、前端是否收到 `session_updated` 事件；若 rollout 恢复出的等待回复没有第二行，这是外部只读目标的预期表现，需在 Codex App 原线程处理；若其它 agent 旧任务未显示，先确认该任务在 APP 打开后是否继续发出实时事件。
 
 状态：生效。
 
 ## 决策 22
 
-决策：主界面不提供独立历史详情能力；完成或失败且可 follow-up 的 session 默认保持单行，只在用户点击右侧展开按钮后展示第二行。
+决策：主界面不提供独立历史详情能力；完成或失败且可 follow-up 的 session 默认保持单行，只在用户 hover 或 focus 到 session 行后展示第二行。
 
 原因：当前可稳定验证的用户闭环是 session 摘要、等待交互处理、跳回和 follow-up。独立历史详情会引入额外查询、缓存、分页和释放链路，但当前需求要求移除该能力。
 
 代码影响：前端契约、Tauri command、Rust service、port、adapter 缓存和 UI 入口均不保留独立历史详情接口；`src/views/BuilderPanelApp.tsx` 只保留行内 follow-up 展开逻辑。
 
-测试影响：前端测试覆盖完成和失败状态默认单行、点击展开后展示输入区；性能预算覆盖 follow-up 展开集合操作。
+测试影响：前端测试覆盖完成和失败状态默认单行、hover 展开类下展示输入区；性能预算覆盖 follow-up 展开集合操作。
 
 排障影响：若 UI 或 API 中重新出现独立历史详情入口，应视为旧能力残留；若完成或失败 session 自动展示第二行，应先检查前端展开状态判断。
 

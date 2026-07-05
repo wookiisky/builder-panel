@@ -307,10 +307,11 @@ pub fn actions_for_session(session: &AgentSession) -> Vec<UiAction> {
     }
 
     if session.capabilities.can_send_reply && session.status == SessionStatus::WaitingForAnswer {
-        if matches!(
-            session.pending_interaction,
-            Some(AgentInteraction::TextReply(_) | AgentInteraction::Choice(_))
-        ) {
+        if session
+            .pending_interaction
+            .as_ref()
+            .is_some_and(can_submit_answer_interaction)
+        {
             actions.push(UiAction::SendReply);
         }
     }
@@ -335,6 +336,21 @@ pub fn actions_for_session(session: &AgentSession) -> Vec<UiAction> {
     }
 
     actions
+}
+
+/// 判断回答交互是否支持当前面板自动提交。
+fn can_submit_answer_interaction(interaction: &AgentInteraction) -> bool {
+    match interaction {
+        AgentInteraction::TextReply(interaction) => !matches!(
+            interaction.reply_target,
+            crate::domain::agent_interaction::ReplyTarget::ExternalOnly(_)
+        ),
+        AgentInteraction::Choice(interaction) => !matches!(
+            interaction.reply_target,
+            crate::domain::agent_interaction::ReplyTarget::ExternalOnly(_)
+        ),
+        AgentInteraction::Approval(_) => false,
+    }
 }
 
 /// 创建 thread 展示标签。
@@ -445,6 +461,17 @@ fn choice_box_view_model(session: &AgentSession, actions: &[UiAction]) -> Choice
             disabled_reason: Some("当前会话没有选项交互".to_string()),
         };
     };
+    if matches!(
+        interaction.reply_target,
+        crate::domain::agent_interaction::ReplyTarget::ExternalOnly(_)
+    ) {
+        return ChoiceBoxViewModel {
+            enabled: false,
+            allows_multiple: false,
+            choices: Vec::new(),
+            disabled_reason: Some("需在外部工具中处理".to_string()),
+        };
+    }
     let enabled = actions.contains(&UiAction::SendReply);
 
     ChoiceBoxViewModel {
@@ -476,8 +503,8 @@ mod tests {
     };
     use crate::domain::agent_event::{AgentEvent, HierarchyUpdatedEvent, SessionStartedEvent};
     use crate::domain::agent_interaction::{
-        AgentInteraction, ChoiceInteraction, ClipboardFallbackTarget, InteractionChoice,
-        InteractionId, InteractionStatus, ReplyTarget, TextReplyInteraction,
+        AgentInteraction, ChoiceInteraction, ClipboardFallbackTarget, ExternalReplyTarget,
+        InteractionChoice, InteractionId, InteractionStatus, ReplyTarget, TextReplyInteraction,
     };
     use crate::domain::agent_session::{
         AgentKind, AgentSession, ConversationId, JumpTarget, ProjectId, SessionCapabilities,
@@ -822,6 +849,36 @@ mod tests {
         assert_eq!(
             view_model.pending_interaction_kind,
             Some(super::PendingInteractionKind::Choice)
+        );
+    }
+
+    #[test]
+    fn external_choice_box_is_hidden_and_not_submittable() {
+        let mut session = base_session(
+            SessionCapabilities {
+                can_jump: false,
+                can_send_reply: true,
+                can_resolve_approval: false,
+                can_create_followup_turn: false,
+            },
+            UsageSnapshot::unavailable(),
+        );
+        session.status = SessionStatus::WaitingForAnswer;
+        let mut interaction = choice_interaction(&session.session_key, false);
+        interaction.reply_target = ReplyTarget::ExternalOnly(ExternalReplyTarget {
+            handler_label: "Codex App".to_string(),
+            reason: "只读".to_string(),
+        });
+        session.pending_interaction = Some(AgentInteraction::Choice(interaction));
+
+        let view_model = session_detail_view_model(&session);
+
+        assert!(!view_model.toolbar_actions.contains(&UiAction::SendReply));
+        assert!(!view_model.choice_box.enabled);
+        assert!(view_model.choice_box.choices.is_empty());
+        assert_eq!(
+            view_model.choice_box.disabled_reason,
+            Some("需在外部工具中处理".to_string())
         );
     }
 

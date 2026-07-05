@@ -3,6 +3,7 @@ import {
   Check,
   CircleEllipsis,
   LoaderCircle,
+  MessageCircleQuestion,
   Minus,
   OctagonX,
   SendHorizontal,
@@ -47,7 +48,7 @@ const panelIconByName: Record<PanelIconName, LucideIcon> = {
 const sessionStatusIconByStatus: Record<SessionStatus, LucideIcon> = {
   running: LoaderCircle,
   waiting_for_approval: CircleEllipsis,
-  waiting_for_answer: CircleEllipsis,
+  waiting_for_answer: MessageCircleQuestion,
   completed: Check,
   failed: X,
   detached: Minus,

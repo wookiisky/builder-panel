@@ -53,7 +53,8 @@ use crate::ports::session_update_port::{
 };
 
 pub use self::codex_rollout::{
-    CodexRolloutDiscovery, CodexRolloutSnapshot, CodexRolloutTailer, CodexRolloutWatchTarget,
+    CodexRolloutDiscovery, CodexRolloutPendingQuestion, CodexRolloutPendingUserInput,
+    CodexRolloutSnapshot, CodexRolloutTailer, CodexRolloutWatchTarget,
 };
 pub use self::internal_prompt::{
     is_codex_internal_prompt, set_internal_prompt_patterns, DEFAULT_INTERNAL_PROMPT_PATTERNS,
@@ -1141,7 +1142,8 @@ impl CodexAppRuntime {
             }
             ReplyTarget::ManagedProcessStdin(_)
             | ReplyTarget::ControlledTerminal(_)
-            | ReplyTarget::ClipboardOnly(_) => Err(invalid_interaction("审批回复目标不受支持")),
+            | ReplyTarget::ClipboardOnly(_)
+            | ReplyTarget::ExternalOnly(_) => Err(invalid_interaction("审批回复目标不受支持")),
         }
     }
 
@@ -1942,6 +1944,16 @@ impl CodexAppRuntime {
         if changed {
             self.publish_codex_app_session_update(&target_key, snapshot.updated_at);
         }
+        if let Some(pending_user_input) = snapshot.pending_user_input.as_ref() {
+            self.apply_event_direct(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+                session_key: target_key.clone(),
+                summary: pending_user_input.request_summary(),
+                updated_at: snapshot.updated_at,
+            }))?;
+            return self.apply_event_direct(
+                pending_user_input.answer_requested_event(&target_key, snapshot.updated_at),
+            );
+        }
 
         Ok(())
     }
@@ -1996,11 +2008,12 @@ impl CodexAppRuntime {
             if changed {
                 self.publish_codex_app_session_update(&target_key, snapshot.updated_at);
             }
-            return self.apply_event_direct(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+            self.apply_event_direct(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
                 session_key: target_key,
                 summary,
                 updated_at: snapshot.updated_at,
-            }));
+            }))?;
+            return self.apply_rollout_pending_user_input(&snapshot);
         }
 
         self.apply_event_direct(AgentEvent::SessionStarted(SessionStartedEvent {
@@ -2017,7 +2030,26 @@ impl CodexAppRuntime {
             session_key: target_key,
             summary,
             updated_at: snapshot.updated_at,
-        }))
+        }))?;
+        self.apply_rollout_pending_user_input(&snapshot)
+    }
+
+    fn apply_rollout_pending_user_input(
+        &mut self,
+        snapshot: &CodexRolloutSnapshot,
+    ) -> Result<(), AppError> {
+        let Some(pending_user_input) = snapshot.pending_user_input.as_ref() else {
+            return Ok(());
+        };
+        let target_key = session_key(&snapshot.cwd, &snapshot.session_id);
+        self.apply_event_direct(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
+            session_key: target_key.clone(),
+            summary: pending_user_input.request_summary(),
+            updated_at: snapshot.updated_at,
+        }))?;
+        self.apply_event_direct(
+            pending_user_input.answer_requested_event(&target_key, snapshot.updated_at),
+        )
     }
 
     fn record_thread_rollout_context(
@@ -3690,8 +3722,9 @@ fn choices_from_question(value: &Value) -> Result<Vec<InteractionChoice>, CodexA
 
     let mut choices = Vec::new();
     for option in options {
-        let value = required_string(option.get("value"), "option.value")?;
-        let label = optional_string(option.get("label"), "option.label")?.unwrap_or(value.clone());
+        let value = choice_option_value(option)?;
+        let label = optional_non_empty_string(option.get("label"), "option.label")?
+            .unwrap_or_else(|| value.clone());
         let tooltip = optional_string(option.get("tooltip"), "option.tooltip")?
             .or(optional_string(
                 option.get("description"),
@@ -3707,6 +3740,15 @@ fn choices_from_question(value: &Value) -> Result<Vec<InteractionChoice>, CodexA
     }
 
     Ok(choices)
+}
+
+fn choice_option_value(option: &Value) -> Result<String, CodexAppAdapterError> {
+    if let Some(value) = optional_non_empty_string(option.get("value"), "option.value")? {
+        return Ok(value);
+    }
+
+    optional_non_empty_string(option.get("label"), "option.label")?
+        .ok_or(CodexAppAdapterError::MissingField("option.value"))
 }
 
 fn pending_rpc_approval_from_server_request(
@@ -4258,16 +4300,18 @@ mod tests {
         ensure_codex_app_thread_loaded, handle_rpc_response, schema_probe_from_dir, session_key,
         try_write_message_line_nonblocking, CodexAppAdapter, CodexAppAdapterError,
         CodexAppFollowupRpcClient, CodexAppRpcWrite, CodexAppRuntime, CodexAppServerClient,
-        CodexAppThreadMetadata, CodexAppThreadSourceKind, CodexRolloutSnapshot,
-        CodexRolloutWatchTarget, PendingRpcResult, MAX_CURRENT_TURN_OUTPUT_CHARS,
-        MAX_FINAL_OUTPUT_CHARS, UNRESOLVED_CODEX_APP_PROJECT_ID,
-        UNRESOLVED_CODEX_APP_PROJECT_LABEL,
+        CodexAppThreadMetadata, CodexAppThreadSourceKind, CodexRolloutPendingQuestion,
+        CodexRolloutPendingUserInput, CodexRolloutSnapshot, CodexRolloutWatchTarget,
+        PendingRpcResult, MAX_CURRENT_TURN_OUTPUT_CHARS, MAX_FINAL_OUTPUT_CHARS,
+        UNRESOLVED_CODEX_APP_PROJECT_ID, UNRESOLVED_CODEX_APP_PROJECT_LABEL,
     };
     use crate::adapters::bridge::codec::{
         BridgeHookEventName, BridgeRequestEnvelope, ValidatedHookPayload,
     };
     use crate::domain::agent_event::{AgentEvent, SessionStartedEvent, TurnCompletedEvent};
-    use crate::domain::agent_interaction::AgentInteraction;
+    use crate::domain::agent_interaction::{
+        AgentInteraction, AnswerInteraction, InteractionChoice, ReplyTarget,
+    };
     use crate::domain::agent_session::{AgentKind, SessionStatus};
     use crate::domain::app_error::AppError;
     use crate::domain::usage::{UnixMillis, UsageSnapshot};
@@ -5646,6 +5690,193 @@ mod tests {
     }
 
     #[test]
+    fn runtime_maps_label_only_user_input_options_to_choices() {
+        let mut runtime = CodexAppRuntime::empty();
+        let first_description =
+            "接入已验证的 app-server `turn/interrupt`；Codex CLI 继续显示禁用占位，风险最小。";
+        let second_description =
+            "同时规划 CLI 停止能力；但当前仓库没有稳定 CLI 停止协议事实，需要额外探查和更大改动。";
+        let request = json!({
+            "id": 7,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [
+                    {
+                        "id": "stop_scope",
+                        "question": "请选择停止能力接入范围",
+                        "options": [
+                            {
+                                "label": "仅 Codex APP (Recommended)",
+                                "description": first_description
+                            },
+                            {
+                                "label": "Codex APP + CLI",
+                                "description": second_description
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        runtime
+            .apply_app_server_message(&request, "/tmp/builder-panel", UnixMillis::new(1))
+            .expect("request should apply");
+        let (session_key, interaction_id) = pending_interaction_keys(&runtime);
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key)
+            .expect("session should exist");
+        let Some(AgentInteraction::Choice(choice)) = session.pending_interaction.as_ref() else {
+            panic!("pending interaction should be choice");
+        };
+
+        assert_eq!(
+            choice.choices,
+            vec![
+                InteractionChoice {
+                    value: "仅 Codex APP (Recommended)".to_string(),
+                    label: "仅 Codex APP (Recommended)".to_string(),
+                    tooltip: Some(first_description.to_string()),
+                },
+                InteractionChoice {
+                    value: "Codex APP + CLI".to_string(),
+                    label: "Codex APP + CLI".to_string(),
+                    tooltip: Some(second_description.to_string()),
+                },
+            ]
+        );
+
+        let write = runtime
+            .submit_choice(
+                &session_key,
+                &interaction_id,
+                ChoiceSubmission {
+                    selected_values: vec!["仅 Codex APP (Recommended)".to_string()],
+                },
+            )
+            .expect("choice should encode");
+
+        assert_eq!(
+            write.message["result"]["answers"]["stop_scope"]["answers"][0],
+            "仅 Codex APP (Recommended)"
+        );
+    }
+
+    #[test]
+    fn request_user_input_option_uses_label_when_value_is_blank() {
+        let request = json!({
+            "id": 7,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [
+                    {
+                        "id": "answer",
+                        "question": "选择方案",
+                        "options": [
+                            {
+                                "value": "   ",
+                                "label": "Codex APP + CLI"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        let event = CodexAppAdapter::event_from_server_request(
+            &request,
+            "/tmp/builder-panel",
+            UnixMillis::new(1),
+        )
+        .expect("request should parse")
+        .expect("request should produce event");
+        let AgentEvent::AnswerRequested(answer) = event else {
+            panic!("event should request answer");
+        };
+        let AnswerInteraction::Choice(choice) = answer.interaction else {
+            panic!("answer should be choice");
+        };
+
+        assert_eq!(choice.choices[0].value, "Codex APP + CLI");
+        assert_eq!(choice.choices[0].label, "Codex APP + CLI");
+    }
+
+    #[test]
+    fn request_user_input_option_rejects_invalid_value_type() {
+        let request = json!({
+            "id": 7,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [
+                    {
+                        "id": "answer",
+                        "question": "选择方案",
+                        "options": [
+                            {
+                                "value": 1,
+                                "label": "Codex APP + CLI"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        let error = CodexAppAdapter::event_from_server_request(
+            &request,
+            "/tmp/builder-panel",
+            UnixMillis::new(1),
+        )
+        .expect_err("invalid value type should fail");
+
+        assert_eq!(error, CodexAppAdapterError::InvalidField("option.value"));
+    }
+
+    #[test]
+    fn request_user_input_option_rejects_missing_value_and_label() {
+        let request = json!({
+            "id": 7,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [
+                    {
+                        "id": "answer",
+                        "question": "选择方案",
+                        "options": [
+                            {
+                                "description": "缺少可提交值"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        let error = CodexAppAdapter::event_from_server_request(
+            &request,
+            "/tmp/builder-panel",
+            UnixMillis::new(1),
+        )
+        .expect_err("missing value and label should fail");
+
+        assert_eq!(error, CodexAppAdapterError::MissingField("option.value"));
+    }
+
+    #[test]
     fn realtime_blank_cwd_initializes_unresolved_session_without_jump() {
         let mut runtime = CodexAppRuntime::empty();
         let request = json!({
@@ -6402,6 +6633,7 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
                 completed: false,
+                pending_user_input: None,
             })
             .expect("snapshot should apply");
 
@@ -6417,6 +6649,58 @@ mod tests {
         assert!(notifications.len() > notification_count);
         assert!(notifications.iter().any(|notification| {
             notification.session_key == real_key && notification.updated_at == UnixMillis::new(2)
+        }));
+    }
+
+    #[test]
+    fn rollout_snapshot_pending_user_input_enters_waiting_answer() {
+        let sink = Arc::new(RecordingSessionUpdateSink::default());
+        let mut runtime = CodexAppRuntime::with_update_sink(sink.clone());
+        let key = session_key("/tmp/builder-panel", "thread-1");
+        runtime
+            .apply_event_direct(AgentEvent::SessionStarted(SessionStartedEvent {
+                session_key: key.clone(),
+                project_label: "builder-panel".to_string(),
+                conversation_label: "thread-1".to_string(),
+                title: Some("Thread 1".to_string()),
+                summary: Some("处理中".to_string()),
+                capabilities: codex_app_capabilities(),
+                usage: UsageSnapshot::unavailable(),
+                updated_at: UnixMillis::new(1),
+            }))
+            .expect("session should start");
+
+        runtime
+            .apply_rollout_snapshot(CodexRolloutSnapshot {
+                session_id: "thread-1".to_string(),
+                cwd: "/tmp/builder-panel".to_string(),
+                summary: Some("请选择下一步".to_string()),
+                last_agent_message: None,
+                path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
+                updated_at: UnixMillis::new(2),
+                completed: false,
+                pending_user_input: Some(test_pending_user_input()),
+            })
+            .expect("snapshot should apply pending input");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("session should exist");
+        let Some(AgentInteraction::TextReply(interaction)) = &session.pending_interaction else {
+            panic!("pending interaction should be text reply");
+        };
+
+        assert_eq!(session.status, SessionStatus::WaitingForAnswer);
+        assert_eq!(session.summary.as_deref(), Some("请选择停止能力范围"));
+        assert_eq!(interaction.request_summary, "请选择停止能力范围");
+        assert!(matches!(
+            interaction.reply_target,
+            ReplyTarget::ExternalOnly(_)
+        ));
+        assert!(sink.notifications().iter().any(|notification| {
+            notification.session_key == key && notification.updated_at == UnixMillis::new(2)
         }));
     }
 
@@ -6932,6 +7216,7 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
                 completed: false,
+                pending_user_input: None,
             })
             .expect("rollout should update running summary");
 
@@ -6978,6 +7263,7 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
                 completed: false,
+                pending_user_input: None,
             })
             .expect("rollout should not overwrite with user summary");
 
@@ -7004,6 +7290,7 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-history.jsonl"),
                 updated_at: UnixMillis::new(1),
                 completed: false,
+                pending_user_input: None,
             })
             .expect("rollout should be ignored without candidate");
 
@@ -7198,6 +7485,7 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
                 completed: false,
+                pending_user_input: None,
             })
             .expect("rollout should migrate unresolved session");
 
@@ -7238,6 +7526,20 @@ mod tests {
             path: PathBuf::from(format!("/tmp/rollout-{session_id}.jsonl")),
             updated_at,
             completed: false,
+            pending_user_input: None,
+        }
+    }
+
+    fn test_pending_user_input() -> CodexRolloutPendingUserInput {
+        CodexRolloutPendingUserInput {
+            turn_id: "turn-1".to_string(),
+            call_id: "call-1".to_string(),
+            questions: vec![CodexRolloutPendingQuestion {
+                id: "stop_scope".to_string(),
+                header: Some("范围".to_string()),
+                question: "请选择停止能力范围".to_string(),
+            }],
+            auto_resolution_ms: None,
         }
     }
 

@@ -34,7 +34,7 @@
 
 阶段 6 当前不执行 Windows 本机人工验证。
 
-阶段 7 测试扩展模式 session 捕捉顺序、统计、工具用量聚合、设置默认值、设置文件读写、通知合并、行内交互和自定义快捷输入。
+阶段 7 测试扩展模式 session 捕捉顺序、统计、工具用量聚合、设置默认值、设置文件读写、通知合并、行内交互、等待回复展开和自定义快捷输入。
 
 阶段 7 当前未建立 Playwright 自动化截图验证。
 
@@ -134,7 +134,7 @@ Rust Codex APP rollout 测试验证完成事件会标记快照完成，完成后
 
 Rust Codex APP rollout 测试验证范围外 path 被忽略，超长 JSONL 行被跳过且后续有效行仍可读取。
 
-Rust Codex APP rollout 测试验证 tailer 只读取已知 session 的新增追加行，并验证用户输入事件、工具 preview 不写最后消息、重复工具事件不生成摘要、未知 JSON arguments 不展示、工具结束不写摘要、超长追加行后继续读取有效行。
+Rust Codex APP rollout 测试验证 tailer 只读取已知 session 的新增追加行，并验证用户输入事件、外部只读等待输入事件、等待输入问题摘要更新、已扫描等待输入的完成清理、工具 preview 不写最后消息、重复工具事件不生成摘要、未知 JSON arguments 不展示、工具结束不写摘要、超长追加行后继续读取有效行。
 
 Rust Codex APP adapter 测试验证孤立 rollout 快照不会单独创建当前 session。
 
@@ -156,6 +156,8 @@ Rust Codex APP adapter 测试验证无 cwd app-server 实时事件后续可随 h
 
 Rust Codex APP adapter 测试验证 requestUserInput 与 MCP elicitation 回复编码。
 
+Rust Codex APP adapter 测试验证 requestUserInput 选项在 `value` 缺失、`null` 或空白时可用非空 `label` 作为提交值，并验证非字符串 `value` 仍作为字段错误处理。
+
 Rust Codex APP adapter 测试验证 thread 列表单条无效 thread 不会丢弃同批有效 thread。
 
 Rust Codex APP adapter 测试验证缺 cwd 或空白 cwd 但带 path 的 thread 可保留为 rollout 候选，空白 path 不会成为候选，且 `status.type` 类型错误的 thread 会被跳过。
@@ -163,6 +165,8 @@ Rust Codex APP adapter 测试验证缺 cwd 或空白 cwd 但带 path 的 thread 
 Rust Codex APP adapter 测试验证 rollout 快照可迁移待识别 session 到真实 cwd。
 
 Rust Codex APP adapter 测试验证 rollout 快照可用最近 Agent 输出刷新运行中 session 摘要，且不会用仅来自用户输入的摘要覆盖当前 Agent 摘要。
+
+Rust Codex APP adapter 测试验证 rollout 快照恢复出的等待输入会进入等待回复状态、发布 session 更新，并使用只读回复目标。
 
 Rust Codex APP adapter 测试验证 permissions approval、legacy approval enum、JSON-RPC id 类型保留和 follow-up 成功前不写 activity。
 
@@ -202,6 +206,8 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证 session 状态 icon 使用开源 SVG 图标资源，全部状态保留可访问语义并位于行首独立列。
 
+前端 Builder Panel 测试验证等待回复和等待审批状态使用不同 SVG 图标与状态色。
+
 前端 Builder Panel 测试验证标题栏窗口操作图标按钮保留无文本和可访问语义。
 
 前端 Builder Panel 测试验证来源标签和项目名同排展示，运行中停止占位位使用开源 octagon-x SVG 图标资源、不通过 CSS 填充绘制基础形状、不展示红底按钮样式并保持禁用语义。
@@ -219,6 +225,12 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 前端 Builder Panel 测试验证具备 jump action 的 session 在全局跳回关闭时仍可被点击选中。
 
 前端 Builder Panel 测试验证完成和失败状态在可 follow-up 时默认单行，展开后按输入区、发送 icon 和快捷输入的顺序展示。
+
+前端 Builder Panel 测试验证可回写等待回复状态通过 hover 或 focus 展开第二行，展示文本回复或选项，不展示快捷输入。
+
+前端 Builder Panel 测试验证等待回复选项可展示真实 Codex APP 选项文本，保留 tooltip，详情面板等待回复不展示快捷输入。
+
+前端 Builder Panel 测试验证外部只读 Codex APP 等待回复只展示主行问题摘要，不展示第二行、选项或提交按钮。
 
 前端 Builder Panel 测试验证工具用量按工具和来源键取最新值且不按 session 求和。
 
@@ -438,7 +450,7 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 
 `src/views/BuilderPanelApp.test.ts` 是前端 Codex CLI session 刷新选择测试入口。
 
-`src/views/BuilderPanelApp.test.ts` 是阶段 7 session 展示分组、首次观察序、统计、动作标签、工具用量聚合和 follow-up 输入顺序测试入口。
+`src/views/BuilderPanelApp.test.ts` 是阶段 7 session 展示分组、首次观察序、统计、动作标签、工具用量聚合、等待回复展开和 follow-up 输入顺序测试入口。
 
 `src/api/settingsApi.test.ts` 是前端设置默认值和自定义快捷输入清洗测试入口。
 

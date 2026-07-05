@@ -164,7 +164,7 @@ Codex rollout tailer 只接收已知 session 的 watch target，不得从任意 
 
 Codex rollout tailer 按 canonical path 去重。
 
-Codex rollout tailer 同步新 watch target、文件截断或文件替换时只能恢复 offset、文件身份和内部 turn 状态；不得回放历史行或发布历史事件。
+Codex rollout tailer 同步新 watch target、文件截断或文件替换时只能恢复 offset、文件身份、内部 turn 状态和当前未完成的 `request_user_input` call_id；不得回放历史行或发布历史事件。
 
 Codex rollout tailer 遇到文件截断、替换、超大文件或超长行时必须降级跳过或重置本地读取状态，不得污染 Domain。
 
@@ -172,9 +172,13 @@ Codex rollout tailer 输出必须先清洗为归一事件，不得把 rollout �
 
 Codex rollout tailer 在当前 turn 命中内部提示词后，必须抑制该 turn 的用户输入、Agent 文本、assistant response item、工具活动和完成摘要；下一个真实用户输入到达后恢复正常输出。
 
+Codex rollout tailer 遇到新增 `request_user_input` function_call 时，只提取问题文本和 call_id，可先写入问题摘要再生成 `ExternalOnly` 等待回复事件；后续匹配的 function_call_output、真实新用户输入或 turn 完成会清理该 pending。
+
 Codex APP pending approval 必须同时匹配 `SessionKey` 和 `InteractionId` 后才能唤醒 hook request 或回写 app-server response。
 
 Codex APP app-server 审批、文本回复或选项回写成功后，只写入 `InteractionCompleted` 清理 pending 并保持运行态，等待真实完成或 idle 事件后才允许 follow-up。
+
+Codex APP rollout 恢复的 `request_user_input` 不解析 options，不进入 app-server 回写上下文，不写入 pending RPC map。
 
 Codex APP app-server `notLoaded` 必须清理 session pending interaction 和对应 app-server RPC 上下文。
 

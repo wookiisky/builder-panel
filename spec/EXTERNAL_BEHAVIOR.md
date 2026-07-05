@@ -52,6 +52,8 @@ session 行身份信息展示状态 icon、来源标签、项目名和 thread �
 
 session 行状态 icon 位于最左侧独立列，并跟随 sub agent 缩进移动。
 
+等待用户回复状态在视觉上区别于等待审批状态。
+
 session 行来源标签和项目名同一行展示，thread 名下一行单行展示。
 
 运行中、等待审批和等待用户回复的 session 行展示当前 turn 已运行时间。
@@ -88,7 +90,13 @@ session 详情可展示当前 view model 可用的完整多段摘要。
 
 任务结束时，最终 Agent 输出按 65535 字符上限保留多段内容。
 
-等待审批和等待用户回复的 session 可自动展示为两行。
+等待审批 session 可自动展示为两行。
+
+等待用户回复的 session 在支持 hover 的环境默认展示为单行。
+
+用户 hover 或 focus 到等待用户回复 session 行时展示第二行。
+
+触屏、无 hover 或粗指针环境下，等待用户回复 session 默认展示第二行。
 
 完成和失败且可创建后续 turn 的 session 默认展示为单行。
 
@@ -99,6 +107,14 @@ session 详情可展示当前 view model 可用的完整多段摘要。
 两行 session 的第一行展示最后一段输出文本。
 
 完成和失败 session 的第二行从左到右展示输入区、发送 icon 和快捷输入。
+
+等待用户回复 session 只有存在可回写目标时才展示第二行。
+
+可回写等待回复 session 的第二行展示文本回复输入区，或展示选项和提交入口。
+
+等待用户回复 session 的列表行和详情面板不展示自定义快捷输入。
+
+外部只读等待回复 session 不展示第二行，只在主行摘要展示已清洗问题。
 
 Codex APP thread 名可由 Codex session index、app-server thread metadata 或 app-server 实时改名通知补齐。
 
@@ -172,13 +188,17 @@ APP 打开前已经结束或超过活跃窗口的 Codex APP rollout 不会因 re
 
 用户可以在 Codex APP 选项 session 中提交单选或多选回复。
 
+用户只能提交来自 Codex APP app-server 实时 `item/tool/requestUserInput` 的结构化选项；从 Codex rollout 恢复出的等待输入只展示问题摘要，不在 panel 内提交。
+
 选项存在 tooltip 时，用户可通过选项按钮 tooltip 查看说明。
+
+Codex APP 选项只有展示文本和说明、没有独立提交值时，panel 会用展示文本作为提交值，并用说明作为 tooltip。
 
 `Enter` 发送 Codex APP 文本回复。
 
 `Shift+Enter` 在 Codex APP 行内回复框中换行。
 
-用户可以在无选项的 Codex APP 文本回复 session 中点击自定义快捷输入。
+完成或失败且可创建后续 turn 的 Codex APP session 可以点击自定义快捷输入创建后续 turn。
 
 自定义快捷输入发送失败后，快捷输入内容保留在当前草稿中。
 
@@ -208,7 +228,9 @@ Codex APP 审批决策可通过 hook stdout directive 或 app-server response �
 
 Codex APP 等待文本输入时，用户可在 panel 行内回复区发送文本。
 
-Codex APP 等待选项输入时，用户可在 panel 中提交选项。
+Codex APP app-server 实时等待选项输入时，用户可在 panel 中提交选项。
+
+Codex APP rollout 恢复出的等待输入只在 panel 主行摘要展示问题文本；用户必须在 Codex App 原线程中输入或选择。
 
 Codex APP app-server 不可用时，Codex CLI session 仍可刷新展示。
 
@@ -252,7 +274,7 @@ Claude Code CLI 和 Claude Code APP 设置开关当前显示为禁用，不触�
 
 用量展示开关关闭后，顶部状态区和 session 行不展示用量信息。
 
-快捷回复开关关闭后，文本回复区域不展示自定义快捷输入入口。
+快捷回复开关关闭后，完成或失败的 follow-up 区域不展示自定义快捷输入入口。
 
 Enter 发送开关关闭后，Enter 不触发文本回复发送。
 

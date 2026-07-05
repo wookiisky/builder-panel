@@ -48,6 +48,12 @@ Codex APP legacy approval response 使用 `approved`、`approved_for_session`、
 
 Codex APP `item/tool/requestUserInput` 可回写文本或选项答案。
 
+Codex APP app-server 实时 `item/tool/requestUserInput` 使用结构化 RPC 回复目标，用户可在 panel 中提交文本或选项。
+
+Codex APP `item/tool/requestUserInput` 的选项可以只有 `label` 和 `description` 而没有 `value`；adapter 在 `value` 缺失、`null` 或空白时使用非空 `label` 作为提交值，`description` 作为选项 tooltip。
+
+Codex APP `item/tool/requestUserInput` 的选项若提供非字符串 `value`，adapter 必须视为协议字段错误，不回退到 `label`。
+
 Codex APP `mcpServer/elicitation/request` 当前可回写文本 answer。
 
 Codex APP follow-up turn 通过 app-server `turn/start` 发送。
@@ -142,7 +148,13 @@ Codex APP rollout tail 只读取已知 session 的新增追加行，不回放历
 
 Codex APP rollout tail 开始监听或检测到文件替换、截断时，只扫描当前文件恢复内部 turn 状态和 offset，不回放历史事件。
 
-Codex APP rollout tail 可将新增追加行清洗为用户输入、Agent 文本活动更新或 turn 完成事件。
+Codex APP rollout tail 开始监听或检测到文件替换、截断时，会同步扫描当前文件中未完成的 `request_user_input` call_id；该扫描只用于后续匹配完成输出，不回放历史等待输入事件。
+
+Codex APP rollout tail 可将新增追加行清洗为用户输入、Agent 文本活动更新、turn 完成事件或外部只读等待输入事件。
+
+Codex APP rollout 中的 `request_user_input` 只恢复问题文本和等待回复状态，不解析、不展示选项。
+
+Codex APP rollout 中的 `request_user_input` 恢复为 `ExternalOnly` 文本回复交互；panel 不展示第二行操作区，真实输入或选择必须在 Codex App 原线程完成。
 
 Codex rollout path 必须位于 `~/.codex/sessions` root 内，文件名必须匹配 `rollout-*.jsonl`，且必须通过普通文件和大小上限校验。
 

@@ -28,6 +28,8 @@
 
 `ClipboardOnly` 表示不能可靠自动回写，只能复制降级。
 
+`ExternalOnly` 表示当前面板只能展示 session 状态和摘要，真实处理必须回到外部工具界面完成。
+
 ## 跳回与回写
 
 跳回和文本回写是两个独立能力。
@@ -48,6 +50,10 @@ UI 只在同时存在跳回能力和跳回目标时请求跳回。
 
 复制降级只提示用户手动处理，不冒充已完成回写。
 
+外部只读目标不得展示为可提交动作，不得复用剪贴板降级语义。
+
+外部只读目标不得展示等待回复操作区；UI 只能展示当前 session 状态和已清洗摘要。
+
 ## 选项提示
 
 选项交互可携带可选 tooltip。
@@ -61,6 +67,8 @@ tooltip 只用于解释选项，不参与提交值校验。
 `src-tauri/src/domain/view_model.rs` 覆盖 capability 到 UI 动作的独立映射。
 
 `src-tauri/src/domain/view_model.rs` 覆盖选项 tooltip 映射。
+
+`src-tauri/src/domain/view_model.rs` 覆盖外部只读选项不生成提交动作且不透出选项框。
 
 `src-tauri/src/adapters/terminal/mod.rs` 覆盖跳回记录和复制降级错误。
 
