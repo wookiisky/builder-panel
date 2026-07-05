@@ -106,6 +106,8 @@ Codex APP 历史 thread metadata 对未知 thread 创建 session 时，必须至
 
 Codex APP thread metadata 的预览文本命中内部提示词过滤规则时，不创建新的可见 session，也不写入 session 摘要。
 
+Codex APP thread metadata 的预览文本若是已知内部结构化产物，且 metadata 没有真实标题，不创建新的可见 session，也不写入 session 摘要；已有真实标题的同形 JSON 预览仍按用户可见内容处理。
+
 Codex APP thread metadata 会在 adapter 边界读取 `source`、`threadSource`、`agentRole` 和 `agentNickname` 等 app-server 字段；这些字段只用于内部过滤和父子关系判断，不写入 Domain。
 
 Codex APP `source.subAgent` 为 `review`、`compact` 或 `memory_consolidation` 时视为 Codex 内部机制 thread，不创建新的可见 session；`source.subAgent.thread_spawn` 仍按显式 sub agent 保留可见层级关系。
@@ -140,6 +142,8 @@ Codex APP 后台同步可扫描最近活跃 rollout，捕捉 app-server 标记�
 
 Codex APP 最近活跃 rollout 创建 session 必须同时满足未完成、处于活跃窗口内、具备 `session_meta` 中的可信 cwd 和可展示用户摘要或 Agent 输出；只有 `session_meta`、无可展示内容或命中内部提示词过滤规则的 rollout 不创建 session。
 
+Codex APP 最近活跃 rollout 若只有已知内部结构化产物且没有已存在的真实可见 session 上下文，不创建 session；已有真实可见 session 的同形 JSON 输出仍可更新摘要。
+
 Codex APP 最近活跃 rollout 恢复窗口由 `BUILDER_PANEL_CODEX_APP_ACTIVE_ROLLOUT_WINDOW_MINUTES` 配置，未配置、为 0 或非法时默认 5 分钟。
 
 Codex APP 最近活跃 rollout 创建 session 时会记录 `thread_id -> cwd` 和 rollout path，并触发 Codex CLI 同 `(cwd, thread_id)` 孤儿 session 清理。
@@ -153,6 +157,8 @@ Codex APP rollout tail 开始监听或检测到文件替换、截断时，只扫
 Codex APP rollout tail 开始监听或检测到文件替换、截断时，会同步扫描当前文件中未完成的 `request_user_input` call_id；该扫描只用于后续匹配完成输出，不回放历史等待输入事件。
 
 Codex APP rollout tail 可将新增追加行清洗为用户输入、Agent 文本活动更新、turn 完成事件或外部只读等待输入事件。
+
+Codex APP rollout tail 在未看到真实用户输入时，会抑制已知内部结构化产物产生的活动更新和完成事件；看到真实用户输入后，同形 JSON 作为真实用户任务输出保留。
 
 Codex APP rollout 中的 `request_user_input` 只恢复问题文本和等待回复状态，不解析、不展示选项。
 
@@ -177,6 +183,8 @@ Codex rollout 中未知工具、动态工具和已知工具的 JSON arguments �
 Codex rollout 中的工具事件不得在完成后覆盖最终 Agent 输出。
 
 Codex APP 当前 turn 的 `item/agentMessage/delta` 会在 runtime 内按 thread 累积最多 65535 字符的有界输出；运行中 session 列表摘要的 `full_text` 使用该有界输出，行内展示截断由前端负责；`turn/started` 或 follow-up 成功提交会清空该 thread 的当前 turn 输出。
+
+Codex APP 当前 turn 的 `item/agentMessage/delta` 若在未知或空壳 session 中只形成已知内部结构化产物，会被暂缓或丢弃，不创建可见 session；已有真实可见 session 的同形 JSON 输出不受影响。
 
 Codex APP `turn/completed` 和 `thread/status/changed` 的 `idle` 优先保留当前 turn 最新 Agent 输出；没有当前输出时不写固定完成或空闲文案。
 

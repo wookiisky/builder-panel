@@ -11,6 +11,8 @@
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
+use serde_json::Value;
+
 /// 内置内部提示词模式（大小写不敏感、忽略连字符/空格差异后做子串匹配）。
 ///
 /// 新增 Codex 内部任务类型时在此追加；设置项 `agents.codex_internal_prompt_patterns`
@@ -67,6 +69,48 @@ pub fn is_codex_internal_prompt(message: &str) -> bool {
     false
 }
 
+/// 判断给定完整文本是否为已知 Codex 内部结构化产物。
+///
+/// 该函数只做内容特征识别，调用方仍必须结合“无真实用户上下文”或
+/// “已知内部 turn”等上下文使用，避免误伤用户真实要求输出的同形 JSON。
+pub fn is_codex_internal_artifact(message: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(message.trim()) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if object.len() != 1 {
+        return false;
+    }
+
+    object
+        .get("suggestions")
+        .or_else(|| object.get("exclude"))
+        .is_some_and(Value::is_array)
+}
+
+/// 判断流式输出当前内容是否仍可能是已知 Codex 内部结构化产物。
+///
+/// 用于 app-server delta 在未知 thread、未知真实用户上下文时延迟建 session。
+/// 一旦文本能解析成非内部完整 JSON，或明显不再匹配已知内部产物开头，返回 false。
+pub fn is_codex_internal_artifact_prefix(message: &str) -> bool {
+    if is_codex_internal_artifact(message) {
+        return true;
+    }
+    let compact = compact_json_prefix(message);
+    if compact.is_empty() {
+        return false;
+    }
+    if serde_json::from_str::<Value>(message.trim()).is_ok() {
+        return false;
+    }
+
+    ["{\"suggestions\":[", "{\"exclude\":["]
+        .iter()
+        .any(|prefix| prefix.starts_with(&compact) || compact.starts_with(prefix))
+}
+
 /// 在给定模式列表下做纯匹配，不读全局状态，便于测试。
 ///
 /// 匹配规则：对提示词与模式都做大小写折叠、连字符/空白归一后，做子串包含判断。
@@ -109,6 +153,11 @@ fn normalize(value: &str) -> String {
         }
     }
     result
+}
+
+/// 仅为内部 JSON 前缀判断压缩空白，避免把格式化 JSON 的开头误判为非候选。
+fn compact_json_prefix(value: &str) -> String {
+    value.chars().filter(|ch| !ch.is_whitespace()).collect()
 }
 
 #[cfg(test)]
@@ -179,6 +228,41 @@ mod tests {
             "Generate hyperpersonalized suggestions",
             ["   ", ""].iter(),
         ));
+    }
+
+    #[test]
+    fn internal_artifact_matches_known_single_field_json_outputs() {
+        assert!(is_codex_internal_artifact(r#"{"suggestions":[]}"#));
+        assert!(is_codex_internal_artifact(
+            r#"{"suggestions":[{"title":"继续","description":"补充"}]}"#
+        ));
+        assert!(is_codex_internal_artifact(r#"{ "exclude" : [] }"#));
+    }
+
+    #[test]
+    fn internal_artifact_keeps_non_matching_json_visible_to_callers() {
+        assert!(!is_codex_internal_artifact(r#"{"suggestion":"x"}"#));
+        assert!(!is_codex_internal_artifact(
+            r#"{"suggestions":[],"task":"x"}"#
+        ));
+        assert!(!is_codex_internal_artifact("重构旅游规划提示词"));
+    }
+
+    #[test]
+    fn internal_artifact_prefix_matches_streaming_candidates() {
+        assert!(is_codex_internal_artifact_prefix("{"));
+        assert!(is_codex_internal_artifact_prefix(r#"{ "suggestions" : ["#));
+        assert!(is_codex_internal_artifact_prefix(r#"{"exclude":["#));
+        assert!(is_codex_internal_artifact_prefix(r#"{"suggestions":[]}"#));
+    }
+
+    #[test]
+    fn internal_artifact_prefix_releases_non_matching_complete_json() {
+        assert!(!is_codex_internal_artifact_prefix(
+            r#"{"suggestions":[],"task":"x"}"#
+        ));
+        assert!(!is_codex_internal_artifact_prefix(r#"{"other":[]}"#));
+        assert!(!is_codex_internal_artifact_prefix("真实输出"));
     }
 
     // 全局接线测试：序列化在单个测试里，避免共享状态竞争。

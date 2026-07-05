@@ -9,6 +9,7 @@ import type {
   UiDensity,
   UiTheme,
 } from "../api/settingsContract";
+import { PanelIcon, type PanelIconName } from "./PanelIcon";
 
 /// hook 安装 UI 状态。
 export interface HookInstallPanelState {
@@ -48,7 +49,6 @@ export interface SettingsPanelProps {
 export const SettingsPanel = ({
   settings,
   statusMessage,
-  saving,
   hookInstall,
   logPath,
   onChange,
@@ -62,13 +62,6 @@ export const SettingsPanel = ({
 
   return (
     <section className="settings-panel" aria-label="设置">
-      <header>
-        <div>
-          <strong>设置</strong>
-          <p>配置会立即保存，本轮不提供自动更新配置项。</p>
-        </div>
-        <span>{saving ? "保存中" : "已就绪"}</span>
-      </header>
       {statusMessage !== null && (
         <p className="settings-status">{statusMessage}</p>
       )}
@@ -185,8 +178,7 @@ export const SettingsPanel = ({
             value={settings.display.summary_tooltip_paragraphs}
             onChange={(event) => {
               const parsed = Number.parseInt(event.target.value, 10);
-              const next =
-                Number.isFinite(parsed) && parsed >= 1 ? parsed : 1;
+              const next = Number.isFinite(parsed) && parsed >= 1 ? parsed : 1;
               update({
                 ...settings,
                 display: {
@@ -254,7 +246,7 @@ export const SettingsPanel = ({
           }}
         />
       </SettingsGroup>
-      <SettingsGroup title="Hook Install">
+      <SettingsGroup layout="list" title="Hook Install">
         <div className="hook-install-list">
           {hookInstall.agentStatuses.map((status) => (
             <HookInstallRow
@@ -273,7 +265,7 @@ export const SettingsPanel = ({
           <p className="settings-note">正在读取 hook 状态</p>
         )}
       </SettingsGroup>
-      <SettingsGroup title="Replies">
+      <SettingsGroup layout="stack" title="Replies">
         <ToggleRow
           checked={settings.replies.enter_to_send}
           label="Enter 发送"
@@ -368,9 +360,10 @@ export const SettingsPanel = ({
                 }}
               />
               <div className="shortcut-editor-actions">
-                <button
+                <SettingsActionButton
+                  ariaLabel={`上移快捷输入：${shortcut.label}`}
                   disabled={index === 0}
-                  type="button"
+                  iconName="shortcut-move-up"
                   onClick={() => {
                     update({
                       ...settings,
@@ -384,14 +377,13 @@ export const SettingsPanel = ({
                       },
                     });
                   }}
-                >
-                  上移
-                </button>
-                <button
+                />
+                <SettingsActionButton
+                  ariaLabel={`下移快捷输入：${shortcut.label}`}
                   disabled={
                     index === settings.replies.custom_shortcuts.length - 1
                   }
-                  type="button"
+                  iconName="shortcut-move-down"
                   onClick={() => {
                     update({
                       ...settings,
@@ -405,11 +397,10 @@ export const SettingsPanel = ({
                       },
                     });
                   }}
-                >
-                  下移
-                </button>
-                <button
-                  type="button"
+                />
+                <SettingsActionButton
+                  ariaLabel={`删除快捷输入：${shortcut.label}`}
+                  iconName="shortcut-delete"
                   onClick={() => {
                     update({
                       ...settings,
@@ -422,14 +413,13 @@ export const SettingsPanel = ({
                       },
                     });
                   }}
-                >
-                  删除
-                </button>
+                />
               </div>
             </div>
           ))}
-          <button
-            type="button"
+          <SettingsActionButton
+            ariaLabel="新增快捷输入"
+            iconName="shortcut-add"
             onClick={() => {
               update({
                 ...settings,
@@ -452,7 +442,7 @@ export const SettingsPanel = ({
             }}
           >
             新增快捷输入
-          </button>
+          </SettingsActionButton>
         </div>
       </SettingsGroup>
       <SettingsGroup title="Presets">
@@ -511,7 +501,7 @@ export const SettingsPanel = ({
           }}
         />
       </SettingsGroup>
-      <SettingsGroup title="Logging">
+      <SettingsGroup layout="stack" title="Logging">
         <ToggleRow
           checked={settings.logging.enabled}
           label="启用事件日志"
@@ -531,9 +521,13 @@ export const SettingsPanel = ({
           </p>
         )}
         <div className="settings-log-actions">
-          <button type="button" onClick={onOpenLogFolder}>
+          <SettingsActionButton
+            ariaLabel="打开日志目录"
+            iconName="log-folder"
+            onClick={onOpenLogFolder}
+          >
             打开日志目录
-          </button>
+          </SettingsActionButton>
         </div>
       </SettingsGroup>
     </section>
@@ -591,17 +585,67 @@ const nextShortcutOrder = (
 interface SettingsGroupProps {
   /// 分组标题。
   readonly title: string;
+  /// 内容布局。
+  readonly layout?: "grid" | "list" | "stack";
   /// 分组内容。
   readonly children: ReactNode;
 }
 
 /// 设置分组。
-const SettingsGroup = ({ title, children }: SettingsGroupProps) => (
+const SettingsGroup = ({
+  title,
+  layout = "grid",
+  children,
+}: SettingsGroupProps) => (
   <section className="settings-group">
     <h2>{title}</h2>
-    <div>{children}</div>
+    <div className={`settings-group-content settings-group-content-${layout}`}>
+      {children}
+    </div>
   </section>
 );
+
+/// 设置动作按钮属性。
+interface SettingsActionButtonProps {
+  /// 可访问名称。
+  readonly ariaLabel: string;
+  /// 图标名称。
+  readonly iconName: PanelIconName;
+  /// 是否禁用。
+  readonly disabled?: boolean;
+  /// 按钮文字。
+  readonly children?: ReactNode;
+  /// 点击回调。
+  readonly onClick: () => void;
+}
+
+/// 渲染设置页统一动作按钮。
+const SettingsActionButton = ({
+  ariaLabel,
+  iconName,
+  disabled = false,
+  children,
+  onClick,
+}: SettingsActionButtonProps) => {
+  const className =
+    children === undefined
+      ? "settings-action-button settings-action-button-icon"
+      : "settings-action-button";
+
+  return (
+    <button
+      aria-label={ariaLabel}
+      className={className}
+      disabled={disabled}
+      title={ariaLabel}
+      type="button"
+      onClick={onClick}
+    >
+      <PanelIcon name={iconName} />
+      {children !== undefined && <span>{children}</span>}
+    </button>
+  );
+};
 
 /// hook 安装行属性。
 interface HookInstallRowProps {
@@ -633,24 +677,26 @@ const HookInstallRow = ({
         <span>{busy ? "处理中" : status.message}</span>
       </div>
       <div className="hook-install-row-actions">
-        <button
+        <SettingsActionButton
+          ariaLabel={`安装 ${status.agent} hook`}
           disabled={blocked || !status.can_install}
-          type="button"
+          iconName="hook-install"
           onClick={() => {
             onInstall(status.agent);
           }}
         >
           安装
-        </button>
-        <button
+        </SettingsActionButton>
+        <SettingsActionButton
+          ariaLabel={`卸载 ${status.agent} hook`}
           disabled={blocked || !status.can_uninstall}
-          type="button"
+          iconName="hook-uninstall"
           onClick={() => {
             onUninstall(status.agent);
           }}
         >
           卸载
-        </button>
+        </SettingsActionButton>
       </div>
     </div>
   );

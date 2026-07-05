@@ -46,32 +46,121 @@ describe("SettingsPanel hook install list", () => {
       );
     });
 
-    const rows = container.querySelectorAll(".hook-install-row");
-    const codexButtons = rows[0]?.querySelectorAll("button");
-    const claudeButtons = rows[1]?.querySelectorAll("button");
+    const codexInstallButton = labeledButton(container, "安装 codex hook");
+    const codexUninstallButton = labeledButton(container, "卸载 codex hook");
+    const claudeInstallButton = labeledButton(container, "安装 claude hook");
+    const claudeUninstallButton = labeledButton(container, "卸载 claude hook");
 
     expect(container.textContent).toContain("codex & codex cli");
     expect(container.textContent).toContain("已安装");
-    expect((codexButtons?.[0] as HTMLButtonElement | undefined)?.disabled).toBe(
-      true,
-    );
-    expect((codexButtons?.[1] as HTMLButtonElement | undefined)?.disabled).toBe(
-      false,
-    );
-    expect(
-      (claudeButtons?.[0] as HTMLButtonElement | undefined)?.disabled,
-    ).toBe(false);
-    expect(
-      (claudeButtons?.[1] as HTMLButtonElement | undefined)?.disabled,
-    ).toBe(true);
+    expect(codexInstallButton.disabled).toBe(true);
+    expect(codexUninstallButton.disabled).toBe(false);
+    expect(claudeInstallButton.disabled).toBe(false);
+    expect(claudeUninstallButton.disabled).toBe(true);
 
     await act(async () => {
-      claudeButtons?.[0]?.click();
-      codexButtons?.[1]?.click();
+      claudeInstallButton.click();
+      codexUninstallButton.click();
     });
 
     expect(onInstall).toHaveBeenCalledWith("claude");
     expect(onUninstall).toHaveBeenCalledWith("codex");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("omits the old fixed settings note", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <SettingsPanel
+          hookInstall={hookInstallState([])}
+          logPath={null}
+          saving={false}
+          settings={defaultSettings()}
+          statusMessage={null}
+          onChange={() => undefined}
+          onInstallHook={() => undefined}
+          onOpenLogFolder={() => undefined}
+          onUninstallHook={() => undefined}
+        />,
+      );
+    });
+
+    expect(container.textContent).not.toContain("本轮不提供自动更新配置项");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps shortcut icon actions accessible and wired", async () => {
+    const onChange = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <SettingsPanel
+          hookInstall={hookInstallState([])}
+          logPath={null}
+          saving={false}
+          settings={defaultSettings()}
+          statusMessage={null}
+          onChange={onChange}
+          onInstallHook={() => undefined}
+          onOpenLogFolder={() => undefined}
+          onUninstallHook={() => undefined}
+        />,
+      );
+    });
+
+    expect(labeledButton(container, "上移快捷输入：继续").disabled).toBe(true);
+
+    await act(async () => {
+      labeledButton(container, "上移快捷输入：补充边界").click();
+      labeledButton(container, "下移快捷输入：继续").click();
+      labeledButton(container, "删除快捷输入：继续").click();
+      labeledButton(container, "新增快捷输入").click();
+    });
+
+    expect(onChange).toHaveBeenCalledTimes(4);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("opens the log folder through the icon action", async () => {
+    const onOpenLogFolder = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <SettingsPanel
+          hookInstall={hookInstallState([])}
+          logPath="/tmp/builder-panel.log"
+          saving={false}
+          settings={defaultSettings()}
+          statusMessage={null}
+          onChange={() => undefined}
+          onInstallHook={() => undefined}
+          onOpenLogFolder={onOpenLogFolder}
+          onUninstallHook={() => undefined}
+        />,
+      );
+    });
+
+    await act(async () => {
+      labeledButton(container, "打开日志目录").click();
+    });
+
+    expect(onOpenLogFolder).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       root.unmount();
@@ -87,3 +176,16 @@ const hookInstallState = (
   workingAgent: null,
   refreshing: false,
 });
+
+const labeledButton = (
+  container: HTMLElement,
+  label: string,
+): HTMLButtonElement => {
+  const button = container.querySelector<HTMLButtonElement>(
+    `button[aria-label="${label}"]`,
+  );
+  if (button === null) {
+    throw new Error(`未找到按钮：${label}`);
+  }
+  return button;
+};

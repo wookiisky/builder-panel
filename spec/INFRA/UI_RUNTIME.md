@@ -138,7 +138,9 @@ session 选中和回复草稿由前端 UI 状态管理。
 
 有跳回能力和跳回目标但全局跳回开关关闭的 session 点击后只更新选中态，不请求跳回且不展示错误。
 
-设置弹窗包含 General、Display、Agents、Replies、Presets、Terminal 和 Advanced 分组。
+设置弹窗包含 General、Display、Agents、Hook Install、Replies、Presets、Terminal、Advanced 和 Logging 分组。
+
+设置弹窗内容区不再渲染独立说明 header。
 
 设置弹窗包含 Hook Install 分组。
 
@@ -147,6 +149,8 @@ session 选中和回复草稿由前端 UI 状态管理。
 Hook Install 分组以列表展示 Codex CLI hook 和 Claude CLI hook 状态。
 
 Hook Install 每个 hook 项只提供安装和卸载入口。
+
+设置页语义简单的行内动作使用 icon 按钮或 icon 加文字按钮，并保留可访问名称。
 
 Hook Install 分组不因 agent 开关变化自动写入第三方配置。
 

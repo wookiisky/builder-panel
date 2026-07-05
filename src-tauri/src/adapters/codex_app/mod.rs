@@ -57,7 +57,8 @@ pub use self::codex_rollout::{
     CodexRolloutSnapshot, CodexRolloutTailer, CodexRolloutWatchTarget,
 };
 pub use self::internal_prompt::{
-    is_codex_internal_prompt, set_internal_prompt_patterns, DEFAULT_INTERNAL_PROMPT_PATTERNS,
+    is_codex_internal_artifact, is_codex_internal_artifact_prefix, is_codex_internal_prompt,
+    set_internal_prompt_patterns, DEFAULT_INTERNAL_PROMPT_PATTERNS,
 };
 
 const REQUIRED_SCHEMA_FILES: [&str; 20] = [
@@ -794,6 +795,8 @@ pub struct CodexAppRuntime {
     thread_rollout_paths: BTreeMap<String, PathBuf>,
     /// 当前 turn 已累积的 Agent 输出。
     current_turn_agent_outputs: BTreeMap<String, String>,
+    /// 当前 turn 曾被识别为内部结构化输出候选的 thread。
+    held_internal_artifact_threads: BTreeSet<String>,
     /// hook SessionStart 暂时影响已有 session 前保存的快照。
     pending_hook_start_snapshots: BTreeMap<SessionKey, AgentSession>,
     /// 只由启动信号创建、尚未看到真实可展示内容的空壳候选。
@@ -825,6 +828,7 @@ impl CodexAppRuntime {
             child_thread_parents: BTreeMap::new(),
             thread_rollout_paths: BTreeMap::new(),
             current_turn_agent_outputs: BTreeMap::new(),
+            held_internal_artifact_threads: BTreeSet::new(),
             pending_hook_start_snapshots: BTreeMap::new(),
             empty_shell_candidates: BTreeSet::new(),
             pending_followup_turns: BTreeMap::new(),
@@ -1149,6 +1153,10 @@ impl CodexAppRuntime {
                     .map_err(|_| protocol_error("Codex APP app-server notification 不受支持"))?
             {
                 let event = self.event_with_current_agent_output(event);
+                if self.should_drop_held_internal_event(&event) {
+                    self.drop_held_internal_event(&event);
+                    return Ok(());
+                }
                 self.clear_detached_rpc_pending(&event);
                 self.apply_event(event)?;
             }
@@ -1341,6 +1349,8 @@ impl CodexAppRuntime {
         let prompt = self.pending_followup_turns.remove(session_key);
         self.current_turn_agent_outputs
             .remove(&session_key.conversation_id.value);
+        self.held_internal_artifact_threads
+            .remove(&session_key.conversation_id.value);
         let Some(prompt) = prompt else {
             return Ok(());
         };
@@ -1467,6 +1477,7 @@ impl CodexAppRuntime {
         self.thread_rollout_paths.remove(&thread_id);
         self.clear_thread_hierarchy_references(&thread_id, session_key, updated_at);
         self.current_turn_agent_outputs.remove(&thread_id);
+        self.held_internal_artifact_threads.remove(&thread_id);
         self.pending_hook_start_snapshots.remove(session_key);
         self.pending_followup_turns.remove(session_key);
         self.pending_hook_approvals
@@ -1524,6 +1535,7 @@ impl CodexAppRuntime {
             self.thread_metadata.remove(&thread_id);
             self.thread_rollout_paths.remove(&thread_id);
             self.current_turn_agent_outputs.remove(&thread_id);
+            self.held_internal_artifact_threads.remove(&thread_id);
         }
         self.clear_thread_hierarchy_references(&thread_id, session_key, updated_at);
         self.publish_codex_app_session_update(session_key, updated_at);
@@ -1582,8 +1594,21 @@ impl CodexAppRuntime {
         output.push_str(&delta);
         truncate_to_recent_chars(output, MAX_CURRENT_TURN_OUTPUT_CHARS);
         let summary = output.clone();
+        let session_key = session_key(cwd, &thread_id);
+        if self.should_hold_internal_delta(&session_key, &summary) {
+            self.held_internal_artifact_threads
+                .insert(thread_id.clone());
+            if is_codex_internal_artifact(&summary) {
+                self.current_turn_agent_outputs.remove(&thread_id);
+                self.remove_empty_shell_session(&session_key, updated_at);
+                self.held_internal_artifact_threads
+                    .insert(thread_id.clone());
+            }
+            return Ok(true);
+        }
+        self.held_internal_artifact_threads.remove(&thread_id);
         self.apply_event(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
-            session_key: session_key(cwd, &thread_id),
+            session_key,
             summary,
             updated_at,
         }))?;
@@ -1598,6 +1623,7 @@ impl CodexAppRuntime {
         }
         if let Some(thread_id) = message_thread_id(message) {
             self.current_turn_agent_outputs.remove(&thread_id);
+            self.held_internal_artifact_threads.remove(&thread_id);
         }
     }
 
@@ -1608,7 +1634,10 @@ impl CodexAppRuntime {
                 if let Some(output) = self
                     .current_turn_agent_outputs
                     .get(&event.session_key.conversation_id.value)
-                    .filter(|value| !value.trim().is_empty())
+                    .filter(|value| {
+                        !value.trim().is_empty()
+                            && self.current_turn_output_is_visible(&event.session_key, value)
+                    })
                 {
                     event.summary = Some(truncate_strict(output, MAX_FINAL_OUTPUT_CHARS));
                 }
@@ -1618,7 +1647,10 @@ impl CodexAppRuntime {
                 if let Some(output) = self
                     .current_turn_agent_outputs
                     .get(&event.session_key.conversation_id.value)
-                    .filter(|value| !value.trim().is_empty())
+                    .filter(|value| {
+                        !value.trim().is_empty()
+                            && self.current_turn_output_is_visible(&event.session_key, value)
+                    })
                 {
                     event.summary = output.clone();
                 }
@@ -1626,6 +1658,55 @@ impl CodexAppRuntime {
             }
             other => other,
         }
+    }
+
+    fn should_hold_internal_delta(&self, session_key: &SessionKey, summary: &str) -> bool {
+        !self.session_has_visible_context(session_key) && is_codex_internal_artifact_prefix(summary)
+    }
+
+    fn current_turn_output_is_visible(&self, session_key: &SessionKey, output: &str) -> bool {
+        self.session_has_visible_context(session_key) || !is_codex_internal_artifact(output)
+    }
+
+    fn should_drop_held_internal_event(&self, event: &AgentEvent) -> bool {
+        let session_key = event.session_key();
+        if self.session_has_visible_context(session_key) {
+            return false;
+        }
+        let thread_id = &session_key.conversation_id.value;
+        if self.held_internal_artifact_threads.contains(thread_id) {
+            return matches!(
+                event,
+                AgentEvent::TitleUpdated(_) | AgentEvent::TurnCompleted(_)
+            );
+        }
+
+        matches!(event, AgentEvent::TurnCompleted(_))
+            && self
+                .current_turn_agent_outputs
+                .get(thread_id)
+                .is_some_and(|output| is_codex_internal_artifact(output))
+    }
+
+    fn drop_held_internal_event(&mut self, event: &AgentEvent) {
+        let session_key = event.session_key().clone();
+        let thread_id = session_key.conversation_id.value.clone();
+        self.current_turn_agent_outputs.remove(&thread_id);
+        if matches!(event, AgentEvent::TurnCompleted(_)) {
+            self.held_internal_artifact_threads.remove(&thread_id);
+        }
+        self.remove_empty_shell_session(&session_key, event_updated_at(event));
+    }
+
+    fn session_has_visible_context(&self, session_key: &SessionKey) -> bool {
+        if self.empty_shell_candidates.contains(session_key) {
+            return false;
+        }
+
+        self.session_state
+            .sessions
+            .get(session_key)
+            .is_some_and(|session| !is_empty_shell_session(session))
     }
 
     /// 合并 app-server thread 元数据，不覆盖已有实时状态。
@@ -1666,7 +1747,10 @@ impl CodexAppRuntime {
 
         let thread_id = metadata.id.clone();
         let preview = metadata.preview.clone().filter(|value| !value.is_empty());
-        let has_internal_preview = preview.as_deref().is_some_and(is_codex_internal_prompt);
+        let title = clean_optional_thread_title(&metadata.name);
+        let has_internal_preview = preview
+            .as_deref()
+            .is_some_and(|value| metadata_preview_is_internal(value, &title));
         if has_internal_preview || metadata.source_kind.is_internal() {
             self.remove_internal_thread_empty_shell(
                 &thread_id,
@@ -1687,7 +1771,6 @@ impl CodexAppRuntime {
         };
         let target_key = session_key(&cwd, &thread_id);
         let summary = preview;
-        let title = clean_optional_thread_title(&metadata.name);
         let session_exists = self.session_state.sessions.contains_key(&target_key);
         let has_thread_session = self.has_session_for_thread(&thread_id);
         if !session_exists
@@ -2002,6 +2085,10 @@ impl CodexAppRuntime {
             snapshot.updated_at,
         )?;
         let target_key = session_key(&snapshot.cwd, &snapshot.session_id);
+        if snapshot.suppressed_internal_artifact && !self.session_has_visible_context(&target_key) {
+            self.remove_empty_shell_session(&target_key, snapshot.updated_at);
+            return Ok(());
+        }
         let Some(session) = self.session_state.sessions.get_mut(&target_key) else {
             return Ok(());
         };
@@ -2056,7 +2143,12 @@ impl CodexAppRuntime {
         if snapshot.completed {
             return Ok(());
         }
-        let Some(summary) = active_rollout_summary(&snapshot).cloned() else {
+        let target_key = session_key(&snapshot.cwd, &snapshot.session_id);
+        let has_visible_context = self.session_has_visible_context(&target_key);
+        let Some(summary) = active_rollout_summary(&snapshot, has_visible_context).cloned() else {
+            if snapshot.suppressed_internal_artifact && !has_visible_context {
+                self.remove_empty_shell_session(&target_key, snapshot.updated_at);
+            }
             return Ok(());
         };
 
@@ -2066,7 +2158,6 @@ impl CodexAppRuntime {
             snapshot.path.clone(),
             snapshot.updated_at,
         )?;
-        let target_key = session_key(&snapshot.cwd, &snapshot.session_id);
         if let Some(session) = self.session_state.sessions.get_mut(&target_key) {
             let mut changed = migrated;
             let next_project_label = project_label(&snapshot.cwd);
@@ -4212,17 +4303,36 @@ fn rollout_summary_update<'a>(
     None
 }
 
-fn active_rollout_summary(snapshot: &CodexRolloutSnapshot) -> Option<&String> {
+fn metadata_preview_is_internal(preview: &str, title: &Option<String>) -> bool {
+    if is_codex_internal_prompt(preview) {
+        return true;
+    }
+
+    missing_title(title) && is_codex_internal_artifact(preview)
+}
+
+fn active_rollout_summary(
+    snapshot: &CodexRolloutSnapshot,
+    has_visible_context: bool,
+) -> Option<&String> {
     snapshot
         .last_agent_message
         .as_ref()
-        .filter(|value| !value.trim().is_empty() && !is_codex_internal_prompt(value))
+        .filter(|value| rollout_summary_is_visible(value, has_visible_context))
         .or_else(|| {
             snapshot
                 .summary
                 .as_ref()
-                .filter(|value| !value.trim().is_empty() && !is_codex_internal_prompt(value))
+                .filter(|value| rollout_summary_is_visible(value, has_visible_context))
         })
+}
+
+fn rollout_summary_is_visible(value: &str, has_visible_context: bool) -> bool {
+    if value.trim().is_empty() || is_codex_internal_prompt(value) {
+        return false;
+    }
+
+    has_visible_context || !is_codex_internal_artifact(value)
 }
 
 fn event_makes_session_visible(event: &AgentEvent) -> bool {
@@ -4403,19 +4513,21 @@ mod tests {
     use super::{
         app_server_error, app_server_protocol_error_response, apply_session_index_thread_titles,
         codex_app_capabilities, codex_session_index_titles_from_reader,
-        ensure_codex_app_thread_loaded, handle_rpc_response, schema_probe_from_dir, session_key,
-        try_write_message_line_nonblocking, CodexAppAdapter, CodexAppAdapterError,
-        CodexAppFollowupRpcClient, CodexAppRpcWrite, CodexAppRuntime, CodexAppServerClient,
-        CodexAppThreadMetadata, CodexAppThreadSourceKind, CodexRolloutPendingQuestion,
-        CodexRolloutPendingUserInput, CodexRolloutSnapshot, CodexRolloutWatchTarget,
-        PendingRpcResult, MAX_CURRENT_TURN_OUTPUT_CHARS, MAX_FINAL_OUTPUT_CHARS,
-        UNRESOLVED_CODEX_APP_PROJECT_ID, UNRESOLVED_CODEX_APP_PROJECT_LABEL,
+        ensure_codex_app_thread_loaded, handle_rpc_response, is_codex_internal_artifact,
+        schema_probe_from_dir, session_key, try_write_message_line_nonblocking, CodexAppAdapter,
+        CodexAppAdapterError, CodexAppFollowupRpcClient, CodexAppRpcWrite, CodexAppRuntime,
+        CodexAppServerClient, CodexAppThreadMetadata, CodexAppThreadSourceKind,
+        CodexRolloutPendingQuestion, CodexRolloutPendingUserInput, CodexRolloutSnapshot,
+        CodexRolloutWatchTarget, PendingRpcResult, MAX_CURRENT_TURN_OUTPUT_CHARS,
+        MAX_FINAL_OUTPUT_CHARS, UNRESOLVED_CODEX_APP_PROJECT_ID,
+        UNRESOLVED_CODEX_APP_PROJECT_LABEL,
     };
     use crate::adapters::bridge::codec::{
         BridgeHookEventName, BridgeRequestEnvelope, ValidatedHookPayload,
     };
     use crate::domain::agent_event::{
         AgentEvent, HierarchyUpdatedEvent, SessionStartedEvent, TurnCompletedEvent,
+        UserMessageUpdatedEvent,
     };
     use crate::domain::agent_interaction::{
         AgentInteraction, AnswerInteraction, InteractionChoice, ReplyTarget,
@@ -6805,6 +6917,7 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
                 completed: false,
+                suppressed_internal_artifact: false,
                 pending_user_input: None,
             })
             .expect("snapshot should apply");
@@ -6851,6 +6964,7 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
                 completed: false,
+                suppressed_internal_artifact: false,
                 pending_user_input: Some(test_pending_user_input()),
             })
             .expect("snapshot should apply pending input");
@@ -7014,6 +7128,77 @@ mod tests {
 
         assert!(runtime.session_state().sessions.is_empty());
         assert!(runtime.rollout_watch_targets().is_empty());
+    }
+
+    #[test]
+    fn thread_metadata_with_internal_structured_preview_does_not_create_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    parent_thread_id: None,
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: None,
+                    preview: Some(r#"{"suggestions":[]}"#.to_string()),
+                    path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("internal structured loaded metadata should be ignored");
+        runtime
+            .apply_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-2".to_string(),
+                    parent_thread_id: None,
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: None,
+                    preview: Some(r#"{"exclude":[]}"#.to_string()),
+                    path: Some(PathBuf::from("/tmp/rollout-thread-2.jsonl")),
+                    status_type: "idle".to_string(),
+                    ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
+                },
+                UnixMillis::new(2),
+            )
+            .expect("internal structured history metadata should be ignored");
+
+        assert!(runtime.session_state().sessions.is_empty());
+        assert!(runtime.rollout_watch_targets().is_empty());
+    }
+
+    #[test]
+    fn metadata_with_title_keeps_structured_json_preview_visible() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_loaded_thread_metadata(
+                CodexAppThreadMetadata {
+                    id: "thread-1".to_string(),
+                    parent_thread_id: None,
+                    cwd: Some("/tmp/builder-panel".to_string()),
+                    name: Some("返回 JSON".to_string()),
+                    preview: Some(r#"{"suggestions":[]}"#.to_string()),
+                    path: Some(PathBuf::from("/tmp/rollout-thread-1.jsonl")),
+                    status_type: "active".to_string(),
+                    ephemeral: false,
+                    source_kind: CodexAppThreadSourceKind::UserVisible,
+                },
+                UnixMillis::new(1),
+            )
+            .expect("titled structured metadata should remain visible");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+        assert_eq!(session.title.as_deref(), Some("返回 JSON"));
+        assert_eq!(session.summary.as_deref(), Some(r#"{"suggestions":[]}"#));
     }
 
     #[test]
@@ -7437,6 +7622,7 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
                 completed: false,
+                suppressed_internal_artifact: false,
                 pending_user_input: None,
             })
             .expect("rollout should update running summary");
@@ -7484,6 +7670,7 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
                 completed: false,
+                suppressed_internal_artifact: false,
                 pending_user_input: None,
             })
             .expect("rollout should not overwrite with user summary");
@@ -7511,9 +7698,47 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-history.jsonl"),
                 updated_at: UnixMillis::new(1),
                 completed: false,
+                suppressed_internal_artifact: false,
                 pending_user_input: None,
             })
             .expect("rollout should be ignored without candidate");
+
+        assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn rollout_snapshot_internal_artifact_removes_existing_empty_shell() {
+        let mut runtime = CodexAppRuntime::empty();
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "thread/started",
+                    "params": {
+                        "cwd": "/tmp/builder-panel",
+                        "thread": {
+                            "id": "thread-1",
+                            "name": "   "
+                        }
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(1),
+            )
+            .expect("thread should start as empty shell");
+
+        runtime
+            .apply_rollout_snapshot(CodexRolloutSnapshot {
+                session_id: "thread-1".to_string(),
+                cwd: "/tmp/builder-panel".to_string(),
+                summary: None,
+                last_agent_message: None,
+                path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
+                updated_at: UnixMillis::new(2),
+                completed: false,
+                suppressed_internal_artifact: true,
+                pending_user_input: None,
+            })
+            .expect("internal rollout should remove shell");
 
         assert!(runtime.session_state().sessions.is_empty());
     }
@@ -7570,6 +7795,12 @@ mod tests {
             "Generate 0 to 3 hyperpersonalized suggestions for the user.",
             UnixMillis::new(4),
         );
+        let internal_json = active_rollout_snapshot(
+            "thread-4",
+            "/tmp/builder-panel",
+            r#"{"suggestions":[]}"#,
+            UnixMillis::new(5),
+        );
 
         runtime
             .apply_active_rollout_snapshot(completed)
@@ -7580,9 +7811,73 @@ mod tests {
         runtime
             .apply_active_rollout_snapshot(internal)
             .expect("internal rollout should be ignored");
+        runtime
+            .apply_active_rollout_snapshot(internal_json)
+            .expect("internal structured rollout should be ignored");
 
         assert!(runtime.session_state().sessions.is_empty());
         assert!(runtime.rollout_watch_targets().is_empty());
+    }
+
+    #[test]
+    fn active_rollout_internal_artifact_removes_existing_empty_shell() {
+        let mut runtime = CodexAppRuntime::empty();
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "thread/started",
+                    "params": {
+                        "cwd": "/tmp/builder-panel",
+                        "thread": {
+                            "id": "thread-1",
+                            "name": "   "
+                        }
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(1),
+            )
+            .expect("thread should start as empty shell");
+
+        runtime
+            .apply_active_rollout_snapshot(active_rollout_snapshot(
+                "thread-1",
+                "/tmp/builder-panel",
+                r#"{"suggestions":[]}"#,
+                UnixMillis::new(2),
+            ))
+            .expect("internal active rollout should remove shell");
+
+        assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn active_rollout_snapshot_keeps_structured_output_for_visible_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        let key = session_key("/tmp/builder-panel", "thread-1");
+        runtime
+            .apply_event(AgentEvent::UserMessageUpdated(UserMessageUpdatedEvent {
+                session_key: key.clone(),
+                summary: "只返回 suggestions JSON".to_string(),
+                updated_at: UnixMillis::new(1),
+            }))
+            .expect("user message should create visible session");
+
+        runtime
+            .apply_active_rollout_snapshot(active_rollout_snapshot(
+                "thread-1",
+                "/tmp/builder-panel",
+                r#"{"suggestions":[]}"#,
+                UnixMillis::new(2),
+            ))
+            .expect("visible session rollout should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("session should exist");
+        assert_eq!(session.summary.as_deref(), Some(r#"{"suggestions":[]}"#));
     }
 
     #[test]
@@ -7808,6 +8103,7 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
                 completed: false,
+                suppressed_internal_artifact: false,
                 pending_user_input: None,
             })
             .expect("rollout should migrate unresolved session");
@@ -7849,6 +8145,7 @@ mod tests {
             path: PathBuf::from(format!("/tmp/rollout-{session_id}.jsonl")),
             updated_at,
             completed: false,
+            suppressed_internal_artifact: is_codex_internal_artifact(message),
             pending_user_input: None,
         }
     }
@@ -7968,6 +8265,204 @@ mod tests {
                 && notification.session_key == session.session_key
                 && notification.updated_at == UnixMillis::new(2)
         }));
+    }
+
+    #[test]
+    fn internal_structured_delta_without_context_does_not_create_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "thread/started",
+                    "params": {
+                        "cwd": "/tmp/builder-panel",
+                        "thread": {
+                            "id": "thread-1",
+                            "name": "   "
+                        }
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(1),
+            )
+            .expect("thread should start as empty shell");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "{\"suggestions\":[]}"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(2),
+            )
+            .expect("delta should be consumed");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "turn": {"id": "turn-1", "status": "completed"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(3),
+            )
+            .expect("completion should be consumed");
+
+        assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn internal_structured_delta_prefix_waits_until_non_matching() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "{"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(1),
+            )
+            .expect("prefix delta should be held");
+        assert!(runtime.session_state().sessions.is_empty());
+
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "\"other\":[]}"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(2),
+            )
+            .expect("non matching delta should publish");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+        assert_eq!(session.summary.as_deref(), Some(r#"{"other":[]}"#));
+    }
+
+    #[test]
+    fn held_internal_delta_drops_later_title_and_completion_shell() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "thread/started",
+                    "params": {
+                        "cwd": "/tmp/builder-panel",
+                        "thread": {
+                            "id": "thread-1",
+                            "name": "   "
+                        }
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(1),
+            )
+            .expect("thread should start as empty shell");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "{\"suggestions\":[]}"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(2),
+            )
+            .expect("internal delta should be held");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "thread/name/updated",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "name": "Suggestions"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(3),
+            )
+            .expect("internal title should be dropped");
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "thread/status/changed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "status": {"type": "idle"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(4),
+            )
+            .expect("idle completion should be dropped");
+
+        assert!(runtime.session_state().sessions.is_empty());
+        assert!(!runtime.current_turn_agent_outputs.contains_key("thread-1"));
+        assert!(!runtime.held_internal_artifact_threads.contains("thread-1"));
+    }
+
+    #[test]
+    fn visible_session_keeps_structured_delta_output() {
+        let mut runtime = CodexAppRuntime::empty();
+        let key = session_key("/tmp/builder-panel", "thread-1");
+        runtime
+            .apply_event(AgentEvent::UserMessageUpdated(UserMessageUpdatedEvent {
+                session_key: key.clone(),
+                summary: "只返回 suggestions JSON".to_string(),
+                updated_at: UnixMillis::new(1),
+            }))
+            .expect("user message should create visible session");
+
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "{\"suggestions\":[]}"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(2),
+            )
+            .expect("delta should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&key)
+            .expect("session should exist");
+        assert_eq!(session.summary.as_deref(), Some(r#"{"suggestions":[]}"#));
     }
 
     #[test]

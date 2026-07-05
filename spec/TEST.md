@@ -314,6 +314,14 @@ Codex CLI runtime 测试断言当前 session pending interaction 不匹配时旧
 
 Codex APP adapter 测试断言 token usage 只来自 app-server 已验证 notification 字段。
 
+Codex APP adapter 测试断言 metadata、最近活跃 rollout、rollout tail 和 app-server delta 不会把无真实用户上下文的已知内部结构化产物创建为可见 session。
+
+Codex APP adapter 测试断言内部结构化 delta 后的完成、标题和状态事件不会保留空壳 session，也不会把已暂缓的内部输出缓存重新写回摘要。
+
+Codex APP adapter 测试断言内部结构化 rollout snapshot 或最近活跃 rollout 会清理此前 `thread/started` 留下的空壳 session。
+
+Codex APP adapter 测试断言真实用户上下文中的同形 JSON 输出仍可作为 session 摘要展示。
+
 Interaction Service 测试断言 allow、deny 和回写失败路径。
 
 Interaction Service 测试断言 allow and remember、单选、多选空选择、非法选项和回写失败路径。

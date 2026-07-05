@@ -198,6 +198,7 @@ textarea:focus-visible {
 .shortcut-row button,
 .hook-install-row-actions button,
 .shortcut-editor button,
+.settings-action-button,
 .settings-log-actions button,
 .overlay-panel button,
 .detail-summary-line button {
@@ -378,7 +379,6 @@ button:disabled {
 .session-list-empty,
 .session-detail-empty,
 .session-detail,
-.settings-panel > header,
 .settings-group {
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -881,8 +881,7 @@ button:disabled {
 .session-row small,
 .session-detail > header p,
 .overlay-panel > header p,
-.detail-summary,
-.settings-panel > header p {
+.detail-summary {
   margin: 3px 0 0;
   color: var(--muted);
   font-size: var(--font-size-sm);
@@ -1109,37 +1108,30 @@ button:disabled {
   gap: 8px;
 }
 
-.settings-panel > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px;
-}
-
-.settings-panel > header strong,
 .settings-group h2 {
   margin: 0;
   color: var(--text);
   font-size: var(--font-size-md);
 }
 
-.settings-panel > header span {
-  flex: 0 0 auto;
-  color: var(--accent);
-  font-size: var(--font-size-xs);
-}
-
 .settings-group {
   display: grid;
-  gap: 7px;
+  gap: 8px;
   padding: 8px;
 }
 
-.settings-group > div {
+.settings-group-content {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
+}
+
+.settings-group-content-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-group-content-list,
+.settings-group-content-stack {
+  grid-template-columns: 1fr;
 }
 
 .toggle-row,
@@ -1202,13 +1194,13 @@ button:disabled {
 
 .shortcut-editor {
   grid-column: 1 / -1;
-  display: grid !important;
-  grid-template-columns: 1fr !important;
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 6px;
 }
 
 .shortcut-editor-row {
-  display: grid !important;
+  display: grid;
   grid-template-columns: minmax(90px, 0.8fr) minmax(140px, 1.4fr) auto auto;
   align-items: center;
   gap: 6px;
@@ -1227,10 +1219,28 @@ button:disabled {
 }
 
 .shortcut-editor-actions {
-  display: flex !important;
+  display: flex;
   flex-wrap: wrap;
   gap: 5px;
   justify-content: flex-end;
+}
+
+.settings-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.settings-action-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.settings-action-button-icon {
+  width: 28px;
+  padding: 0;
 }
 
 .settings-modal {
@@ -1309,13 +1319,13 @@ button:disabled {
 
 .hook-install-list {
   grid-column: 1 / -1;
-  display: grid !important;
-  grid-template-columns: 1fr !important;
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 6px;
 }
 
 .hook-install-row {
-  display: grid !important;
+  display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
@@ -1349,7 +1359,7 @@ button:disabled {
 }
 
 .hook-install-row-actions {
-  display: flex !important;
+  display: flex;
   gap: 5px;
   justify-content: flex-end;
 }
@@ -1391,7 +1401,7 @@ button:disabled {
 
 @media (max-width: 760px) {
   .mock-workspace,
-  .settings-group > div,
+  .settings-group-content-grid,
   .panel-topbar,
   .session-row-action,
   .shortcut-editor-row {
@@ -1463,7 +1473,6 @@ button:disabled {
   }
 
   .session-detail > header,
-  .settings-panel > header,
   .overlay-panel > header,
   .reply-inline {
     align-items: flex-start;

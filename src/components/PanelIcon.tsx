@@ -1,12 +1,19 @@
 import {
+  ArrowDown,
+  ArrowUp,
   Bolt,
   Check,
   CircleEllipsis,
+  FolderOpen,
   LoaderCircle,
   MessageCircleQuestion,
   Minus,
   OctagonX,
+  Plug,
+  Plus,
   SendHorizontal,
+  Trash2,
+  Unplug,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -19,7 +26,14 @@ export type PanelIconName =
   | "window-settings"
   | "window-close"
   | "send"
-  | "stop-placeholder";
+  | "stop-placeholder"
+  | "shortcut-add"
+  | "shortcut-delete"
+  | "shortcut-move-down"
+  | "shortcut-move-up"
+  | "hook-install"
+  | "hook-uninstall"
+  | "log-folder";
 
 /// Panel 图标基础属性。
 export interface PanelIconProps {
@@ -43,6 +57,13 @@ const panelIconByName: Record<PanelIconName, LucideIcon> = {
   "window-close": X,
   send: SendHorizontal,
   "stop-placeholder": OctagonX,
+  "shortcut-add": Plus,
+  "shortcut-delete": Trash2,
+  "shortcut-move-down": ArrowDown,
+  "shortcut-move-up": ArrowUp,
+  "hook-install": Plug,
+  "hook-uninstall": Unplug,
+  "log-folder": FolderOpen,
 };
 
 const sessionStatusIconByStatus: Record<SessionStatus, LucideIcon> = {

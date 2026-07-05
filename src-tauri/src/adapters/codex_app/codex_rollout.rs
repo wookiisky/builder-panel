@@ -13,7 +13,7 @@ use std::os::windows::fs::MetadataExt;
 
 use serde_json::Value;
 
-use super::internal_prompt::is_codex_internal_prompt;
+use super::internal_prompt::{is_codex_internal_artifact, is_codex_internal_prompt};
 use crate::domain::agent_event::{
     ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, InteractionCompletedEvent,
     TurnCompletedEvent, UserMessageUpdatedEvent,
@@ -50,6 +50,8 @@ pub struct CodexRolloutSnapshot {
     pub updated_at: UnixMillis,
     /// 当前 rollout 是否已经完成或中止。
     pub completed: bool,
+    /// 是否曾因无真实用户上下文而抑制内部结构化产物。
+    pub suppressed_internal_artifact: bool,
     /// 当前仍未处理的 request_user_input。
     pub pending_user_input: Option<CodexRolloutPendingUserInput>,
 }
@@ -178,6 +180,8 @@ struct CodexRolloutTailState {
     completed: bool,
     /// 当前追加流是否处在 Codex 内部隐藏 turn 中。
     current_turn_is_internal: bool,
+    /// 当前追加流是否已经看到真实用户输入。
+    has_visible_user_message: bool,
     /// 当前等待输入 function call ID。
     pending_user_input_call_id: Option<String>,
 }
@@ -374,6 +378,7 @@ fn tail_state_at_eof(path: &Path, session_key: SessionKey) -> CodexRolloutTailSt
         dropping_overlong_line: false,
         completed: false,
         current_turn_is_internal: scan_state.current_turn_is_internal,
+        has_visible_user_message: scan_state.has_visible_user_message,
         pending_user_input_call_id: scan_state.pending_user_input_call_id,
     }
 }
@@ -465,6 +470,7 @@ fn reset_tail_state_at_eof(
     state.completed = false;
     let scan_state = scan_rollout_tail_state(path);
     state.current_turn_is_internal = scan_state.current_turn_is_internal;
+    state.has_visible_user_message = scan_state.has_visible_user_message;
     state.pending_user_input_call_id = scan_state.pending_user_input_call_id;
 }
 
@@ -603,6 +609,7 @@ fn live_events_from_event_msg(
                 return Vec::new();
             }
             state.current_turn_is_internal = false;
+            state.has_visible_user_message = true;
             state.completed = false;
             let mut events = clear_pending_user_input_events(state, None, updated_at);
             events.push(user_message_event(state, &message, updated_at));
@@ -610,13 +617,8 @@ fn live_events_from_event_msg(
         }
         Some("agent_message") if !state.current_turn_is_internal => {
             clean_string(payload.get("message"))
-                .map(|message| {
-                    vec![activity_event(
-                        state,
-                        &truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS),
-                        updated_at,
-                    )]
-                })
+                .and_then(|message| visible_agent_message(state, message))
+                .map(|message| vec![activity_event(state, &message, updated_at)])
                 .unwrap_or_default()
         }
         Some("agent_message") => Vec::new(),
@@ -625,8 +627,15 @@ fn live_events_from_event_msg(
                 return Vec::new();
             }
             state.completed = true;
-            let summary = clean_string(payload.get("last_agent_message"))
-                .map(|message| truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS));
+            let raw_summary = clean_string(payload.get("last_agent_message"));
+            let summary = raw_summary.and_then(|message| visible_agent_message(state, message));
+            if summary.is_none()
+                && clean_string(payload.get("last_agent_message"))
+                    .is_some_and(|message| hidden_internal_artifact_without_user(state, &message))
+            {
+                state.pending_user_input_call_id = None;
+                return Vec::new();
+            }
             state.pending_user_input_call_id = None;
             vec![AgentEvent::TurnCompleted(TurnCompletedEvent {
                 session_key: state.session_key.clone(),
@@ -681,13 +690,8 @@ fn live_events_from_response_item(
     match item.get("type").and_then(Value::as_str) {
         Some("message") if item.get("role").and_then(Value::as_str) == Some("assistant") => {
             response_message_text(item, "output_text")
-                .map(|message| {
-                    vec![activity_event(
-                        state,
-                        &truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS),
-                        updated_at,
-                    )]
-                })
+                .and_then(|message| visible_agent_message(state, message))
+                .map(|message| vec![activity_event(state, &message, updated_at)])
                 .unwrap_or_default()
         }
         Some("function_call") => {
@@ -806,6 +810,8 @@ fn pending_questions(value: Option<&Value>) -> Option<Vec<CodexRolloutPendingQue
 struct CodexRolloutScanState {
     /// 当前是否处在 Codex 内部隐藏 turn。
     current_turn_is_internal: bool,
+    /// 是否已经看到真实用户输入。
+    has_visible_user_message: bool,
     /// 当前未完成的 request_user_input call_id。
     pending_user_input_call_id: Option<String>,
 }
@@ -838,6 +844,7 @@ fn apply_scan_event_msg(
             };
             state.current_turn_is_internal = is_codex_internal_prompt(&message);
             if !state.current_turn_is_internal {
+                state.has_visible_user_message = true;
                 state.pending_user_input_call_id = None;
             }
         }
@@ -1051,6 +1058,10 @@ struct CodexRolloutState {
     updated_at: UnixMillis,
     /// 当前 reducer 是否处在 Codex 内部隐藏 turn 中。
     current_turn_is_internal: bool,
+    /// 当前 reducer 是否已经看到真实用户输入。
+    has_visible_user_message: bool,
+    /// 当前 reducer 是否曾抑制内部结构化产物。
+    suppressed_internal_artifact: bool,
     /// 当前未完成的 Codex App 等待输入。
     pending_user_input: Option<CodexRolloutPendingUserInput>,
 }
@@ -1067,6 +1078,8 @@ impl CodexRolloutState {
             path,
             updated_at,
             current_turn_is_internal: false,
+            has_visible_user_message: false,
+            suppressed_internal_artifact: false,
             pending_user_input: None,
         }
     }
@@ -1081,6 +1094,7 @@ impl CodexRolloutState {
             path: self.path,
             updated_at: self.updated_at,
             completed: self.completed,
+            suppressed_internal_artifact: self.suppressed_internal_artifact,
             pending_user_input: self.pending_user_input,
         })
     }
@@ -1152,6 +1166,7 @@ fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRo
                     return;
                 }
                 state.current_turn_is_internal = false;
+                state.has_visible_user_message = true;
                 if state.completed {
                     state.completed = false;
                 }
@@ -1218,9 +1233,25 @@ fn apply_response_item(payload: &serde_json::Map<String, Value>, state: &mut Cod
 
 /// 应用 Agent 输出。
 fn apply_agent_message(message: String, state: &mut CodexRolloutState) {
+    if !state.has_visible_user_message && is_codex_internal_artifact(&message) {
+        state.suppressed_internal_artifact = true;
+        return;
+    }
     let message = truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS);
     state.last_agent_message = Some(message.clone());
     state.summary = Some(message);
+}
+
+fn visible_agent_message(state: &CodexRolloutTailState, message: String) -> Option<String> {
+    if hidden_internal_artifact_without_user(state, &message) {
+        return None;
+    }
+
+    Some(truncate_strict(&message, MAX_FINAL_OUTPUT_CHARS))
+}
+
+fn hidden_internal_artifact_without_user(state: &CodexRolloutTailState, message: &str) -> bool {
+    !state.has_visible_user_message && is_codex_internal_artifact(message)
 }
 
 /// 提取 response message 文本。
@@ -1752,6 +1783,35 @@ mod tests {
     }
 
     #[test]
+    fn rollout_snapshot_without_user_ignores_internal_structured_output() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"suggestions\":[]}"}]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"{\"suggestions\":[]}"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete","last_agent_message":"{\"suggestions\":[]}"}}"#,
+        ]);
+
+        assert_eq!(snapshot.summary, None);
+        assert_eq!(snapshot.last_agent_message, None);
+        assert!(snapshot.completed);
+    }
+
+    #[test]
+    fn rollout_snapshot_keeps_real_user_structured_output() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"只返回 suggestions JSON"}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"suggestions\":[]}"}]}}"#,
+        ]);
+
+        assert_eq!(snapshot.summary.as_deref(), Some(r#"{"suggestions":[]}"#));
+        assert_eq!(
+            snapshot.last_agent_message.as_deref(),
+            Some(r#"{"suggestions":[]}"#)
+        );
+    }
+
+    #[test]
     fn rollout_tailer_skips_codex_internal_prompt() {
         let root = test_root("rollout-tail-internal");
         let file = root.join("rollout-thread-1.jsonl");
@@ -1784,6 +1844,41 @@ mod tests {
             events.is_empty(),
             "internal suggestion prompt should not emit user-message event"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollout_tailer_without_user_ignores_internal_structured_output() {
+        let root = test_root("rollout-tail-internal-json");
+        let file = root.join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(&root).expect("root should create");
+        std::fs::write(&file, "").expect("rollout should write");
+        let session_key = SessionKey::new(
+            AgentKind::CodexCli,
+            ProjectId::new("/tmp/builder-panel"),
+            ConversationId::new("thread-1"),
+        );
+        let mut tailer = CodexRolloutTailer::new(root.clone());
+        tailer.sync_targets(vec![CodexRolloutWatchTarget {
+            session_key,
+            path: file.clone(),
+        }]);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .expect("rollout should open")
+            .write_all(
+                br#"
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"suggestions\":[]}"}]}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"{\"suggestions\":[]}"}}
+{"type":"event_msg","payload":{"type":"turn_complete","last_agent_message":"{\"suggestions\":[]}"}}
+"#,
+            )
+            .expect("rollout should append");
+
+        let events = tailer.poll_events(UnixMillis::new(2));
+
+        assert!(events.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 
