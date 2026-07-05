@@ -86,6 +86,8 @@ Codex APP runtime 必须用 `thread_id -> cwd` 映射统一 hook 通道和 app-s
 
 Codex APP runtime 可维护 `thread_id -> parent_thread_id` 缓存，用于把 Codex APP sub agent thread 挂到对应已有 parent session 下。
 
+Codex APP runtime 的 `thread_id -> parent_thread_id` 缓存可来自 thread metadata 顶层 parent 字段，也可来自显式 `source.subAgent` 或 `source.subagent` 下的 `thread_spawn` 或 `threadSpawn` 内的 parent 字段。
+
 Codex APP parent-only metadata 不得创建 session，只能记录父子关系并等待可信 cwd 或已有 session 补齐。
 
 Codex APP 只有在 child 和 parent 都能解析为已有 session 时，才向 Domain 写入 `HierarchyUpdated`。

@@ -92,6 +92,8 @@ Rust Codex APP adapter 测试验证 app-server thread 元数据可迁移待识�
 
 Rust Codex APP adapter 测试验证 parent-only thread metadata 只记录父子关系不创建 session，child 和 parent session 都存在后会发布层级更新。
 
+Rust Codex APP adapter 测试验证显式 `thread_spawn` 内嵌 parent 字段可建立 child 到 parent 的层级关系，并在列表 view model 暴露一级缩进。
+
 Rust Codex APP adapter 测试验证清理 parent 空壳 session 会同步清理 child 层级关系。
 
 Rust Codex APP runtime 测试验证超过保留窗口的已完成 session 会被清理，并同步移除 thread 缓存、rollout watch target、当前输出、follow-up 占位，且 parent 被清理时 child 回退为顶层并发布更新通知。

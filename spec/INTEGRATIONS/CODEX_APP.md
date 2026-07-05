@@ -112,7 +112,9 @@ Codex APP `source.subAgent` 为 `review`、`compact` 或 `memory_consolidation` 
 
 Codex APP 不恢复 `ephemeral` thread metadata。
 
-Codex APP thread metadata 可清洗 `parentThreadId` 或 `parent_thread_id` 作为子 thread 与父 thread 的关系来源。
+Codex APP thread metadata 可清洗顶层 `parentThreadId` 或 `parent_thread_id` 作为子 thread 与父 thread 的关系来源。
+
+Codex APP 显式 `source.subAgent` 或 `source.subagent` 下的 `thread_spawn` 或 `threadSpawn` 内的 `parent_thread_id` 或 `parentThreadId` 也可作为子 thread 与父 thread 的关系来源。
 
 Codex APP parent-only thread metadata 只记录 thread 父子关系，不单独创建 session。
 

@@ -519,12 +519,7 @@ impl CodexAppThreadMetadata {
             .as_object()
             .ok_or(CodexAppAdapterError::InvalidField("thread"))?;
         let id = required_string(object.get("id"), "thread.id")?;
-        let parent_thread_id = optional_non_empty_string(
-            object
-                .get("parentThreadId")
-                .or_else(|| object.get("parent_thread_id")),
-            "thread.parentThreadId",
-        )?;
+        let parent_thread_id = thread_parent_id(object)?;
         let cwd = optional_non_empty_string(object.get("cwd"), "thread.cwd")?;
         let name = optional_thread_title(object.get("name"), "thread.name")?;
         let preview = optional_preview(object.get("preview"), "thread.preview")?;
@@ -552,6 +547,59 @@ impl CodexAppThreadMetadata {
             source_kind,
         })
     }
+}
+
+/// 从 thread metadata 顶层或显式 thread_spawn source 中清洗父 thread ID。
+fn thread_parent_id(
+    object: &serde_json::Map<String, Value>,
+) -> Result<Option<String>, CodexAppAdapterError> {
+    let parent_thread_id = optional_non_empty_string(
+        object
+            .get("parentThreadId")
+            .or_else(|| object.get("parent_thread_id")),
+        "thread.parentThreadId",
+    )?;
+    if parent_thread_id.is_some() {
+        return Ok(parent_thread_id);
+    }
+
+    thread_spawn_parent_thread_id(object.get("source"))
+}
+
+/// 从显式 sub agent thread_spawn source 中清洗父 thread ID。
+fn thread_spawn_parent_thread_id(
+    source: Option<&Value>,
+) -> Result<Option<String>, CodexAppAdapterError> {
+    let Some(Value::Object(source_object)) = source else {
+        return Ok(None);
+    };
+    let Some(subagent) = source_object
+        .get("subAgent")
+        .or_else(|| source_object.get("subagent"))
+    else {
+        return Ok(None);
+    };
+    let Value::Object(subagent_object) = subagent else {
+        return Ok(None);
+    };
+    let Some(thread_spawn) = subagent_object
+        .get("thread_spawn")
+        .or_else(|| subagent_object.get("threadSpawn"))
+    else {
+        return Ok(None);
+    };
+    let Value::Object(thread_spawn_object) = thread_spawn else {
+        return Err(CodexAppAdapterError::InvalidField(
+            "thread.source.subAgent.thread_spawn",
+        ));
+    };
+
+    optional_non_empty_string(
+        thread_spawn_object
+            .get("parent_thread_id")
+            .or_else(|| thread_spawn_object.get("parentThreadId")),
+        "thread.source.subAgent.thread_spawn.parentThreadId",
+    )
 }
 
 /// 解析 app-server thread source，仅在适配器边界转换成内部可见性。
@@ -4375,7 +4423,7 @@ mod tests {
     use crate::domain::agent_session::{AgentKind, SessionStatus};
     use crate::domain::app_error::AppError;
     use crate::domain::usage::{UnixMillis, UsageSnapshot};
-    use crate::domain::view_model::UiAction;
+    use crate::domain::view_model::{session_list_view_models, UiAction};
     use crate::ports::agent_adapter_port::{ApprovalDecision, ChoiceSubmission};
     use crate::ports::session_update_port::{
         SessionRuntimeSource, SessionUpdateNotification, SessionUpdateSinkPort,
@@ -6546,6 +6594,70 @@ mod tests {
     }
 
     #[test]
+    fn nested_thread_spawn_parent_metadata_attaches_and_exposes_indent() {
+        let mut runtime = CodexAppRuntime::empty();
+        let parent_response = json!({
+            "threads": [{
+                "id": "parent-thread",
+                "cwd": "/tmp/builder-panel",
+                "name": "父任务",
+                "preview": "父任务运行中",
+                "path": "/tmp/rollout-parent.jsonl",
+                "status": {"type": "active"}
+            }]
+        });
+        let child_response = json!({
+            "threads": [{
+                "id": "child-thread",
+                "cwd": "/tmp/builder-panel",
+                "name": "审查本轮变更",
+                "preview": "检查实现",
+                "path": "/tmp/rollout-child.jsonl",
+                "status": {"type": "active"},
+                "source": {
+                    "subAgent": {
+                        "thread_spawn": {
+                            "parent_thread_id": "parent-thread",
+                            "agent_role": "change_reviewer",
+                            "agent_nickname": "Reviewer"
+                        }
+                    }
+                },
+                "threadSource": "subagent",
+                "agentRole": "change_reviewer",
+                "agentNickname": "Reviewer"
+            }]
+        });
+        let mut parent_threads =
+            CodexAppAdapter::threads_from_response(&parent_response).expect("parent should clean");
+        let mut child_threads =
+            CodexAppAdapter::threads_from_response(&child_response).expect("child should clean");
+
+        runtime
+            .apply_loaded_thread_metadata(parent_threads.remove(0), UnixMillis::new(1))
+            .expect("parent metadata should apply");
+        runtime
+            .apply_loaded_thread_metadata(child_threads.remove(0), UnixMillis::new(2))
+            .expect("child metadata should apply");
+
+        let parent_key = session_key("/tmp/builder-panel", "parent-thread");
+        let child_key = session_key("/tmp/builder-panel", "child-thread");
+        let child = runtime
+            .session_state()
+            .sessions
+            .get(&child_key)
+            .expect("child should exist");
+        assert_eq!(child.parent_session_key, Some(parent_key));
+        assert_eq!(child.hierarchy_depth, 1);
+
+        let child_view_model = session_list_view_models(runtime.session_state())
+            .into_iter()
+            .find(|item| item.session_key == child_key)
+            .expect("child view model should exist");
+        assert_eq!(child_view_model.indent_level, 1);
+    }
+
+    #[test]
     fn hierarchy_only_change_publishes_session_update() {
         let sink = Arc::new(RecordingSessionUpdateSink::default());
         let mut runtime = CodexAppRuntime::with_update_sink(sink.clone());
@@ -6973,6 +7085,55 @@ mod tests {
                 .sessions
                 .contains_key(&session_key("/tmp/builder-panel", "child-thread")),
             "thread_spawn subagent should remain visible"
+        );
+    }
+
+    #[test]
+    fn thread_spawn_parent_id_can_come_from_nested_source_metadata() {
+        let response = json!({
+            "threads": [
+                {
+                    "id": "child-thread-a",
+                    "cwd": "/tmp/builder-panel",
+                    "status": {"type": "active"},
+                    "source": {
+                        "subAgent": {
+                            "thread_spawn": {
+                                "parent_thread_id": "parent-thread-a"
+                            }
+                        }
+                    }
+                },
+                {
+                    "id": "child-thread-b",
+                    "cwd": "/tmp/builder-panel",
+                    "status": {"type": "active"},
+                    "source": {
+                        "subagent": {
+                            "threadSpawn": {
+                                "parentThreadId": "parent-thread-b"
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+        let threads =
+            CodexAppAdapter::threads_from_response(&response).expect("response should clean");
+
+        assert_eq!(
+            threads
+                .iter()
+                .find(|thread| thread.id == "child-thread-a")
+                .and_then(|thread| thread.parent_thread_id.as_deref()),
+            Some("parent-thread-a")
+        );
+        assert_eq!(
+            threads
+                .iter()
+                .find(|thread| thread.id == "child-thread-b")
+                .and_then(|thread| thread.parent_thread_id.as_deref()),
+            Some("parent-thread-b")
         );
     }
 
