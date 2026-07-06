@@ -908,6 +908,7 @@ mod tests {
             summary: None,
             capabilities: SessionCapabilities::none(),
             usage: UsageSnapshot::unavailable(),
+            started_at: UnixMillis::new(updated_at),
             updated_at: UnixMillis::new(updated_at),
         })
     }

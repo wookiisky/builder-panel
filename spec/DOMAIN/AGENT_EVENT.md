@@ -4,7 +4,7 @@
 
 Agent Event 是 adapter 清洗外部 agent payload 后进入 Domain 的统一事件契约。
 
-Agent Event 负责表达会话启动、活动更新、用户输入、审批、回答、交互回写、完成、失败、失联、能力、用量、跳回目标和会话层级变化。
+Agent Event 负责表达会话启动、turn 开始、活动更新、用户输入、审批、回答、交互回写、完成、失败、失联、能力、用量、跳回目标和会话层级变化。
 
 Agent Event 不保存第三方原始 payload，不复用参考项目 Swift schema，不承担外部协议兼容逻辑。
 
@@ -31,6 +31,12 @@ Agent Event 不保存第三方原始 payload，不复用参考项目 Swift schem
 ## 当前事件族
 
 `SessionStarted` 表示新会话或恢复会话。
+
+`SessionStarted` 同时携带当前 turn 实际开始时间和事件更新时间；实际开始时间优先来自上游，缺失时由 adapter 使用本地捕捉时间兜底。
+
+`TurnStarted` 表示已有或已确认可见会话的当前 turn 开始。
+
+`TurnStarted` 不承担创建未知可见 session 的职责。
 
 `ActivityUpdated` 表示活动摘要更新。
 

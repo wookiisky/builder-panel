@@ -44,6 +44,8 @@ Session State 不负责通知、配置读写、bridge response、Tauri command �
 
 Session 保存当前 turn 的开始时间和结束时间。
 
+当前 turn 开始时间优先表示 adapter 清洗后的上游真实开始时间；上游没有可用开始时间时，adapter 才使用本地捕捉时间兜底。
+
 运行中和等待状态的 session 结束时间为空。
 
 完成和失败状态的 session 记录结束时间。
@@ -58,7 +60,13 @@ Session 保存当前 turn 的开始时间和结束时间。
 
 没有 pending interaction 时，`SessionStarted` 将旧的完成、失败或失联状态恢复为运行中。
 
-`SessionStarted` 从完成、失败或失联状态恢复为运行中时，会用事件时间重置当前 turn 开始时间，并清空结束时间。
+`SessionStarted` 从完成、失败或失联状态恢复为运行中时，会用事件携带的当前 turn 实际开始时间重置当前 turn 开始时间，并清空结束时间。
+
+`TurnStarted` 只更新已有 session，不创建未知 session。
+
+`TurnStarted` 更新当前 turn 开始时间；已有 pending interaction 时保留等待状态和 pending interaction。
+
+旧的 `TurnStarted` 不得把已经完成、失败或失联的 session 恢复为运行中。
 
 非 `SessionStarted` 的实时事件可以创建占位 session，用于纳入 APP 启动后仍继续运行并发出事件的任务。
 
@@ -68,7 +76,7 @@ Session 保存当前 turn 的开始时间和结束时间。
 
 `UserMessageUpdated` 使用用户输入原文更新摘要；已有 pending interaction 时不覆盖等待状态。
 
-`ActivityUpdated` 和 `UserMessageUpdated` 从完成、失败或失联状态恢复为运行中时，会用事件时间重置当前 turn 开始时间，并清空结束时间。
+`ActivityUpdated` 和 `UserMessageUpdated` 从完成、失败或失联状态恢复为运行中时，会用事件时间作为兜底开始时间重置当前 turn 开始时间，并清空结束时间。
 
 `ApprovalRequested` 设置审批等待状态，并替换旧 pending。
 

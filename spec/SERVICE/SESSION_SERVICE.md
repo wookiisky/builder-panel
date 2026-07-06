@@ -44,6 +44,8 @@ Session view model 的 `TextDisplay` 同时提供截断展示文本和当前 vie
 
 Session 列表 view model 提供当前 turn 开始时间和结束时间，供前端展示运行耗时和结束后的相对时间。
 
+当前 turn 开始时间来自 Domain 已折叠状态；Domain 优先保存 adapter 清洗后的上游真实开始时间，没有上游时间时才保存本地捕捉时间。
+
 Session 列表 view model 提供 `indent_level`，供前端按后端已计算的有效层级展示少量缩进。
 
 前端 session 行可见摘要只展示最后一段，并按列表展示上限截断。

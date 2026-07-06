@@ -138,6 +138,8 @@ Rust Tauri command 测试验证 Codex APP hook 分流同步刷新在 app-server 
 
 Rust Codex APP rollout 测试验证 `session_meta`、`agent_message`、`task_complete.last_agent_message` 和 assistant `output_text` 清洗。
 
+Rust Codex APP rollout 测试验证 `session_meta` 可清洗顶层 parent、嵌套 sub agent `thread_spawn` parent 和受非内部机制 sub agent 来源保护的 `session_id` 父级 fallback，且普通主 session 或内部机制 sub agent 不从 `session_id` 误解析父级。
+
 Rust Codex APP rollout 测试验证完成事件会标记快照完成，完成后新的用户输入会重置为未完成。
 
 Rust Codex APP rollout 测试验证范围外 path 被忽略，超长 JSONL 行被跳过且后续有效行仍可读取。
@@ -147,6 +149,12 @@ Rust Codex APP rollout 测试验证 tailer 只读取已知 session 的新增追�
 Rust Codex APP adapter 测试验证孤立 rollout 快照不会单独创建当前 session。
 
 Rust Codex APP adapter 测试验证 recent active rollout 可从空 runtime 创建运行中 session，并验证完成、空内容或内部提示词快照不创建 session。
+
+Rust Codex APP adapter 测试验证 recent active rollout 可在 parent 先到或 child 先到时建立 child 到 parent 的层级关系，并在列表 view model 暴露一级缩进。
+
+Rust Codex APP adapter 测试验证 rollout 快照只带来层级关系变化时也会发布 child session 更新通知。
+
+Rust Codex APP adapter 测试验证内部机制来源的 recent active rollout 不创建可见 session。
 
 Rust Codex APP adapter 测试验证 recent active rollout 创建 session 时触发 Codex CLI 孤儿清理回调。
 

@@ -275,6 +275,7 @@ impl MockAgentScenarioAdapter {
                 summary: Some("准备修改配置文件，需要用户审批".to_string()),
                 capabilities: capabilities(true, false, true, false),
                 usage: verified_usage(41.0, 64.0),
+                started_at: UnixMillis::new(1000),
                 updated_at: UnixMillis::new(1000),
             }),
             AgentEvent::ApprovalRequested(ApprovalRequestedEvent {
@@ -300,6 +301,7 @@ impl MockAgentScenarioAdapter {
                 summary: Some("等待用户补充执行边界".to_string()),
                 capabilities: capabilities(true, true, false, false),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1002),
                 updated_at: UnixMillis::new(1002),
             }),
             AgentEvent::AnswerRequested(AnswerRequestedEvent {
@@ -326,6 +328,7 @@ impl MockAgentScenarioAdapter {
                 summary: Some("等待用户选择一个执行方案".to_string()),
                 capabilities: capabilities(true, true, false, false),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1004),
                 updated_at: UnixMillis::new(1004),
             }),
             AgentEvent::AnswerRequested(AnswerRequestedEvent {
@@ -364,6 +367,7 @@ impl MockAgentScenarioAdapter {
                 summary: Some("mock 用量已同步".to_string()),
                 capabilities: capabilities(true, false, false, true),
                 usage: verified_usage(18.0, 27.0),
+                started_at: UnixMillis::new(1006),
                 updated_at: UnixMillis::new(1006),
             }),
             AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
@@ -389,6 +393,7 @@ impl MockAgentScenarioAdapter {
                 summary: Some("即将写入失败状态".to_string()),
                 capabilities: capabilities(false, false, false, false),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1010),
                 updated_at: UnixMillis::new(1010),
             }),
             AgentEvent::Failed(FailedEvent {

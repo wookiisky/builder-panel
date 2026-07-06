@@ -86,6 +86,7 @@ impl SessionState {
                         event.session_key.clone(),
                         event.project_label.clone(),
                         event.conversation_label.clone(),
+                        event.started_at,
                         event.updated_at,
                     ),
                 };
@@ -101,7 +102,7 @@ impl SessionState {
                 }
                 let next_status = preserve_waiting_status(pending_interaction.as_ref());
                 if starts_new_turn(previous_status, next_status) {
-                    session.started_at = event.updated_at;
+                    session.started_at = event.started_at;
                 }
                 if next_status == SessionStatus::Running {
                     session.completed_at = None;
@@ -112,6 +113,22 @@ impl SessionState {
                 session.pending_interaction = pending_interaction;
                 session.updated_at = event.updated_at;
                 self.sessions.insert(session.session_key.clone(), session);
+            }
+            AgentEvent::TurnStarted(event) => {
+                let Some(session) = self.sessions.get_mut(&event.session_key) else {
+                    return;
+                };
+                if should_ignore_turn_started(session, event.started_at, event.updated_at) {
+                    return;
+                }
+                session.started_at = event.started_at;
+                if session.pending_interaction.is_none() {
+                    session.status = SessionStatus::Running;
+                } else {
+                    session.status = preserve_waiting_status(session.pending_interaction.as_ref());
+                }
+                session.completed_at = None;
+                session.updated_at = event.updated_at;
             }
             AgentEvent::ActivityUpdated(event) => {
                 let session = self.ensure_session(event.session_key, event.updated_at);
@@ -397,8 +414,13 @@ impl SessionState {
         updated_at: UnixMillis,
     ) -> &mut AgentSession {
         if !self.sessions.contains_key(&session_key) {
-            let session =
-                self.new_running_session(session_key.clone(), "未知项目", "未知对话", updated_at);
+            let session = self.new_running_session(
+                session_key.clone(),
+                "未知项目",
+                "未知对话",
+                updated_at,
+                updated_at,
+            );
             self.sessions.insert(session_key.clone(), session);
         }
 
@@ -413,11 +435,13 @@ impl SessionState {
         session_key: SessionKey,
         project_label: impl Into<String>,
         conversation_label: impl Into<String>,
+        started_at: UnixMillis,
         updated_at: UnixMillis,
     ) -> AgentSession {
         let mut session =
             AgentSession::new_running(session_key, project_label, conversation_label, updated_at);
         session.capture_sequence = self.next_capture_sequence;
+        session.started_at = started_at;
         self.next_capture_sequence = self.next_capture_sequence.saturating_add(1);
         session
     }
@@ -505,6 +529,27 @@ fn resumes_terminal_session(status: SessionStatus) -> bool {
     )
 }
 
+/// 判断 turn start 是否是旧事件。
+fn should_ignore_turn_started(
+    session: &AgentSession,
+    started_at: UnixMillis,
+    updated_at: UnixMillis,
+) -> bool {
+    if matches!(
+        session.status,
+        SessionStatus::Completed | SessionStatus::Failed
+    ) {
+        if let Some(completed_at) = session.completed_at {
+            return started_at <= completed_at;
+        }
+    }
+    if session.status == SessionStatus::Detached && started_at <= session.updated_at {
+        return true;
+    }
+
+    updated_at < session.updated_at && started_at < session.started_at
+}
+
 /// 判断 session 是否属于展示上的未完成分组。
 fn session_is_unfinished_for_display(status: SessionStatus) -> bool {
     matches!(
@@ -544,8 +589,8 @@ mod tests {
     use crate::domain::agent_event::{
         ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, ApprovalRequestedEvent,
         CapabilitiesUpdatedEvent, DetachedEvent, FailedEvent, HierarchyUpdatedEvent,
-        InteractionCompletedEvent, SessionStartedEvent, TurnCompletedEvent, UsageUpdatedEvent,
-        UserMessageUpdatedEvent,
+        InteractionCompletedEvent, SessionStartedEvent, TurnCompletedEvent, TurnStartedEvent,
+        UsageUpdatedEvent, UserMessageUpdatedEvent,
     };
     use crate::domain::agent_interaction::{
         AnswerInteraction, ApprovalInteraction, ChoiceInteraction, ClipboardFallbackTarget,
@@ -572,6 +617,133 @@ mod tests {
     }
 
     #[test]
+    fn session_started_uses_real_started_at_separately_from_updated_at() {
+        let key = session_key("project-a", "conversation-a");
+        let state =
+            SessionState::empty().apply_event(AgentEvent::SessionStarted(SessionStartedEvent {
+                project_label: "project-a".to_string(),
+                conversation_label: "conversation-a".to_string(),
+                session_key: key.clone(),
+                title: None,
+                summary: None,
+                capabilities: SessionCapabilities::none(),
+                usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(10),
+                updated_at: UnixMillis::new(50),
+            }));
+        let session = state.sessions.get(&key).expect("session should exist");
+
+        assert_eq!(session.started_at, UnixMillis::new(10));
+        assert_eq!(session.updated_at, UnixMillis::new(50));
+    }
+
+    #[test]
+    fn turn_started_updates_existing_session_without_new_capture() {
+        let key = session_key("project-a", "conversation-a");
+        let state = SessionState::empty()
+            .apply_event(started_event(key.clone(), 100))
+            .apply_event(AgentEvent::TurnStarted(TurnStartedEvent {
+                session_key: key.clone(),
+                started_at: UnixMillis::new(10),
+                updated_at: UnixMillis::new(101),
+            }));
+        let session = state.sessions.get(&key).expect("session should exist");
+
+        assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.started_at, UnixMillis::new(10));
+        assert_eq!(session.updated_at, UnixMillis::new(101));
+        assert_eq!(session.capture_sequence, 0);
+    }
+
+    #[test]
+    fn turn_started_does_not_create_unknown_session() {
+        let key = session_key("project-a", "conversation-a");
+        let state = SessionState::empty().apply_event(AgentEvent::TurnStarted(TurnStartedEvent {
+            session_key: key,
+            started_at: UnixMillis::new(10),
+            updated_at: UnixMillis::new(11),
+        }));
+
+        assert!(state.sessions.is_empty());
+    }
+
+    #[test]
+    fn stale_turn_started_does_not_restore_completed_session() {
+        let key = session_key("project-a", "conversation-a");
+        let state = SessionState::empty()
+            .apply_event(started_event(key.clone(), 100))
+            .apply_event(AgentEvent::TurnCompleted(TurnCompletedEvent {
+                session_key: key.clone(),
+                summary: Some("完成".to_string()),
+                updated_at: UnixMillis::new(200),
+            }))
+            .apply_event(AgentEvent::TurnStarted(TurnStartedEvent {
+                session_key: key.clone(),
+                started_at: UnixMillis::new(10),
+                updated_at: UnixMillis::new(250),
+            }));
+        let session = state.sessions.get(&key).expect("session should exist");
+
+        assert_eq!(session.status, SessionStatus::Completed);
+        assert_eq!(session.completed_at, Some(UnixMillis::new(200)));
+        assert_eq!(session.started_at, UnixMillis::new(100));
+    }
+
+    #[test]
+    fn stale_turn_started_does_not_restore_failed_session() {
+        let key = session_key("project-a", "conversation-a");
+        let state = SessionState::empty()
+            .apply_event(started_event(key.clone(), 100))
+            .apply_event(failed_event(key.clone(), 200))
+            .apply_event(AgentEvent::TurnStarted(TurnStartedEvent {
+                session_key: key.clone(),
+                started_at: UnixMillis::new(150),
+                updated_at: UnixMillis::new(250),
+            }));
+        let session = state.sessions.get(&key).expect("session should exist");
+
+        assert_eq!(session.status, SessionStatus::Failed);
+        assert_eq!(session.completed_at, Some(UnixMillis::new(200)));
+        assert_eq!(session.started_at, UnixMillis::new(100));
+    }
+
+    #[test]
+    fn stale_turn_started_does_not_restore_detached_session() {
+        let key = session_key("project-a", "conversation-a");
+        let state = SessionState::empty()
+            .apply_event(started_event(key.clone(), 100))
+            .apply_event(detached_event(key.clone(), 200))
+            .apply_event(AgentEvent::TurnStarted(TurnStartedEvent {
+                session_key: key.clone(),
+                started_at: UnixMillis::new(150),
+                updated_at: UnixMillis::new(250),
+            }));
+        let session = state.sessions.get(&key).expect("session should exist");
+
+        assert_eq!(session.status, SessionStatus::Detached);
+        assert_eq!(session.started_at, UnixMillis::new(100));
+        assert_eq!(session.updated_at, UnixMillis::new(200));
+    }
+
+    #[test]
+    fn turn_started_preserves_pending_interaction_state() {
+        let key = session_key("project-a", "conversation-a");
+        let state = SessionState::empty()
+            .apply_event(started_event(key.clone(), 100))
+            .apply_event(approval_event(key.clone(), 110))
+            .apply_event(AgentEvent::TurnStarted(TurnStartedEvent {
+                session_key: key.clone(),
+                started_at: UnixMillis::new(10),
+                updated_at: UnixMillis::new(120),
+            }));
+        let session = state.sessions.get(&key).expect("session should exist");
+
+        assert_eq!(session.status, SessionStatus::WaitingForApproval);
+        assert!(session.pending_interaction.is_some());
+        assert_eq!(session.started_at, UnixMillis::new(10));
+    }
+
+    #[test]
     fn session_started_without_title_preserves_existing_title() {
         let key = session_key("project-a", "conversation-a");
         let state = SessionState::empty()
@@ -583,6 +755,7 @@ mod tests {
                 summary: None,
                 capabilities: SessionCapabilities::none(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .apply_event(started_event(key.clone(), 2));
@@ -1162,6 +1335,7 @@ mod tests {
             summary: None,
             capabilities: SessionCapabilities::none(),
             usage: UsageSnapshot::unavailable(),
+            started_at: UnixMillis::new(updated_at),
             updated_at: UnixMillis::new(updated_at),
         })
     }

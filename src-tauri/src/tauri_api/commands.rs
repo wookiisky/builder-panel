@@ -1866,6 +1866,7 @@ mod tests {
     use super::*;
     use crate::adapters::codex_app::{
         CodexAppRpcWrite, CodexAppThreadMetadata, CodexAppThreadSourceKind, CodexRolloutSnapshot,
+        CodexRolloutSourceKind,
     };
     use crate::domain::agent_session::{AgentKind, ConversationId, ProjectId};
     use crate::domain::app_error::{AppError, AppErrorCode};
@@ -2183,11 +2184,14 @@ mod tests {
     ) -> CodexRolloutSnapshot {
         CodexRolloutSnapshot {
             session_id: session_id.to_string(),
+            parent_thread_id: None,
+            source_kind: CodexRolloutSourceKind::UserVisible,
             cwd: "/tmp/builder-panel".to_string(),
             summary: Some("正在处理".to_string()),
             last_agent_message: Some("正在处理".to_string()),
             path: PathBuf::from(format!("/tmp/rollout-{session_id}.jsonl")),
             updated_at,
+            turn_started_at: None,
             completed,
             suppressed_internal_artifact: false,
             pending_user_input: None,

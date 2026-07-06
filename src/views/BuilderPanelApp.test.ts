@@ -719,6 +719,67 @@ describe("BuilderPanelApp session refresh", () => {
     });
   });
 
+  it("hides source and project labels for child agent rows", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const parent = sessionItem(
+      sessionKey("project-a", "parent"),
+      "codex_app",
+      "running",
+      "运行中",
+    );
+    const child = {
+      ...sessionItem(
+        sessionKey("project-a", "child"),
+        "codex_app",
+        "running",
+        "运行中",
+      ),
+      indent_level: 1,
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [parent, child],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const rows = container.querySelectorAll(".session-table-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].querySelector(".session-source")?.textContent).toBe(
+      "Codex",
+    );
+    expect(rows[0].querySelector(".session-project")?.textContent).toBe(
+      "project-a",
+    );
+    expect(rows[1].querySelector(".session-source")).toBeNull();
+    expect(rows[1].querySelector(".session-project")).toBeNull();
+    expect(rows[1].querySelector(".session-thread")?.textContent).toBe(
+      "Thread child",
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("renders every session status with an open-source svg icon", async () => {
     const reactActGlobal = globalThis as typeof globalThis & {
       IS_REACT_ACT_ENVIRONMENT?: boolean;

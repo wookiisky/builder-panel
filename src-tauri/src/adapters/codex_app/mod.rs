@@ -25,8 +25,8 @@ use crate::adapters::bridge::codec::{
 use crate::domain::agent_event::{
     ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, ApprovalRequestedEvent, DetachedEvent,
     FailedEvent, HierarchyUpdatedEvent, InteractionCompletedEvent, JumpTargetUpdatedEvent,
-    SessionStartedEvent, TitleUpdatedEvent, TurnCompletedEvent, UsageUpdatedEvent,
-    UserMessageUpdatedEvent,
+    SessionStartedEvent, TitleUpdatedEvent, TurnCompletedEvent, TurnStartedEvent,
+    UsageUpdatedEvent, UserMessageUpdatedEvent,
 };
 use crate::domain::agent_interaction::{
     AgentInteraction, AnswerInteraction, ApprovalInteraction, ChoiceInteraction,
@@ -54,7 +54,7 @@ use crate::ports::session_update_port::{
 
 pub use self::codex_rollout::{
     CodexRolloutDiscovery, CodexRolloutPendingQuestion, CodexRolloutPendingUserInput,
-    CodexRolloutSnapshot, CodexRolloutTailer, CodexRolloutWatchTarget,
+    CodexRolloutSnapshot, CodexRolloutSourceKind, CodexRolloutTailer, CodexRolloutWatchTarget,
 };
 pub use self::internal_prompt::{
     is_codex_internal_artifact, is_codex_internal_artifact_prefix, is_codex_internal_prompt,
@@ -173,10 +173,7 @@ impl CodexAppAdapter {
         match method.as_str() {
             "thread/started" => Ok(Some(started_from_thread(params, cwd, updated_at)?)),
             "thread/name/updated" => Ok(title_updated(params, cwd, updated_at)?),
-            "turn/started" => {
-                let _ = required_string(params.get("threadId"), "threadId")?;
-                Ok(None)
-            }
+            "turn/started" => Ok(Some(turn_started(params, cwd, updated_at)?)),
             "item/agentMessage/delta" => {
                 validate_agent_message_delta(params)?;
                 Ok(None)
@@ -793,6 +790,10 @@ pub struct CodexAppRuntime {
     child_thread_parents: BTreeMap<String, String>,
     /// Codex APP thread 到 rollout path 的映射。
     thread_rollout_paths: BTreeMap<String, PathBuf>,
+    /// 已收到但尚未创建可见 session 的 turn 开始时间，按完整 session key 暂存。
+    pending_turn_starts: BTreeMap<SessionKey, UnixMillis>,
+    /// 已收到但尚未创建可见 session 的 turn 开始时间，按 thread id 暂存。
+    pending_turn_starts_by_thread_id: BTreeMap<String, UnixMillis>,
     /// 当前 turn 已累积的 Agent 输出。
     current_turn_agent_outputs: BTreeMap<String, String>,
     /// 当前 turn 曾被识别为内部结构化输出候选的 thread。
@@ -827,6 +828,8 @@ impl CodexAppRuntime {
             thread_metadata: BTreeMap::new(),
             child_thread_parents: BTreeMap::new(),
             thread_rollout_paths: BTreeMap::new(),
+            pending_turn_starts: BTreeMap::new(),
+            pending_turn_starts_by_thread_id: BTreeMap::new(),
             current_turn_agent_outputs: BTreeMap::new(),
             held_internal_artifact_threads: BTreeSet::new(),
             pending_hook_start_snapshots: BTreeMap::new(),
@@ -1400,6 +1403,19 @@ impl CodexAppRuntime {
                 "Codex APP runtime 拒绝非 CodexApp session 事件",
             ));
         }
+        if let AgentEvent::TurnStarted(turn_started) = &event {
+            if !self
+                .session_state
+                .sessions
+                .contains_key(&turn_started.session_key)
+            {
+                self.remember_pending_turn_start(
+                    &turn_started.session_key,
+                    turn_started.started_at,
+                );
+                return Ok(());
+            }
+        }
         self.ensure_codex_app_realtime_session(&event)?;
         self.apply_event_direct(event)
     }
@@ -1410,6 +1426,7 @@ impl CodexAppRuntime {
                 "Codex APP runtime 拒绝非 CodexApp session 事件",
             ));
         }
+        let event = self.event_with_pending_turn_start(event);
         let session_key = event.session_key().clone();
         let existed_before = self.session_state.sessions.contains_key(&session_key);
         let starts_empty_shell = matches!(
@@ -1431,6 +1448,18 @@ impl CodexAppRuntime {
             _ => None,
         };
         let notification = session_update_notification(&event);
+        match &event {
+            AgentEvent::TurnCompleted(event) => {
+                self.clear_pending_turn_start(&event.session_key);
+            }
+            AgentEvent::Failed(event) => {
+                self.clear_pending_turn_start(&event.session_key);
+            }
+            AgentEvent::Detached(event) => {
+                self.clear_pending_turn_start(&event.session_key);
+            }
+            _ => {}
+        }
         self.session_state = self.session_state.apply_event(event);
         if let Some(notification) = notification {
             self.update_sink.publish_session_update(notification);
@@ -1475,6 +1504,7 @@ impl CodexAppRuntime {
         self.thread_cwds.remove(&thread_id);
         self.thread_metadata.remove(&thread_id);
         self.thread_rollout_paths.remove(&thread_id);
+        self.clear_pending_turn_start(session_key);
         self.clear_thread_hierarchy_references(&thread_id, session_key, updated_at);
         self.current_turn_agent_outputs.remove(&thread_id);
         self.held_internal_artifact_threads.remove(&thread_id);
@@ -1499,9 +1529,14 @@ impl CodexAppRuntime {
             return Ok(());
         }
 
+        let updated_at = event_updated_at(event);
+        let started_at = self
+            .take_pending_turn_start(session_key)
+            .unwrap_or(updated_at);
         self.apply_event_direct(AgentEvent::SessionStarted(realtime_started_event(
             session_key.clone(),
-            event_updated_at(event),
+            started_at,
+            updated_at,
         )))
     }
 
@@ -1512,6 +1547,61 @@ impl CodexAppRuntime {
                 session_key: session_key.clone(),
                 updated_at,
             });
+    }
+
+    /// 暂存早到的 turn 开始时间。
+    fn remember_pending_turn_start(&mut self, session_key: &SessionKey, started_at: UnixMillis) {
+        self.pending_turn_starts
+            .insert(session_key.clone(), started_at);
+        self.pending_turn_starts_by_thread_id
+            .insert(session_key.conversation_id.value.clone(), started_at);
+    }
+
+    /// 取出早到的 turn 开始时间。
+    fn take_pending_turn_start(&mut self, session_key: &SessionKey) -> Option<UnixMillis> {
+        let thread_id = session_key.conversation_id.value.clone();
+        let by_key = self.remove_pending_turn_starts_for_thread(&thread_id);
+        let by_thread_id = self.pending_turn_starts_by_thread_id.remove(&thread_id);
+        by_key.or(by_thread_id)
+    }
+
+    /// 清理早到的 turn 开始时间。
+    fn clear_pending_turn_start(&mut self, session_key: &SessionKey) {
+        let thread_id = session_key.conversation_id.value.clone();
+        self.remove_pending_turn_starts_for_thread(&thread_id);
+        self.pending_turn_starts_by_thread_id.remove(&thread_id);
+    }
+
+    /// 移除同 thread 的全部 session key 暂存开始时间。
+    fn remove_pending_turn_starts_for_thread(&mut self, thread_id: &str) -> Option<UnixMillis> {
+        let keys = self
+            .pending_turn_starts
+            .keys()
+            .filter(|key| key.conversation_id.value == thread_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut removed = None;
+        for key in keys {
+            let value = self.pending_turn_starts.remove(&key);
+            if removed.is_none() {
+                removed = value;
+            }
+        }
+
+        removed
+    }
+
+    /// 为 session started 补上早到 turn 的真实开始时间。
+    fn event_with_pending_turn_start(&mut self, event: AgentEvent) -> AgentEvent {
+        match event {
+            AgentEvent::SessionStarted(mut started) => {
+                if let Some(started_at) = self.take_pending_turn_start(&started.session_key) {
+                    started.started_at = started_at;
+                }
+                AgentEvent::SessionStarted(started)
+            }
+            other => other,
+        }
     }
 
     /// 移除单个过期已完成 session 并清理 runtime 缓存。
@@ -1528,6 +1618,7 @@ impl CodexAppRuntime {
         self.empty_shell_candidates.remove(session_key);
         self.pending_hook_start_snapshots.remove(session_key);
         self.pending_followup_turns.remove(session_key);
+        self.clear_pending_turn_start(session_key);
         self.clear_rpc_pending_for_session(session_key);
         self.expire_hook_approvals_for_session(session_key);
         if !self.has_session_for_thread(&thread_id) {
@@ -1794,9 +1885,20 @@ impl CodexAppRuntime {
             callback(&cwd, &thread_id, updated_at);
         }
         let migrated = self.migrate_codex_app_thread_to_cwd(&thread_id, &cwd, updated_at)?;
+        let pending_started_at = if session_exists {
+            self.take_pending_turn_start(&target_key)
+        } else {
+            None
+        };
 
         if let Some(session) = self.session_state.sessions.get_mut(&target_key) {
             let mut changed = migrated;
+            if let Some(started_at) = pending_started_at {
+                if session.started_at != started_at {
+                    session.started_at = started_at;
+                    changed = true;
+                }
+            }
             let next_project_label = project_label(&cwd);
             if session.project_label != next_project_label {
                 session.project_label = next_project_label;
@@ -1844,6 +1946,7 @@ impl CodexAppRuntime {
             summary: summary.clone(),
             capabilities: codex_app_capabilities(),
             usage: UsageSnapshot::unavailable(),
+            started_at: updated_at,
             updated_at,
         }))?;
 
@@ -1918,6 +2021,19 @@ impl CodexAppRuntime {
 
         self.child_thread_parents
             .insert(metadata.id.clone(), parent_thread_id.clone());
+    }
+
+    /// 记录 rollout 清洗出的父子 thread 关系。
+    fn record_rollout_thread_parent(&mut self, snapshot: &CodexRolloutSnapshot) {
+        let Some(parent_thread_id) = snapshot.parent_thread_id.as_ref() else {
+            return;
+        };
+        if parent_thread_id == &snapshot.session_id {
+            return;
+        }
+
+        self.child_thread_parents
+            .insert(snapshot.session_id.clone(), parent_thread_id.clone());
     }
 
     /// 清理指向已移除 thread 的父子关系。
@@ -2084,8 +2200,11 @@ impl CodexAppRuntime {
             snapshot.path.clone(),
             snapshot.updated_at,
         )?;
+        self.record_rollout_thread_parent(&snapshot);
         let target_key = session_key(&snapshot.cwd, &snapshot.session_id);
-        if snapshot.suppressed_internal_artifact && !self.session_has_visible_context(&target_key) {
+        if (snapshot.suppressed_internal_artifact || snapshot.source_kind.is_internal())
+            && !self.session_has_visible_context(&target_key)
+        {
             self.remove_empty_shell_session(&target_key, snapshot.updated_at);
             return Ok(());
         }
@@ -2121,6 +2240,14 @@ impl CodexAppRuntime {
         if changed {
             self.publish_codex_app_session_update(&target_key, snapshot.updated_at);
         }
+        if let Some(turn_started_at) = snapshot.turn_started_at {
+            self.apply_event_direct(AgentEvent::TurnStarted(TurnStartedEvent {
+                session_key: target_key.clone(),
+                started_at: turn_started_at,
+                updated_at: snapshot.updated_at,
+            }))?;
+        }
+        self.try_apply_related_thread_hierarchies(&snapshot.session_id, snapshot.updated_at)?;
         if let Some(pending_user_input) = snapshot.pending_user_input.as_ref() {
             self.apply_event_direct(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
                 session_key: target_key.clone(),
@@ -2145,6 +2272,10 @@ impl CodexAppRuntime {
         }
         let target_key = session_key(&snapshot.cwd, &snapshot.session_id);
         let has_visible_context = self.session_has_visible_context(&target_key);
+        if snapshot.source_kind.is_internal() && !has_visible_context {
+            self.remove_empty_shell_session(&target_key, snapshot.updated_at);
+            return Ok(());
+        }
         let Some(summary) = active_rollout_summary(&snapshot, has_visible_context).cloned() else {
             if snapshot.suppressed_internal_artifact && !has_visible_context {
                 self.remove_empty_shell_session(&target_key, snapshot.updated_at);
@@ -2158,6 +2289,7 @@ impl CodexAppRuntime {
             snapshot.path.clone(),
             snapshot.updated_at,
         )?;
+        self.record_rollout_thread_parent(&snapshot);
         if let Some(session) = self.session_state.sessions.get_mut(&target_key) {
             let mut changed = migrated;
             let next_project_label = project_label(&snapshot.cwd);
@@ -2189,11 +2321,19 @@ impl CodexAppRuntime {
             if changed {
                 self.publish_codex_app_session_update(&target_key, snapshot.updated_at);
             }
+            if let Some(turn_started_at) = snapshot.turn_started_at {
+                self.apply_event_direct(AgentEvent::TurnStarted(TurnStartedEvent {
+                    session_key: target_key.clone(),
+                    started_at: turn_started_at,
+                    updated_at: snapshot.updated_at,
+                }))?;
+            }
             self.apply_event_direct(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
                 session_key: target_key,
                 summary,
                 updated_at: snapshot.updated_at,
             }))?;
+            self.try_apply_related_thread_hierarchies(&snapshot.session_id, snapshot.updated_at)?;
             return self.apply_rollout_pending_user_input(&snapshot);
         }
 
@@ -2205,6 +2345,7 @@ impl CodexAppRuntime {
             summary: Some(summary.clone()),
             capabilities: codex_app_capabilities(),
             usage: UsageSnapshot::unavailable(),
+            started_at: snapshot.turn_started_at.unwrap_or(snapshot.updated_at),
             updated_at: snapshot.updated_at,
         }))?;
         self.apply_event_direct(AgentEvent::ActivityUpdated(ActivityUpdatedEvent {
@@ -2212,6 +2353,7 @@ impl CodexAppRuntime {
             summary,
             updated_at: snapshot.updated_at,
         }))?;
+        self.try_apply_related_thread_hierarchies(&snapshot.session_id, snapshot.updated_at)?;
         self.apply_rollout_pending_user_input(&snapshot)
     }
 
@@ -2355,6 +2497,10 @@ impl CodexAppRuntime {
         let cwd = message_thread_cwd(message)?;
 
         self.thread_cwds.insert(thread_id.clone(), cwd.clone());
+        if let Some(started_at) = self.pending_turn_starts_by_thread_id.get(&thread_id) {
+            self.pending_turn_starts
+                .insert(session_key(&cwd, &thread_id), *started_at);
+        }
         Some((thread_id, cwd))
     }
 
@@ -2493,6 +2639,9 @@ impl CodexAppRuntime {
         }
         if was_empty_shell_candidate {
             self.empty_shell_candidates.insert(target_key.clone());
+        }
+        if let Some(started_at) = self.pending_turn_starts.remove(stale_key) {
+            self.remember_pending_turn_start(target_key, started_at);
         }
 
         for pending in self.pending_hook_approvals.values_mut() {
@@ -2748,7 +2897,14 @@ fn message_thread_cwd(message: &Value) -> Option<String> {
 
 fn message_thread_metadata(message: &Value) -> Option<CodexAppThreadMetadata> {
     let thread = message.get("params")?.get("thread")?;
-    CodexAppThreadMetadata::from_value(thread).ok()
+    let mut metadata = CodexAppThreadMetadata::from_value(thread).ok()?;
+    if message.get("method").and_then(Value::as_str) == Some("thread/started")
+        && thread.get("status").is_none()
+    {
+        metadata.status_type = "active".to_string();
+    }
+
+    Some(metadata)
 }
 
 /// hook 审批等待器。
@@ -3639,6 +3795,7 @@ fn started_from_thread(
         summary: None,
         capabilities,
         usage: UsageSnapshot::unavailable(),
+        started_at: updated_at,
         updated_at,
     }))
 }
@@ -3647,6 +3804,44 @@ fn validate_agent_message_delta(params: &Value) -> Result<(), CodexAppAdapterErr
     let _ = required_string(params.get("threadId"), "threadId")?;
     let _ = required_string(params.get("delta"), "delta")?;
     Ok(())
+}
+
+fn turn_started(
+    params: &Value,
+    cwd: &str,
+    updated_at: UnixMillis,
+) -> Result<AgentEvent, CodexAppAdapterError> {
+    let thread_id = required_string(params.get("threadId"), "threadId")?;
+    let started_at = app_server_started_at(params, updated_at);
+
+    Ok(AgentEvent::TurnStarted(TurnStartedEvent {
+        session_key: session_key(cwd, &thread_id),
+        started_at,
+        updated_at,
+    }))
+}
+
+fn app_server_started_at(params: &Value, updated_at: UnixMillis) -> UnixMillis {
+    explicit_unix_millis(params.get("startedAtMs"), updated_at)
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(|turn| explicit_unix_millis(turn.get("startedAtMs"), updated_at))
+        })
+        .unwrap_or(updated_at)
+}
+
+fn explicit_unix_millis(value: Option<&Value>, updated_at: UnixMillis) -> Option<UnixMillis> {
+    let raw = match value? {
+        Value::Number(number) => number.as_u64()?,
+        Value::String(text) => text.trim().parse::<u64>().ok()?,
+        _ => return None,
+    };
+    if raw == 0 || raw > updated_at.value.saturating_add(5 * 60 * 1000) {
+        return None;
+    }
+
+    Some(UnixMillis::new(raw))
 }
 
 fn title_updated(
@@ -3759,11 +3954,16 @@ fn started_from_hook(
         summary: None,
         capabilities: codex_app_capabilities(),
         usage: UsageSnapshot::unavailable(),
+        started_at: updated_at,
         updated_at,
     }
 }
 
-fn realtime_started_event(session_key: SessionKey, updated_at: UnixMillis) -> SessionStartedEvent {
+fn realtime_started_event(
+    session_key: SessionKey,
+    started_at: UnixMillis,
+    updated_at: UnixMillis,
+) -> SessionStartedEvent {
     SessionStartedEvent {
         project_label: project_label(&session_key.project_id.value),
         conversation_label: session_key.conversation_id.value.clone(),
@@ -3772,6 +3972,7 @@ fn realtime_started_event(session_key: SessionKey, updated_at: UnixMillis) -> Se
         capabilities: codex_app_capabilities_for_key(&session_key),
         usage: UsageSnapshot::unavailable(),
         session_key,
+        started_at,
         updated_at,
     }
 }
@@ -3779,6 +3980,7 @@ fn realtime_started_event(session_key: SessionKey, updated_at: UnixMillis) -> Se
 fn event_updated_at(event: &AgentEvent) -> UnixMillis {
     match event {
         AgentEvent::SessionStarted(event) => event.updated_at,
+        AgentEvent::TurnStarted(event) => event.updated_at,
         AgentEvent::ActivityUpdated(event) => event.updated_at,
         AgentEvent::UserMessageUpdated(event) => event.updated_at,
         AgentEvent::TitleUpdated(event) => event.updated_at,
@@ -4361,6 +4563,7 @@ fn event_makes_session_visible(event: &AgentEvent) -> bool {
                     .as_ref()
                     .is_some_and(|summary| !summary.trim().is_empty())
         }
+        AgentEvent::TurnStarted(_) => false,
         AgentEvent::CapabilitiesUpdated(_)
         | AgentEvent::UsageUpdated(_)
         | AgentEvent::JumpTargetUpdated(_)
@@ -4518,8 +4721,8 @@ mod tests {
         CodexAppAdapterError, CodexAppFollowupRpcClient, CodexAppRpcWrite, CodexAppRuntime,
         CodexAppServerClient, CodexAppThreadMetadata, CodexAppThreadSourceKind,
         CodexRolloutPendingQuestion, CodexRolloutPendingUserInput, CodexRolloutSnapshot,
-        CodexRolloutWatchTarget, PendingRpcResult, MAX_CURRENT_TURN_OUTPUT_CHARS,
-        MAX_FINAL_OUTPUT_CHARS, UNRESOLVED_CODEX_APP_PROJECT_ID,
+        CodexRolloutSourceKind, CodexRolloutWatchTarget, PendingRpcResult,
+        MAX_CURRENT_TURN_OUTPUT_CHARS, MAX_FINAL_OUTPUT_CHARS, UNRESOLVED_CODEX_APP_PROJECT_ID,
         UNRESOLVED_CODEX_APP_PROJECT_LABEL,
     };
     use crate::adapters::bridge::codec::{
@@ -5446,6 +5649,7 @@ mod tests {
                 summary: None,
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("thread started should apply");
@@ -5478,6 +5682,7 @@ mod tests {
                 summary: None,
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("thread started should apply");
@@ -5506,6 +5711,7 @@ mod tests {
                 summary: None,
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("thread started should apply");
@@ -5538,6 +5744,7 @@ mod tests {
                 summary: None,
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("thread started should apply");
@@ -5660,6 +5867,7 @@ mod tests {
                 summary: None,
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("thread started should apply");
@@ -5704,6 +5912,7 @@ mod tests {
                 summary: None,
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("thread started should apply");
@@ -5753,6 +5962,7 @@ mod tests {
                 summary: Some("已有输出".to_string()),
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("thread started should apply");
@@ -6911,11 +7121,14 @@ mod tests {
         runtime
             .apply_rollout_snapshot(CodexRolloutSnapshot {
                 session_id: "thread-1".to_string(),
+                parent_thread_id: None,
+                source_kind: CodexRolloutSourceKind::UserVisible,
                 cwd: "/tmp/builder-panel".to_string(),
                 summary: Some("最新输出".to_string()),
                 last_agent_message: Some("最新输出".to_string()),
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
+                turn_started_at: None,
                 completed: false,
                 suppressed_internal_artifact: false,
                 pending_user_input: None,
@@ -6951,6 +7164,7 @@ mod tests {
                 summary: Some("处理中".to_string()),
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("session should start");
@@ -6958,11 +7172,14 @@ mod tests {
         runtime
             .apply_rollout_snapshot(CodexRolloutSnapshot {
                 session_id: "thread-1".to_string(),
+                parent_thread_id: None,
+                source_kind: CodexRolloutSourceKind::UserVisible,
                 cwd: "/tmp/builder-panel".to_string(),
                 summary: Some("请选择下一步".to_string()),
                 last_agent_message: None,
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
+                turn_started_at: None,
                 completed: false,
                 suppressed_internal_artifact: false,
                 pending_user_input: Some(test_pending_user_input()),
@@ -7608,6 +7825,7 @@ mod tests {
                 summary: Some("旧摘要".to_string()),
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("running session should apply");
@@ -7616,11 +7834,14 @@ mod tests {
         runtime
             .apply_rollout_snapshot(CodexRolloutSnapshot {
                 session_id: "thread-1".to_string(),
+                parent_thread_id: None,
+                source_kind: CodexRolloutSourceKind::UserVisible,
                 cwd: "/tmp/builder-panel".to_string(),
                 summary: Some("最新 Agent 输出".to_string()),
                 last_agent_message: Some("最新 Agent 输出".to_string()),
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
+                turn_started_at: None,
                 completed: false,
                 suppressed_internal_artifact: false,
                 pending_user_input: None,
@@ -7656,6 +7877,7 @@ mod tests {
                 summary: Some("当前 Agent 输出".to_string()),
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("running session should apply");
@@ -7664,11 +7886,14 @@ mod tests {
         runtime
             .apply_rollout_snapshot(CodexRolloutSnapshot {
                 session_id: "thread-1".to_string(),
+                parent_thread_id: None,
+                source_kind: CodexRolloutSourceKind::UserVisible,
                 cwd: "/tmp/builder-panel".to_string(),
                 summary: Some("继续处理".to_string()),
                 last_agent_message: None,
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
+                turn_started_at: None,
                 completed: false,
                 suppressed_internal_artifact: false,
                 pending_user_input: None,
@@ -7692,11 +7917,14 @@ mod tests {
         runtime
             .apply_rollout_snapshot(CodexRolloutSnapshot {
                 session_id: "history-thread".to_string(),
+                parent_thread_id: None,
+                source_kind: CodexRolloutSourceKind::UserVisible,
                 cwd: "/tmp/history".to_string(),
                 summary: Some("历史输出".to_string()),
                 last_agent_message: Some("历史输出".to_string()),
                 path: PathBuf::from("/tmp/rollout-history.jsonl"),
                 updated_at: UnixMillis::new(1),
+                turn_started_at: None,
                 completed: false,
                 suppressed_internal_artifact: false,
                 pending_user_input: None,
@@ -7729,11 +7957,14 @@ mod tests {
         runtime
             .apply_rollout_snapshot(CodexRolloutSnapshot {
                 session_id: "thread-1".to_string(),
+                parent_thread_id: None,
+                source_kind: CodexRolloutSourceKind::UserVisible,
                 cwd: "/tmp/builder-panel".to_string(),
                 summary: None,
                 last_agent_message: None,
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
+                turn_started_at: None,
                 completed: false,
                 suppressed_internal_artifact: true,
                 pending_user_input: None,
@@ -7764,6 +7995,7 @@ mod tests {
             .expect("active rollout should create session");
 
         assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.started_at, UnixMillis::new(2));
         assert_eq!(session.summary.as_deref(), Some("正在处理"));
         assert_eq!(session.capabilities, codex_app_capabilities());
         assert_eq!(
@@ -7773,6 +8005,153 @@ mod tests {
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
             }]
         );
+    }
+
+    #[test]
+    fn active_rollout_snapshot_uses_real_turn_started_at() {
+        let mut runtime = CodexAppRuntime::empty();
+        let mut snapshot = active_rollout_snapshot(
+            "thread-1",
+            "/tmp/builder-panel",
+            "正在处理",
+            UnixMillis::new(200),
+        );
+        snapshot.turn_started_at = Some(UnixMillis::new(10));
+
+        runtime
+            .apply_active_rollout_snapshot(snapshot)
+            .expect("active rollout should apply");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("active rollout should create session");
+        assert_eq!(session.started_at, UnixMillis::new(10));
+        assert_eq!(session.updated_at, UnixMillis::new(200));
+    }
+
+    #[test]
+    fn active_rollout_snapshot_applies_parent_first_thread_hierarchy() {
+        let mut runtime = CodexAppRuntime::empty();
+        let parent = active_rollout_snapshot(
+            "parent-thread",
+            "/tmp/builder-panel",
+            "主线程正在处理",
+            UnixMillis::new(1),
+        );
+        let mut child = active_rollout_snapshot(
+            "child-thread",
+            "/tmp/builder-panel",
+            "子 agent 正在检查",
+            UnixMillis::new(2),
+        );
+        child.parent_thread_id = Some("parent-thread".to_string());
+
+        runtime
+            .apply_active_rollout_snapshot(parent)
+            .expect("parent rollout should apply");
+        runtime
+            .apply_active_rollout_snapshot(child)
+            .expect("child rollout should apply");
+
+        assert_rollout_child_hierarchy(&runtime, "parent-thread", "child-thread");
+    }
+
+    #[test]
+    fn active_rollout_snapshot_applies_child_first_thread_hierarchy() {
+        let mut runtime = CodexAppRuntime::empty();
+        let mut child = active_rollout_snapshot(
+            "child-thread",
+            "/tmp/builder-panel",
+            "子 agent 正在检查",
+            UnixMillis::new(1),
+        );
+        child.parent_thread_id = Some("parent-thread".to_string());
+        let parent = active_rollout_snapshot(
+            "parent-thread",
+            "/tmp/builder-panel",
+            "主线程正在处理",
+            UnixMillis::new(2),
+        );
+
+        runtime
+            .apply_active_rollout_snapshot(child)
+            .expect("child rollout should apply");
+        runtime
+            .apply_active_rollout_snapshot(parent)
+            .expect("parent rollout should apply");
+
+        assert_rollout_child_hierarchy(&runtime, "parent-thread", "child-thread");
+    }
+
+    #[test]
+    fn rollout_snapshot_hierarchy_only_update_publishes_child_session_update() {
+        let sink = Arc::new(RecordingSessionUpdateSink::default());
+        let mut runtime = CodexAppRuntime::with_update_sink(sink.clone());
+        let parent = active_rollout_snapshot(
+            "parent-thread",
+            "/tmp/builder-panel",
+            "主线程正在处理",
+            UnixMillis::new(1),
+        );
+        let child = active_rollout_snapshot(
+            "child-thread",
+            "/tmp/builder-panel",
+            "子 agent 正在检查",
+            UnixMillis::new(2),
+        );
+        runtime
+            .apply_active_rollout_snapshot(parent)
+            .expect("parent rollout should apply");
+        runtime
+            .apply_active_rollout_snapshot(child)
+            .expect("child rollout should apply");
+        let notification_count = sink.notifications().len();
+
+        runtime
+            .apply_rollout_snapshot(CodexRolloutSnapshot {
+                session_id: "child-thread".to_string(),
+                parent_thread_id: Some("parent-thread".to_string()),
+                source_kind: CodexRolloutSourceKind::UserVisible,
+                cwd: "/tmp/builder-panel".to_string(),
+                summary: None,
+                last_agent_message: None,
+                path: PathBuf::from("/tmp/rollout-child-thread.jsonl"),
+                updated_at: UnixMillis::new(3),
+                turn_started_at: None,
+                completed: false,
+                suppressed_internal_artifact: false,
+                pending_user_input: None,
+            })
+            .expect("hierarchy rollout should apply");
+
+        let child_key = session_key("/tmp/builder-panel", "child-thread");
+        let notifications = sink.notifications();
+        assert_rollout_child_hierarchy(&runtime, "parent-thread", "child-thread");
+        assert!(notifications.len() > notification_count);
+        assert!(notifications.iter().any(|notification| {
+            notification.session_key == child_key && notification.updated_at == UnixMillis::new(3)
+        }));
+    }
+
+    #[test]
+    fn active_rollout_internal_mechanism_does_not_create_visible_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        let mut snapshot = active_rollout_snapshot(
+            "internal-thread",
+            "/tmp/builder-panel",
+            "内部检查输出",
+            UnixMillis::new(1),
+        );
+        snapshot.parent_thread_id = Some("parent-thread".to_string());
+        snapshot.source_kind = CodexRolloutSourceKind::InternalMechanism;
+
+        runtime
+            .apply_active_rollout_snapshot(snapshot)
+            .expect("internal rollout should be ignored");
+
+        assert!(runtime.session_state().sessions.is_empty());
     }
 
     #[test]
@@ -7947,6 +8326,7 @@ mod tests {
                 summary: Some("完成".to_string()),
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(1),
                 updated_at: UnixMillis::new(1),
             }))
             .expect("parent should start");
@@ -7966,6 +8346,7 @@ mod tests {
                 summary: Some("运行".to_string()),
                 capabilities: codex_app_capabilities(),
                 usage: UsageSnapshot::unavailable(),
+                started_at: UnixMillis::new(2),
                 updated_at: UnixMillis::new(2),
             }))
             .expect("child should start");
@@ -8097,11 +8478,14 @@ mod tests {
         runtime
             .apply_rollout_snapshot(CodexRolloutSnapshot {
                 session_id: "thread-1".to_string(),
+                parent_thread_id: None,
+                source_kind: CodexRolloutSourceKind::UserVisible,
                 cwd: "/tmp/builder-panel".to_string(),
                 summary: Some("历史输出".to_string()),
                 last_agent_message: Some("历史输出".to_string()),
                 path: PathBuf::from("/tmp/rollout-thread-1.jsonl"),
                 updated_at: UnixMillis::new(2),
+                turn_started_at: None,
                 completed: false,
                 suppressed_internal_artifact: false,
                 pending_user_input: None,
@@ -8131,6 +8515,30 @@ mod tests {
         );
     }
 
+    fn assert_rollout_child_hierarchy(
+        runtime: &CodexAppRuntime,
+        parent_thread_id: &str,
+        child_thread_id: &str,
+    ) {
+        let parent_key = session_key("/tmp/builder-panel", parent_thread_id);
+        let child_key = session_key("/tmp/builder-panel", child_thread_id);
+        let child_session = runtime
+            .session_state()
+            .sessions
+            .get(&child_key)
+            .expect("child session should exist");
+
+        assert_eq!(child_session.parent_session_key.as_ref(), Some(&parent_key));
+        assert_eq!(child_session.hierarchy_depth, 1);
+
+        let view_models = session_list_view_models(runtime.session_state());
+        let child_view_model = view_models
+            .iter()
+            .find(|view_model| view_model.session_key == child_key)
+            .expect("child view model should exist");
+        assert_eq!(child_view_model.indent_level, 1);
+    }
+
     fn active_rollout_snapshot(
         session_id: &str,
         cwd: &str,
@@ -8139,11 +8547,14 @@ mod tests {
     ) -> CodexRolloutSnapshot {
         CodexRolloutSnapshot {
             session_id: session_id.to_string(),
+            parent_thread_id: None,
+            source_kind: CodexRolloutSourceKind::UserVisible,
             cwd: cwd.to_string(),
             summary: Some(message.to_string()),
             last_agent_message: Some(message.to_string()),
             path: PathBuf::from(format!("/tmp/rollout-{session_id}.jsonl")),
             updated_at,
+            turn_started_at: None,
             completed: false,
             suppressed_internal_artifact: is_codex_internal_artifact(message),
             pending_user_input: None,
@@ -8161,6 +8572,180 @@ mod tests {
             }],
             auto_resolution_ms: None,
         }
+    }
+
+    #[test]
+    fn turn_started_does_not_create_unknown_app_server_session() {
+        let mut runtime = CodexAppRuntime::empty();
+
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "startedAtMs": 10,
+                        "turn": {"id": "turn-1", "status": "inProgress"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(20),
+            )
+            .expect("turn start should be ignored for unknown session");
+
+        assert!(runtime.session_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn turn_started_uses_app_server_started_at_ms_for_existing_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "thread/started",
+                    "params": {
+                        "thread": {
+                            "id": "thread-1",
+                            "cwd": "/tmp/builder-panel",
+                            "name": "计时任务"
+                        }
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(100),
+            )
+            .expect("thread should start");
+
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "startedAtMs": 10,
+                        "turn": {"id": "turn-1", "status": "inProgress"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(120),
+            )
+            .expect("turn should start");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+        assert_eq!(session.started_at, UnixMillis::new(10));
+        assert_eq!(session.updated_at, UnixMillis::new(120));
+    }
+
+    #[test]
+    fn early_turn_started_time_is_used_when_later_delta_creates_session() {
+        let mut runtime = CodexAppRuntime::empty();
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "startedAtMs": 10,
+                        "turn": {"id": "turn-1", "status": "inProgress"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(100),
+            )
+            .expect("early turn start should be cached");
+
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-1",
+                        "cwd": "/tmp/builder-panel",
+                        "delta": "开始输出"
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(120),
+            )
+            .expect("delta should create visible session");
+
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&session_key("/tmp/builder-panel", "thread-1"))
+            .expect("session should exist");
+        assert_eq!(session.started_at, UnixMillis::new(10));
+        assert_eq!(session.updated_at, UnixMillis::new(120));
+        assert_eq!(session.summary.as_deref(), Some("开始输出"));
+    }
+
+    #[test]
+    fn early_turn_started_without_cwd_is_used_by_later_thread_started() {
+        let mut runtime = CodexAppRuntime::empty();
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thread-1",
+                        "startedAtMs": 10,
+                        "turn": {"id": "turn-1", "status": "inProgress"}
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(100),
+            )
+            .expect("early turn start should be cached by thread id");
+
+        assert_eq!(
+            runtime.pending_turn_starts_by_thread_id.get("thread-1"),
+            Some(&UnixMillis::new(10))
+        );
+
+        runtime
+            .apply_app_server_message(
+                &json!({
+                    "method": "thread/started",
+                    "params": {
+                        "thread": {
+                            "id": "thread-1",
+                            "cwd": "/tmp/builder-panel",
+                            "name": "计时任务"
+                        }
+                    }
+                }),
+                "/wrong/cwd",
+                UnixMillis::new(120),
+            )
+            .expect("thread should start with real cwd");
+
+        let unresolved_key = session_key(UNRESOLVED_CODEX_APP_PROJECT_ID, "thread-1");
+        let real_key = session_key("/tmp/builder-panel", "thread-1");
+        let session = runtime
+            .session_state()
+            .sessions
+            .get(&real_key)
+            .expect("real session should exist");
+        assert!(!runtime
+            .session_state()
+            .sessions
+            .contains_key(&unresolved_key));
+        assert_eq!(session.started_at, UnixMillis::new(10));
+        assert_eq!(session.updated_at, UnixMillis::new(120));
+        assert!(!runtime
+            .pending_turn_starts
+            .keys()
+            .any(|key| key.conversation_id.value == "thread-1"));
+        assert!(!runtime
+            .pending_turn_starts_by_thread_id
+            .contains_key("thread-1"));
     }
 
     #[test]
@@ -9430,6 +10015,7 @@ mod tests {
                 can_create_followup_turn: false,
             },
             usage: UsageSnapshot::unavailable(),
+            started_at: UnixMillis::new(1),
             updated_at: UnixMillis::new(1),
         });
 

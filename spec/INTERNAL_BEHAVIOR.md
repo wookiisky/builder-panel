@@ -88,6 +88,8 @@ Codex APP runtime 可维护 `thread_id -> parent_thread_id` 缓存，用于把 C
 
 Codex APP runtime 的 `thread_id -> parent_thread_id` 缓存可来自 thread metadata 顶层 parent 字段，也可来自显式 `source.subAgent` 或 `source.subagent` 下的 `thread_spawn` 或 `threadSpawn` 内的 parent 字段。
 
+Codex APP runtime 的 `thread_id -> parent_thread_id` 缓存也可来自 Codex rollout `session_meta` 顶层 parent 字段、显式 sub agent `thread_spawn` parent 字段，或受非内部机制 sub agent 来源保护的 `session_id` fallback。
+
 Codex APP parent-only metadata 不得创建 session，只能记录父子关系并等待可信 cwd 或已有 session 补齐。
 
 Codex APP 只有在 child 和 parent 都能解析为已有 session 时，才向 Domain 写入 `HierarchyUpdated`。
@@ -101,6 +103,14 @@ Codex APP runtime 不得使用 Builder Panel 进程 cwd 代替 Codex thread cwd�
 Codex APP runtime 在缺少可信 cwd 时使用待识别项目占位 session，且占位 session 不生成跳回目标。
 
 Codex APP runtime 维护最多 65535 字符的当前 turn Agent 输出缓冲；新 turn 开始或 follow-up 成功提交时必须清空对应 thread 的当前输出。
+
+Codex APP runtime 只用 `turn/started` 更新已有或已确认可见 session 的当前 turn 开始时间，不得因未知 `turn/started` 创建空白 session。
+
+未知 session 的 `turn/started` 可按 session key 和 thread id 暂存当前 turn 开始时间；后续同 session key 或同 thread id 的可见实时事件创建 session 时必须消费该开始时间。
+
+暂存的 turn 开始时间在 turn 完成、失败、失联、session 清理或 session key 迁移时必须释放或迁移。
+
+`turn/started` 不得清理 pending interaction、app-server RPC pending、hook approval waiter 或 rollout 只读 pending。
 
 Codex APP runtime 在完成或 idle 事件中优先保留当前 turn 最新 Agent 输出。
 
@@ -132,6 +142,8 @@ Codex APP app-server `thread/loaded/list` 只提供当前已加载 thread id；�
 
 Codex APP thread metadata 必须显式区分当前 loaded 来源和历史候选来源。
 
+Codex APP app-server `thread/started` 内嵌 thread metadata 缺少 status 时按 active 处理，不得套用历史 metadata 的 idle 默认值提前关闭刚启动的 session。
+
 Codex APP thread metadata 必须在 adapter 边界解析 app-server `source`、`threadSource`、`agentRole` 和 `agentNickname` 字段；`source.subAgent=review|compact|memory_consolidation` 视为内部机制，不得创建可见 session，`source.subAgent.thread_spawn` 仍保留为用户可见 sub agent。
 
 Codex APP 当前 loaded thread metadata 对未知 thread 创建 session 时，必须具备可信 cwd，并满足真实标题、预览文本、`systemError` 状态，或 `active` 状态之一。
@@ -160,6 +172,8 @@ Codex APP recent rollout 扫描默认只能应用到已知候选 thread，包括
 
 Codex APP recent active rollout 恢复是受限例外：快照必须未完成、更新时间在 `BUILDER_PANEL_CODEX_APP_ACTIVE_ROLLOUT_WINDOW_MINUTES` 指定窗口内、具备可信 cwd，并且有可展示用户摘要或 Agent 输出；配置缺失、为 0 或非法时窗口为 5 分钟。
 
+Codex APP recent active rollout 创建或更新运行中 session 时，优先使用 rollout 行级 `turn_started` 或 `task_started` 时间作为当前 turn 开始时间；缺失或无效时使用快照更新时间兜底。
+
 Codex APP recent active rollout 首次创建 session 时必须记录 `thread_id -> cwd`、rollout path，并触发 Codex CLI 孤儿 session 清理。
 
 Codex APP thread 历史元数据只能应用到当前待识别 thread 或当前已知但缺标题的 thread；thread 元数据携带的 rollout path 必须与该 thread ID 匹配后才能补齐 runtime。
@@ -179,6 +193,8 @@ Codex rollout tailer 遇到文件截断、替换、超大文件或超长行时�
 Codex rollout tailer 输出必须先清洗为归一事件，不得把 rollout 原始 JSON 写入 Domain。
 
 Codex rollout tailer 在当前 turn 命中内部提示词后，必须抑制该 turn 的用户输入、Agent 文本、assistant response item、工具活动和完成摘要；下一个真实用户输入到达后恢复正常输出。
+
+Codex rollout tailer 只从 JSONL 顶层稳定时间字段清洗数字毫秒时间；字段缺失、为 0、非法或明显晚于本地观察时间时使用本地事件时间兜底。
 
 Codex rollout tailer 遇到新增 `request_user_input` function_call 时，只提取问题文本和 call_id，可先写入问题摘要再生成 `ExternalOnly` 等待回复事件；后续匹配的 function_call_output、真实新用户输入或 turn 完成会清理该 pending。
 

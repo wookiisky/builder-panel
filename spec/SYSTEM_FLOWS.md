@@ -100,11 +100,17 @@ APP 启动后仍在运行的任务如果继续发出 hook、notification 或 ser
 
 Codex CLI hook、Codex APP hook、Codex APP app-server 和 Codex rollout tailer 事件先在 adapter 边界清洗为归一事件。
 
+adapter 在边界清洗当前 turn 开始时间；可获得上游真实开始时间时写入归一事件，缺失或无效时使用本地捕捉时间兜底。
+
 adapter 清洗 Codex APP 最后消息时只保留用户输入原文、assistant 输出原文和完成时最后 assistant 输出；工具调用、hook 工具事件和工具参数不写最后消息。
 
 工具输出结束事件不写活动摘要。
 
 Codex APP runtime 会跟踪只由启动信号创建的空壳候选；后续命中内部提示词的 `UserPromptSubmit` 会清理仍为空壳的 session 及相关 runtime 缓存。
+
+Codex APP `turn/started` 只更新已存在或已确认可见 session 的当前 turn 开始时间和当前输出缓冲，不单独创建未知空白 session。
+
+Codex APP `turn/started` 早于可见实时事件到达时，runtime 可按 session key 和 thread id 暂存开始时间，并在后续同 session key 或同 thread 的可见事件创建 session 时消费。
 
 runtime 通过 session 更新端口发布轻量通知。
 
@@ -363,6 +369,8 @@ app-server 启动后，后台同步可按节流窗口调用 `thread/loaded/list`
 Codex APP session 列表和详情读取可通过 Codex rollout JSONL 补齐真实 cwd 和最新 Agent 输出。
 
 Codex rollout 历史补齐已有 session 的真实 cwd、跳回目标、能力或摘要时，会发布 `session_updated` 通知前端刷新列表。
+
+Codex rollout `session_meta` 可提供 child thread 到 parent thread 的关系；runtime 在 child 和 parent 都已有 session 后写入层级关系并发布 `session_updated`。
 
 Codex APP recent rollout 扫描结果默认只补齐已知候选 thread，不从任意历史 rollout 创建当前 session。
 

@@ -68,7 +68,11 @@
 
 原因：阶段 1 需要显式时间排序和序列化，但 Domain 不应读取系统时间或依赖运行时。
 
-代码影响：`src-tauri/src/domain/usage.rs` 定义 `UnixMillis`，事件和 session 更新时间使用该值对象。
+约束：当前 turn 开始时间和事件更新时间必须显式区分；上游真实开始时间只能由 adapter 在边界清洗后传入 Domain。
+
+约束：adapter 无法获得有效上游开始时间时，才使用本地捕捉时间作为开始时间兜底。
+
+代码影响：`src-tauri/src/domain/usage.rs` 定义 `UnixMillis`，事件和 session 更新时间使用该值对象；`SessionStarted` 和 `TurnStarted` 显式携带当前 turn 开始时间。
 
 测试影响：Domain 测试直接构造确定时间戳。
 
@@ -169,6 +173,8 @@
 约束：双通道事件必须通过 `thread_id -> cwd` 映射折叠到同一个 `SessionKey`，禁止用 Builder Panel 自身 cwd 代替 Codex thread cwd。
 
 约束：Codex APP 可通过 app-server `thread/read`、`thread/list` 元数据和 Codex rollout 历史补齐项目名、跳回目标和最新 Agent 输出；该补齐不得覆盖实时 pending、失败、完成状态。
+
+约束：Codex rollout 历史可补齐 sub agent 父子关系；补齐时必须保留 rollout `id` 作为当前 thread ID，只在非内部机制 sub agent 的受保护条件下把 `session_id` 作为父 thread fallback。
 
 代码影响：`src-tauri/src/adapters/bridge/hook_payload.rs` 将 `terminal_app` 归一化后等于 `codexapp` 的 Codex hook payload 分流为 Codex APP；`src-tauri/src/adapters/codex_app/mod.rs` 保存 Codex APP runtime 和 app-server stdio 客户端；`src-tauri/src/adapters/codex_app/codex_rollout.rs` 清洗 Codex rollout 历史；`src/views/BuilderPanelApp.tsx` 按 runtime source 路由 Codex APP session。
 

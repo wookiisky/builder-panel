@@ -16,6 +16,12 @@ Codex APP adapter 可编码 `initialize`、`initialized`、`thread/start`、`thr
 
 Codex APP adapter 可把 `thread/started`、`thread/name/updated`、`turn/started`、`thread/status/changed`、`thread/tokenUsage/updated` 和 `turn/completed` notification 转换为归一事件。
 
+Codex APP `turn/started` 只用于清空当前 turn 输出并更新已有或已确认可见 session 的当前 turn 开始时间；未知 thread 的 `turn/started` 不创建可见 session。
+
+未知 thread 的 `turn/started` 可按 session key 和 thread id 暂存开始时间；后续同 session key 或同 thread 的可见 app-server 事件创建 session 时，session 使用暂存开始时间计时。
+
+Codex APP `turn/started` 只读取已验证使用的显式毫秒开始时间字段；字段缺失、非法、为 0 或明显晚于本地观察时间时使用本地观察时间兜底。
+
 Codex APP `item/agentMessage/delta` notification 由 runtime 的有状态路径消费，不由无状态 notification 转换入口生成短摘要事件。
 
 Codex APP `thread/status/changed` 的 `idle` 映射为完成态；`systemError` 映射为失败态；`notLoaded` 映射为失联态。
@@ -100,6 +106,8 @@ Codex APP thread 元数据中的空白名称在 adapter 边界归一为缺失名
 
 Codex APP thread metadata 状态只用于创建新的已加载 session；已有实时 session 只补齐缺失信息，不用后台 metadata 覆盖运行状态或最新摘要。
 
+Codex APP `thread/started` 消息内嵌 thread metadata 缺少 `status` 时按 `active` 处理，避免同一条启动消息先按历史默认 `idle` 完成 session、再由 notification 恢复运行。
+
 Codex APP 当前已加载 thread metadata 对未知 thread 创建 session 时，必须至少有可信 cwd，并满足真实标题、预览文本、`systemError` 状态，或 `active` 状态之一；无标题、无预览的当前已加载 `active` thread 会创建运行中 session。
 
 Codex APP 历史 thread metadata 对未知 thread 创建 session 时，必须至少有真实标题、预览文本或 `systemError` 状态；只有 cwd、id、空白标题、模型名标题或空预览的历史 `active`、`idle`、`notLoaded` metadata 不创建列表 session。
@@ -117,6 +125,12 @@ Codex APP 不恢复 `ephemeral` thread metadata。
 Codex APP thread metadata 可清洗顶层 `parentThreadId` 或 `parent_thread_id` 作为子 thread 与父 thread 的关系来源。
 
 Codex APP 显式 `source.subAgent` 或 `source.subagent` 下的 `thread_spawn` 或 `threadSpawn` 内的 `parent_thread_id` 或 `parentThreadId` 也可作为子 thread 与父 thread 的关系来源。
+
+Codex rollout `session_meta` 可清洗顶层 `parent_thread_id`、`parentThreadId` 或 `source.subAgent.thread_spawn` / `source.subagent.threadSpawn` 内的 parent 字段作为子 thread 与父 thread 的关系来源。
+
+Codex rollout `session_meta` 中 `id` 是当前 thread ID；当 `thread_source` 或 `threadSource` 表示 `subagent` 且 `source` 不是内部机制，或 `source` 显式包含 `thread_spawn` / `threadSpawn` 结构时，`session_id` 或 `sessionId` 可作为受保护的父 thread ID fallback。
+
+Codex rollout `session_meta.source.subAgent` 为 `review`、`compact` 或 `memory_consolidation` 时视为 Codex 内部机制来源，不通过 recent active rollout 创建新的可见 session。
 
 Codex APP parent-only thread metadata 只记录 thread 父子关系，不单独创建 session。
 
@@ -147,6 +161,8 @@ Codex APP 最近活跃 rollout 若只有已知内部结构化产物且没有已�
 Codex APP 最近活跃 rollout 恢复窗口由 `BUILDER_PANEL_CODEX_APP_ACTIVE_ROLLOUT_WINDOW_MINUTES` 配置，未配置、为 0 或非法时默认 5 分钟。
 
 Codex APP 最近活跃 rollout 创建 session 时会记录 `thread_id -> cwd` 和 rollout path，并触发 Codex CLI 同 `(cwd, thread_id)` 孤儿 session 清理。
+
+Codex APP 最近活跃 rollout 创建或补齐 session 时，会记录 rollout 清洗出的 `child_thread_id -> parent_thread_id`，并在 child 和 parent session 都存在后写入 session 层级关系。
 
 Codex APP thread 元数据或候选快照携带 rollout path 后，可作为已知 session 的实时 tail 目标。
 
@@ -183,6 +199,10 @@ Codex rollout 中未知工具、动态工具和已知工具的 JSON arguments �
 Codex rollout 中的工具事件不得在完成后覆盖最终 Agent 输出。
 
 Codex APP 当前 turn 的 `item/agentMessage/delta` 会在 runtime 内按 thread 累积最多 65535 字符的有界输出；运行中 session 列表摘要的 `full_text` 使用该有界输出，行内展示截断由前端负责；`turn/started` 或 follow-up 成功提交会清空该 thread 的当前 turn 输出。
+
+Codex rollout snapshot 可携带行级 `turn_started` 或 `task_started` 时间；recent active rollout 恢复运行中 session 时优先使用该时间作为当前 turn 开始时间。
+
+Codex rollout tailer 追加行中可清洗出的 `turn_started` 或 `task_started` 会更新已知 session 的当前 turn 开始时间；未知 session 不因该事件创建。
 
 Codex APP 当前 turn 的 `item/agentMessage/delta` 若在未知或空壳 session 中只形成已知内部结构化产物，会被暂缓或丢弃，不创建可见 session；已有真实可见 session 的同形 JSON 输出不受影响。
 

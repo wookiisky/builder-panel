@@ -16,7 +16,7 @@ use serde_json::Value;
 use super::internal_prompt::{is_codex_internal_artifact, is_codex_internal_prompt};
 use crate::domain::agent_event::{
     ActivityUpdatedEvent, AgentEvent, AnswerRequestedEvent, InteractionCompletedEvent,
-    TurnCompletedEvent, UserMessageUpdatedEvent,
+    TurnCompletedEvent, TurnStartedEvent, UserMessageUpdatedEvent,
 };
 use crate::domain::agent_interaction::{
     AnswerInteraction, ExternalReplyTarget, InteractionId, InteractionStatus, ReplyTarget,
@@ -38,6 +38,10 @@ const MAX_FINAL_OUTPUT_CHARS: usize = 65_535;
 pub struct CodexRolloutSnapshot {
     /// Codex thread/session ID。
     pub session_id: String,
+    /// Codex rollout session_meta 中的父 thread ID。
+    pub parent_thread_id: Option<String>,
+    /// Codex rollout 清洗后的来源可见性。
+    pub source_kind: CodexRolloutSourceKind,
     /// rollout 中的真实 cwd。
     pub cwd: String,
     /// 最近可展示摘要。
@@ -48,12 +52,30 @@ pub struct CodexRolloutSnapshot {
     pub path: PathBuf,
     /// 最近更新时间。
     pub updated_at: UnixMillis,
+    /// 当前 turn 实际开始时间。
+    pub turn_started_at: Option<UnixMillis>,
     /// 当前 rollout 是否已经完成或中止。
     pub completed: bool,
     /// 是否曾因无真实用户上下文而抑制内部结构化产物。
     pub suppressed_internal_artifact: bool,
     /// 当前仍未处理的 request_user_input。
     pub pending_user_input: Option<CodexRolloutPendingUserInput>,
+}
+
+/// Codex rollout 清洗后的来源可见性。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodexRolloutSourceKind {
+    /// 用户可见来源，包括普通 thread 与显式 thread_spawn subagent。
+    UserVisible,
+    /// Codex 内部机制来源。
+    InternalMechanism,
+}
+
+impl CodexRolloutSourceKind {
+    /// 判断是否为内部机制来源。
+    pub fn is_internal(self) -> bool {
+        self == Self::InternalMechanism
+    }
 }
 
 /// Codex rollout 中恢复出的等待用户输入请求。
@@ -447,11 +469,9 @@ fn poll_path_events(
                 .value
                 .saturating_add(u64::try_from(events.len()).unwrap_or(u64::MAX)),
         );
-        events.extend(live_events_from_rollout_line(
-            &line,
-            state,
-            event_updated_at,
-        ));
+        let line_updated_at =
+            rollout_line_unix_millis(&line, updated_at).unwrap_or(event_updated_at);
+        events.extend(live_events_from_rollout_line(&line, state, line_updated_at));
     }
 
     events
@@ -597,6 +617,11 @@ fn live_events_from_event_msg(
         Some("turn_started") | Some("task_started") => {
             if !state.current_turn_is_internal {
                 state.completed = false;
+                return vec![AgentEvent::TurnStarted(TurnStartedEvent {
+                    session_key: state.session_key.clone(),
+                    started_at: updated_at,
+                    updated_at,
+                })];
             }
             Vec::new()
         }
@@ -1044,6 +1069,10 @@ fn is_rollout_file(path: &Path) -> bool {
 struct CodexRolloutState {
     /// 会话 ID。
     session_id: Option<String>,
+    /// Codex rollout session_meta 中的父 thread ID。
+    parent_thread_id: Option<String>,
+    /// Codex rollout 清洗后的来源可见性。
+    source_kind: CodexRolloutSourceKind,
     /// 真实 cwd。
     cwd: Option<String>,
     /// 最近摘要。
@@ -1056,6 +1085,8 @@ struct CodexRolloutState {
     path: PathBuf,
     /// 最近更新时间。
     updated_at: UnixMillis,
+    /// 当前 turn 实际开始时间。
+    turn_started_at: Option<UnixMillis>,
     /// 当前 reducer 是否处在 Codex 内部隐藏 turn 中。
     current_turn_is_internal: bool,
     /// 当前 reducer 是否已经看到真实用户输入。
@@ -1071,12 +1102,15 @@ impl CodexRolloutState {
     fn new(path: PathBuf, updated_at: UnixMillis) -> Self {
         Self {
             session_id: None,
+            parent_thread_id: None,
+            source_kind: CodexRolloutSourceKind::UserVisible,
             cwd: None,
             summary: None,
             last_agent_message: None,
             completed: false,
             path,
             updated_at,
+            turn_started_at: None,
             current_turn_is_internal: false,
             has_visible_user_message: false,
             suppressed_internal_artifact: false,
@@ -1088,11 +1122,14 @@ impl CodexRolloutState {
     fn into_snapshot(self) -> Option<CodexRolloutSnapshot> {
         Some(CodexRolloutSnapshot {
             session_id: self.session_id?,
+            parent_thread_id: self.parent_thread_id,
+            source_kind: self.source_kind,
             cwd: self.cwd?,
             summary: self.summary,
             last_agent_message: self.last_agent_message,
             path: self.path,
             updated_at: self.updated_at,
+            turn_started_at: self.turn_started_at,
             completed: self.completed,
             suppressed_internal_artifact: self.suppressed_internal_artifact,
             pending_user_input: self.pending_user_input,
@@ -1111,10 +1148,11 @@ fn apply_rollout_line(line: &str, state: &mut CodexRolloutState) {
     let Some(payload) = object.get("payload").and_then(Value::as_object) else {
         return;
     };
+    let line_updated_at = rollout_line_unix_millis_from_object(object, state.updated_at);
 
     match object.get("type").and_then(Value::as_str) {
         Some("session_meta") => apply_session_meta(payload, state),
-        Some("event_msg") => apply_event_msg(payload, state),
+        Some("event_msg") => apply_event_msg(payload, state, line_updated_at),
         Some("response_item") => apply_response_item(payload, state),
         _ => {}
     }
@@ -1122,7 +1160,12 @@ fn apply_rollout_line(line: &str, state: &mut CodexRolloutState) {
 
 /// 应用 session_meta。
 fn apply_session_meta(payload: &serde_json::Map<String, Value>, state: &mut CodexRolloutState) {
-    if let Some(session_id) = clean_string(payload.get("id")) {
+    let session_id = clean_string(payload.get("id"));
+    state.source_kind = rollout_source_kind(payload.get("source"));
+    if let Some(parent_thread_id) = rollout_parent_thread_id(payload, session_id.as_deref()) {
+        state.parent_thread_id = Some(parent_thread_id);
+    }
+    if let Some(session_id) = session_id {
         state.session_id = Some(session_id);
     }
     if let Some(cwd) = clean_string(payload.get("cwd")) {
@@ -1130,9 +1173,150 @@ fn apply_session_meta(payload: &serde_json::Map<String, Value>, state: &mut Code
     }
 }
 
+/// 从 rollout source 中清洗来源可见性。
+fn rollout_source_kind(source: Option<&Value>) -> CodexRolloutSourceKind {
+    if rollout_source_is_internal_subagent(source) {
+        CodexRolloutSourceKind::InternalMechanism
+    } else {
+        CodexRolloutSourceKind::UserVisible
+    }
+}
+
+/// 从 rollout session_meta 中清洗父 thread ID。
+fn rollout_parent_thread_id(
+    payload: &serde_json::Map<String, Value>,
+    child_thread_id: Option<&str>,
+) -> Option<String> {
+    let parent_thread_id = clean_string(
+        payload
+            .get("parent_thread_id")
+            .or_else(|| payload.get("parentThreadId")),
+    )
+    .or_else(|| rollout_thread_spawn_parent_thread_id(payload.get("source")))
+    .or_else(|| {
+        if rollout_session_meta_is_subagent(payload) {
+            clean_string(
+                payload
+                    .get("session_id")
+                    .or_else(|| payload.get("sessionId")),
+            )
+        } else {
+            None
+        }
+    })?;
+
+    if child_thread_id == Some(parent_thread_id.as_str()) {
+        None
+    } else {
+        Some(parent_thread_id)
+    }
+}
+
+/// 判断 rollout session_meta 是否来自 sub agent。
+fn rollout_session_meta_is_subagent(payload: &serde_json::Map<String, Value>) -> bool {
+    if rollout_source_has_thread_spawn(payload.get("source")) {
+        return true;
+    }
+
+    let thread_source = clean_string(
+        payload
+            .get("thread_source")
+            .or_else(|| payload.get("threadSource")),
+    );
+    thread_source
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("subagent"))
+        && !rollout_source_is_internal_subagent(payload.get("source"))
+}
+
+/// 判断 source 是否包含显式 thread_spawn sub agent 结构。
+fn rollout_source_has_thread_spawn(source: Option<&Value>) -> bool {
+    let Some(Value::Object(source_object)) = source else {
+        return false;
+    };
+    let Some(subagent) = source_object
+        .get("subAgent")
+        .or_else(|| source_object.get("subagent"))
+    else {
+        return false;
+    };
+    let Value::Object(subagent_object) = subagent else {
+        return false;
+    };
+
+    subagent_object.contains_key("thread_spawn") || subagent_object.contains_key("threadSpawn")
+}
+
+/// 判断 source 是否为 Codex 内部机制 sub agent。
+fn rollout_source_is_internal_subagent(source: Option<&Value>) -> bool {
+    let Some(Value::Object(source_object)) = source else {
+        return false;
+    };
+    let Some(subagent) = source_object
+        .get("subAgent")
+        .or_else(|| source_object.get("subagent"))
+    else {
+        return false;
+    };
+
+    match subagent {
+        Value::String(kind) => rollout_subagent_kind_is_internal(kind),
+        Value::Object(object) => {
+            !rollout_source_has_thread_spawn(source)
+                && object
+                    .keys()
+                    .any(|key| rollout_subagent_kind_is_internal(key))
+        }
+        _ => false,
+    }
+}
+
+/// 判断 sub agent 类型是否为内部机制。
+fn rollout_subagent_kind_is_internal(kind: &str) -> bool {
+    matches!(
+        kind,
+        "review" | "compact" | "memory_consolidation" | "memoryConsolidation"
+    )
+}
+
+/// 从 rollout source.subAgent.thread_spawn 中清洗父 thread ID。
+fn rollout_thread_spawn_parent_thread_id(source: Option<&Value>) -> Option<String> {
+    let Value::Object(source_object) = source? else {
+        return None;
+    };
+    let subagent = source_object
+        .get("subAgent")
+        .or_else(|| source_object.get("subagent"))?;
+    let Value::Object(subagent_object) = subagent else {
+        return None;
+    };
+    let thread_spawn = subagent_object
+        .get("thread_spawn")
+        .or_else(|| subagent_object.get("threadSpawn"))?;
+    let Value::Object(thread_spawn_object) = thread_spawn else {
+        return None;
+    };
+
+    clean_string(
+        thread_spawn_object
+            .get("parent_thread_id")
+            .or_else(|| thread_spawn_object.get("parentThreadId")),
+    )
+}
+
 /// 应用 event_msg。
-fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRolloutState) {
+fn apply_event_msg(
+    payload: &serde_json::Map<String, Value>,
+    state: &mut CodexRolloutState,
+    line_updated_at: Option<UnixMillis>,
+) {
     match payload.get("type").and_then(Value::as_str) {
+        Some("turn_started") | Some("task_started") => {
+            if !state.current_turn_is_internal {
+                state.completed = false;
+                state.turn_started_at = line_updated_at.or(Some(state.updated_at));
+            }
+        }
         Some("agent_message") => {
             if state.current_turn_is_internal {
                 return;
@@ -1169,6 +1353,9 @@ fn apply_event_msg(payload: &serde_json::Map<String, Value>, state: &mut CodexRo
                 state.has_visible_user_message = true;
                 if state.completed {
                     state.completed = false;
+                }
+                if state.turn_started_at.is_none() {
+                    state.turn_started_at = line_updated_at.or(Some(state.updated_at));
                 }
                 state.pending_user_input = None;
                 state.last_agent_message = None;
@@ -1323,6 +1510,41 @@ fn system_time_to_unix_millis(value: SystemTime) -> Option<UnixMillis> {
     Some(UnixMillis::new(millis))
 }
 
+fn rollout_line_unix_millis(line: &str, fallback_now: UnixMillis) -> Option<UnixMillis> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    let object = value.as_object()?;
+    rollout_line_unix_millis_from_object(object, fallback_now)
+}
+
+fn rollout_line_unix_millis_from_object(
+    object: &serde_json::Map<String, Value>,
+    fallback_now: UnixMillis,
+) -> Option<UnixMillis> {
+    explicit_rollout_unix_millis(
+        object
+            .get("timestamp")
+            .or_else(|| object.get("time"))
+            .or_else(|| object.get("created_at")),
+        fallback_now,
+    )
+}
+
+fn explicit_rollout_unix_millis(
+    value: Option<&Value>,
+    fallback_now: UnixMillis,
+) -> Option<UnixMillis> {
+    let raw = match value? {
+        Value::Number(number) => number.as_u64()?,
+        Value::String(text) => text.trim().parse::<u64>().ok()?,
+        _ => return None,
+    };
+    if raw == 0 || raw > fallback_now.value.saturating_add(5 * 60 * 1000) {
+        return None;
+    }
+
+    Some(UnixMillis::new(raw))
+}
+
 /// 截断文本。
 fn truncate(value: &str, max_chars: usize) -> String {
     let mut output = String::new();
@@ -1347,8 +1569,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        CodexRolloutDiscovery, CodexRolloutSnapshot, CodexRolloutTailer, CodexRolloutWatchTarget,
-        MAX_FINAL_OUTPUT_CHARS, MAX_LINE_BYTES,
+        CodexRolloutDiscovery, CodexRolloutSnapshot, CodexRolloutSourceKind, CodexRolloutTailer,
+        CodexRolloutWatchTarget, MAX_FINAL_OUTPUT_CHARS, MAX_LINE_BYTES,
     };
     use crate::domain::agent_event::AgentEvent;
     use crate::domain::agent_interaction::{AnswerInteraction, ReplyTarget};
@@ -1377,11 +1599,94 @@ mod tests {
             .expect("snapshot should exist");
 
         assert_eq!(snapshot.session_id, "thread-1");
+        assert_eq!(snapshot.parent_thread_id, None);
         assert_eq!(snapshot.cwd, "/tmp/builder-panel");
         assert_eq!(snapshot.summary.as_deref(), Some("实现已完成。"));
         assert_eq!(snapshot.last_agent_message.as_deref(), Some("实现已完成。"));
         assert!(snapshot.completed);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollout_snapshot_reads_turn_started_at_from_line_timestamp() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/tmp/builder-panel"}}"#,
+            r#"{"type":"event_msg","timestamp":10,"payload":{"type":"turn_started"}}"#,
+            r#"{"type":"event_msg","timestamp":20,"payload":{"type":"user_message","message":"开始处理"}}"#,
+        ]);
+
+        assert_eq!(snapshot.turn_started_at, Some(UnixMillis::new(10)));
+        assert_eq!(snapshot.summary.as_deref(), Some("开始处理"));
+    }
+
+    #[test]
+    fn rollout_session_meta_reads_top_level_parent_thread_id() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"child-thread","parent_thread_id":"parent-thread","session_id":"parent-thread","cwd":"/tmp/builder-panel","thread_source":"subagent"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"检查方案"}}"#,
+        ]);
+
+        assert_eq!(snapshot.session_id, "child-thread");
+        assert_eq!(snapshot.parent_thread_id.as_deref(), Some("parent-thread"));
+    }
+
+    #[test]
+    fn rollout_session_meta_reads_nested_thread_spawn_parent_thread_id() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"child-thread","cwd":"/tmp/builder-panel","source":{"subAgent":{"threadSpawn":{"parentThreadId":"parent-thread"}}}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"检查方案"}}"#,
+        ]);
+
+        assert_eq!(snapshot.session_id, "child-thread");
+        assert_eq!(snapshot.parent_thread_id.as_deref(), Some("parent-thread"));
+    }
+
+    #[test]
+    fn rollout_session_meta_uses_session_id_as_guarded_subagent_parent() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"child-thread","session_id":"parent-thread","cwd":"/tmp/builder-panel","threadSource":"subagent"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"检查方案"}}"#,
+        ]);
+
+        assert_eq!(snapshot.session_id, "child-thread");
+        assert_eq!(snapshot.parent_thread_id.as_deref(), Some("parent-thread"));
+    }
+
+    #[test]
+    fn rollout_session_meta_uses_session_id_for_thread_spawn_fallback() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"child-thread","sessionId":"parent-thread","cwd":"/tmp/builder-panel","source":{"subagent":{"thread_spawn":{"agent_role":"plan_reviewer"}}}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"检查方案"}}"#,
+        ]);
+
+        assert_eq!(snapshot.session_id, "child-thread");
+        assert_eq!(snapshot.parent_thread_id.as_deref(), Some("parent-thread"));
+    }
+
+    #[test]
+    fn rollout_session_meta_does_not_use_session_id_for_internal_subagent_parent() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"internal-thread","session_id":"parent-thread","cwd":"/tmp/builder-panel","threadSource":"subagent","source":{"subAgent":"review"}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"内部检查"}}"#,
+        ]);
+
+        assert_eq!(snapshot.session_id, "internal-thread");
+        assert_eq!(snapshot.parent_thread_id, None);
+        assert_eq!(
+            snapshot.source_kind,
+            CodexRolloutSourceKind::InternalMechanism
+        );
+    }
+
+    #[test]
+    fn rollout_session_meta_does_not_use_session_id_for_user_thread_parent() {
+        let snapshot = snapshot_from_lines(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-1","session_id":"thread-1","cwd":"/tmp/builder-panel","thread_source":"user"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"主线程输出"}}"#,
+        ]);
+
+        assert_eq!(snapshot.session_id, "thread-1");
+        assert_eq!(snapshot.parent_thread_id, None);
     }
 
     #[test]

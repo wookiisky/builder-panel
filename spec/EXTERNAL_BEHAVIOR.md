@@ -58,6 +58,8 @@ session 行来源标签和项目名同一行展示，thread 名下一行单行�
 
 运行中、等待审批和等待用户回复的 session 行展示当前 turn 已运行时间。
 
+当前 turn 已运行时间优先从可获得的上游真实开始时间起算；没有上游开始时间时，从 Builder Panel 捕捉到该 turn 的时间起算。
+
 运行中 session 行展示禁用的红色 octagon-x 停止占位图标；该图标当前不触发停止行为。
 
 完成和失败 session 行展示当前 turn 结束到现在的相对时间。
@@ -152,9 +154,13 @@ session 列表合并 Codex CLI 和 Codex APP session 后，未完成 session 展
 
 Codex APP sub agent session 识别到已有 parent session 后，展示在 parent session 下方，并带有少量一级缩进。
 
+Codex APP sub agent session 作为 child 行展示时，不重复展示来源标签或项目名，只展示 thread 标题、状态、摘要和可用操作。
+
 Codex APP parent-child 展示块不拆散；块内任一 session 未完成时，整个块按未完成 session 展示在顶部区域。
 
 Codex APP `review`、`compact` 和 `memory_consolidation` 等内部机制 sub agent 不展示为 session；显式 `thread_spawn` sub agent 继续按可见 sub agent 展示。
+
+Codex APP recent active rollout 恢复同样不展示内部机制 sub agent。
 
 更深层级的 Codex APP sub agent 当前仍按一级缩进展示。
 

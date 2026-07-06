@@ -1817,6 +1817,7 @@ const SessionRow = ({
   const actionSummaryTooltip =
     interaction.summary ?? summaryParagraph.tooltipText;
   const sideLabel = sessionSideTimeLabel(session, currentTimeMs);
+  const isChildSession = session.indent_level > 0;
   const rowStyle = {
     "--session-indent": `${Math.min(session.indent_level, 1) * 14}px`,
   } as CSSProperties;
@@ -1849,16 +1850,18 @@ const SessionRow = ({
           <PanelSessionStatusIcon status={session.status_kind} />
         </span>
         <div className="session-identity">
-          <div className="session-identity-line">
-            <span className="session-source">{sourceTag(session)}</span>
-            <MarkdownTooltip
-              className="session-project"
-              content={session.project_label}
-              tooltipWhenOverflow={true}
-            >
-              <strong>{session.project_label}</strong>
-            </MarkdownTooltip>
-          </div>
+          {!isChildSession && (
+            <div className="session-identity-line">
+              <span className="session-source">{sourceTag(session)}</span>
+              <MarkdownTooltip
+                className="session-project"
+                content={session.project_label}
+                tooltipWhenOverflow={true}
+              >
+                <strong>{session.project_label}</strong>
+              </MarkdownTooltip>
+            </div>
+          )}
           <MarkdownTooltip
             className="session-thread"
             content={session.thread_label}

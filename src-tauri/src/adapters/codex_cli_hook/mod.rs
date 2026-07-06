@@ -520,6 +520,7 @@ fn session_update_notification(event: &AgentEvent) -> Option<SessionUpdateNotifi
 fn event_updated_at(event: &AgentEvent) -> UnixMillis {
     match event {
         AgentEvent::SessionStarted(event) => event.updated_at,
+        AgentEvent::TurnStarted(event) => event.updated_at,
         AgentEvent::ActivityUpdated(event) => event.updated_at,
         AgentEvent::UserMessageUpdated(event) => event.updated_at,
         AgentEvent::TitleUpdated(event) => event.updated_at,
@@ -761,6 +762,7 @@ fn started_event(
         summary: None,
         capabilities: codex_cli_capabilities(),
         usage: UsageSnapshot::unavailable(),
+        started_at: updated_at,
         updated_at,
     }
 }
@@ -815,6 +817,7 @@ fn realtime_started_event(session_key: SessionKey, updated_at: UnixMillis) -> Se
         capabilities: codex_cli_capabilities(),
         usage: UsageSnapshot::unavailable(),
         session_key,
+        started_at: updated_at,
         updated_at,
     }
 }
@@ -1344,6 +1347,7 @@ mod tests {
                 can_create_followup_turn: false,
             },
             usage: UsageSnapshot::unavailable(),
+            started_at: UnixMillis::new(1),
             updated_at: UnixMillis::new(1),
         });
 

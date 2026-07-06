@@ -24,6 +24,19 @@ pub struct SessionStartedEvent {
     pub capabilities: SessionCapabilities,
     /// 当前用量快照。
     pub usage: UsageSnapshot,
+    /// 当前 turn 实际开始时间。
+    pub started_at: UnixMillis,
+    /// 事件更新时间。
+    pub updated_at: UnixMillis,
+}
+
+/// 当前 turn 开始事件。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TurnStartedEvent {
+    /// 会话唯一键。
+    pub session_key: SessionKey,
+    /// 当前 turn 实际开始时间。
+    pub started_at: UnixMillis,
     /// 事件更新时间。
     pub updated_at: UnixMillis,
 }
@@ -179,6 +192,8 @@ pub struct HierarchyUpdatedEvent {
 pub enum AgentEvent {
     /// 新会话或恢复会话。
     SessionStarted(SessionStartedEvent),
+    /// 当前 turn 开始。
+    TurnStarted(TurnStartedEvent),
     /// 活动摘要或运行状态更新。
     ActivityUpdated(ActivityUpdatedEvent),
     /// 用户原始输入更新。
@@ -212,6 +227,7 @@ impl AgentEvent {
     pub fn session_key(&self) -> &SessionKey {
         match self {
             Self::SessionStarted(event) => &event.session_key,
+            Self::TurnStarted(event) => &event.session_key,
             Self::ActivityUpdated(event) => &event.session_key,
             Self::UserMessageUpdated(event) => &event.session_key,
             Self::TitleUpdated(event) => &event.session_key,
@@ -252,6 +268,7 @@ mod tests {
             summary: Some("开始".to_string()),
             capabilities: SessionCapabilities::none(),
             usage: UsageSnapshot::unavailable(),
+            started_at: UnixMillis::new(10),
             updated_at: UnixMillis::new(10),
         });
 
