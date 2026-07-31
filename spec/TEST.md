@@ -240,6 +240,8 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Builder Panel 测试验证桌面 session 主行允许 thread 列收缩，并由 thread 文本截断保护摘要列。
 
+前端 Builder Panel 测试验证通用 760 逻辑宽度响应式规则不覆盖 session 主行四列布局；独立的 560 逻辑宽度窄屏边界保持状态、内容、时间操作三列，并把来源、项目名、thread 名和摘要分别放在内容列的第一、第二行。
+
 前端 Builder Panel 测试验证当前输出文本完整展示时不启用 tooltip，发生两行视觉截断时启用 tooltip。
 
 前端 Builder Panel 测试验证当前输出文本 tooltip 非链接区域双击会触发对应 session 跳回入口。

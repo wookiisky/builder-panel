@@ -890,6 +890,51 @@ describe("BuilderPanelApp session refresh", () => {
     expect(tooltipWrapperBlock?.groups?.body).toMatch(/min-width:\s*0;/);
   });
 
+  it("keeps the common and narrow session row layout boundaries", () => {
+    const styles = readFileSync("src/styles.css", "utf8");
+    const commonResponsiveStart = styles.indexOf("@media (max-width: 760px)");
+    const narrowSessionResponsiveStart = styles.indexOf(
+      "@media (max-width: 560px)",
+    );
+    const smallestResponsiveStart = styles.indexOf("@media (max-width: 460px)");
+
+    expect(commonResponsiveStart).toBeGreaterThanOrEqual(0);
+    expect(narrowSessionResponsiveStart).toBeGreaterThan(commonResponsiveStart);
+    expect(smallestResponsiveStart).toBeGreaterThan(
+      narrowSessionResponsiveStart,
+    );
+
+    const commonResponsiveBlock = styles.slice(
+      commonResponsiveStart,
+      narrowSessionResponsiveStart,
+    );
+    const narrowSessionResponsiveBlock = styles.slice(
+      narrowSessionResponsiveStart,
+      smallestResponsiveStart,
+    );
+
+    expect(commonResponsiveBlock).not.toContain(".session-row-main");
+    expect(narrowSessionResponsiveBlock).toContain(".session-row-main");
+    expect(narrowSessionResponsiveBlock).toMatch(
+      /\.session-row-main\s*{[^}]*grid-template-columns:\s*20px\s+minmax\(0,\s*1fr\)\s+max-content;/s,
+    );
+    expect(narrowSessionResponsiveBlock).toMatch(
+      /\.session-row-main\s*>\s*\.session-status-icon\s*{[^}]*grid-row:\s*1\s*\/\s*3;/s,
+    );
+    expect(narrowSessionResponsiveBlock).toMatch(
+      /\.session-row-main\s*>\s*\.session-side\s*{[^}]*grid-row:\s*1\s*\/\s*3;/s,
+    );
+    expect(narrowSessionResponsiveBlock).toMatch(
+      /\.session-row-main\s*>\s*\.session-summary-tooltip\s*{[^}]*grid-column:\s*2;[^}]*grid-row:\s*2;/s,
+    );
+    expect(narrowSessionResponsiveBlock).toMatch(
+      /\.session-identity\s*{[^}]*grid-template-columns:\s*auto\s+minmax\(48px,\s*0\.6fr\)\s+minmax\(0,\s*1fr\);/s,
+    );
+    expect(narrowSessionResponsiveBlock).toMatch(
+      /\.session-identity-line\s*{[^}]*display:\s*contents;/s,
+    );
+  });
+
   it("keeps short panel content natural and long content scrollable", () => {
     const styles = readFileSync("src/styles.css", "utf8");
     const surfaceBlock = styles.match(/\.app-surface\s*{(?<body>[^}]*)}/);
