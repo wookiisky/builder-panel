@@ -371,3 +371,19 @@
 排障影响：若 Codex APP 任务仍显示为 Codex CLI 来源徽章，应先检查 hook payload 的 `terminal_app`、hook helper 进程的 `__CFBundleIdentifier` 和 `TERM_PROGRAM`、Codex APP runtime 是否已知该 thread；若清理孤儿 session 不生效，应检查跨 runtime 回调是否在 bridge 启动前注入。
 
 状态：生效。
+
+## 决策 24
+
+决策：panel 窗口宽度由用户控制并持久化，高度由独立自然内容层和 Tauri 真实窗口几何持续派生；所有高度副作用由单一串行 controller 收口。
+
+原因：受限滚动容器不能同时作为可靠的自然高度来源；上次请求目标也不能代表操作系统真实窗口尺寸。并发恢复和 resize 会产生旧尺寸覆盖新尺寸、手动拉高后无法收缩以及失败后无法重试。
+
+约束：首轮高度自适应必须等待窗口偏好恢复；目标高度必须比较真实窗口高度；窗口和当前显示器工作区必须统一为逻辑坐标；resize 执行期间只保留最新重跑请求；单次失败不得污染后续状态。
+
+代码影响：`src/components/PanelShell.tsx` 拆分自然内容层和滚动视口；`src/views/panelContentMeasurement.ts` 负责测量；`src/stores/panelAdaptiveSizing.ts` 和 `src/stores/panelAdaptiveResizeController.ts` 负责纯规则和串行状态；`src/views/useAdaptivePanelWindow.ts` 负责编排；`src/api/panelWindowApi.ts` 负责 Tauri 几何和窗口副作用。
+
+测试影响：前端测试覆盖真实高度比较、手动增高收敛、宽度保留、物理到逻辑转换、多屏负坐标、屏幕上限、串行合并、失败重试、自然内容层和 overlay。
+
+排障影响：若出现裁剪或空白，先检查自然内容高度、Tauri 真实几何和 controller 请求；不得通过恢复持久化高度或增加时间窗缓存规避。
+
+状态：生效。

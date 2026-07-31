@@ -100,7 +100,6 @@
 
 `spec/SERVICE/PRESET_COMMAND_SERVICE.md` 回答预设命令计划生成、结构化创建优先和复制降级口径。
 
-
 `spec/SERVICE/SETTINGS_SERVICE.md` 回答设置模型、默认化、保存和配置损坏降级口径。
 
 `spec/SERVICE/NOTIFICATION_SERVICE.md` 回答通知计划、重复通知合并和点击定位口径。
@@ -136,7 +135,6 @@
 `spec/INTEGRATIONS/CODEX_CLI.md` 回答 Codex CLI 阶段 4 真实 hook 闭环、能力和降级边界。
 
 `spec/INTEGRATIONS/CODEX_APP.md` 回答 Codex APP hook、app-server、session、审批、回复、follow-up 和降级边界。
-
 
 `spec/INTEGRATIONS/CLAUDE_HOOKS.md` 回答 Claude Code CLI hook 当前接入边界。
 
@@ -176,7 +174,6 @@
 
 `src-tauri/src/adapters/bridge/hook_output.rs` 是 hook stdout directive 编码入口。
 
-
 `src-tauri/src/adapters/codex_cli_hook/mod.rs` 是 Codex CLI hook 事件转换、runtime 和 bridge server 入口。
 
 `src-tauri/src/adapters/codex_app/mod.rs` 是 Codex APP hook、app-server stdio 客户端、runtime、schema 探针、消息编码和 notification 转换入口。
@@ -195,7 +192,6 @@
 
 `src-tauri/src/adapters/notification/mod.rs` 是阶段 7 记录型通知 adapter 入口。
 
-
 `src-tauri/src/adapters/terminal/mod.rs` 是阶段 5 终端跳回 adapter、系统 URL 打开和复制降级测试入口。
 
 `src-tauri/src/services/session_service.rs` 是 session 读取应用服务入口。
@@ -208,7 +204,6 @@
 
 `src-tauri/src/services/preset_command_service.rs` 是预设命令计划生成服务入口。
 
-
 `src-tauri/src/services/settings_service.rs` 是阶段 7 设置应用服务入口。
 
 `src-tauri/src/services/notification_service.rs` 是阶段 7 通知计划应用服务入口。
@@ -216,7 +211,6 @@
 `src-tauri/src/tauri_api/commands.rs` 是 Tauri command 入口。
 
 `src/api/panelProbeContract.ts` 是前端基础探针契约入口。
-
 
 `src/api/mockPanelContract.ts` 是前端 session、交互和 view model 契约入口。
 
@@ -230,10 +224,19 @@
 
 `src/api/panelWindowApi.ts` 是前端 panel 窗口偏好应用、状态恢复、监听、局部保存和关闭窗口入口。
 
+`src/api/panelWindowGeometryContract.ts` 是前端 panel 窗口和显示器工作区统一逻辑几何契约入口。
+
+`src/stores/panelAdaptiveSizing.ts` 是 panel 目标高度和真实高度收敛纯规则入口。
+
+`src/stores/panelAdaptiveResizeController.ts` 是 panel resize 串行化和最新请求合并入口。
+
+`src/views/panelContentMeasurement.ts` 是 panel 自然内容与 overlay 高度测量入口。
+
+`src/views/useAdaptivePanelWindow.ts` 是 panel 内容观察和窗口高度自适应编排入口。
+
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
 `src/api/hookInstallApi.ts` 是前端 hook 状态查询、安装预览、安装和卸载 command 调用入口。
-
 
 `src/components/SettingsPanel.tsx` 是阶段 7 设置弹窗内容组件入口。
 
@@ -289,7 +292,6 @@
 
 `src-tauri/src/adapters/notification/mod.rs` 提供通知服务测试使用的记录型 adapter。
 
-
 `src-tauri/src/services/session_service.rs` 包含 session 读取测试。
 
 `src-tauri/src/services/interaction_service.rs` 包含审批 allow、deny 和回写失败测试。
@@ -300,11 +302,9 @@
 
 `src-tauri/src/services/preset_command_service.rs` 包含预设命令计划生成测试。
 
-
 `src-tauri/src/services/settings_service.rs` 包含设置缺失、损坏和保存测试。
 
 `src-tauri/src/services/notification_service.rs` 包含通知抑制、合并和点击定位测试。
-
 
 `src/api/settingsApi.test.ts` 包含前端设置默认值和自定义快捷输入清洗测试。
 

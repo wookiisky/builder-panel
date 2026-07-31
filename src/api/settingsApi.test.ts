@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultSettings, normalizeFallbackSettings } from "./settingsApi";
+import {
+  PANEL_WINDOW_DEFAULT_MAX_HEIGHT,
+  PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT,
+} from "./settingsContract";
 
 describe("settingsApi", () => {
   it("creates default real runtime settings without auto update option", () => {
@@ -10,8 +14,12 @@ describe("settingsApi", () => {
     expect(settings.display.theme).toBe("light");
     expect(settings.display.summary_tooltip_paragraphs).toBe(5);
     expect(settings.panel.collapsed).toBe(false);
+    expect(settings.panel.max_window_height).toBe(
+      PANEL_WINDOW_DEFAULT_MAX_HEIGHT,
+    );
     expect(settings.panel.window_position).toBeNull();
     expect(settings.panel.window_size).toBeNull();
+    expect(settings.panel.window_width).toBeNull();
     expect(settings.agents.codex_cli_enabled).toBe(true);
     expect(settings.agents.codex_app_enabled).toBe(true);
     expect("mock_agent_enabled" in settings.agents).toBe(false);
@@ -69,10 +77,39 @@ describe("settingsApi", () => {
     expect(normalizedSettings?.display.density).toBe("compact");
     expect(normalizedSettings?.display.summary_tooltip_paragraphs).toBe(5);
     expect(normalizedSettings?.panel.collapsed).toBe(false);
+    expect(normalizedSettings?.panel.max_window_height).toBe(
+      PANEL_WINDOW_DEFAULT_MAX_HEIGHT,
+    );
+    expect(normalizedSettings?.panel.window_size).toBeNull();
+    expect(normalizedSettings?.panel.window_width).toBeNull();
     expect(normalizedSettings?.agents.codex_app_enabled).toBe(true);
     expect("mock_agent_enabled" in (normalizedSettings?.agents ?? {})).toBe(
       false,
     );
+  });
+
+  it("normalizes panel max window height", () => {
+    const base = defaultSettings();
+    const cases: Array<[unknown, number]> = [
+      [undefined, PANEL_WINDOW_DEFAULT_MAX_HEIGHT],
+      [null, PANEL_WINDOW_DEFAULT_MAX_HEIGHT],
+      ["400", PANEL_WINDOW_DEFAULT_MAX_HEIGHT],
+      [159, PANEL_WINDOW_DEFAULT_MAX_HEIGHT],
+      [160, 160],
+      [400.5, PANEL_WINDOW_DEFAULT_MAX_HEIGHT],
+      [2400, PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT],
+    ];
+
+    for (const [input, expected] of cases) {
+      const normalized = normalizeFallbackSettings({
+        ...base,
+        panel: {
+          ...base.panel,
+          max_window_height: input,
+        },
+      });
+      expect(normalized?.panel.max_window_height).toBe(expected);
+    }
   });
 
   it("normalizes summary tooltip paragraphs by flooring and rejecting invalid counts", () => {

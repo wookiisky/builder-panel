@@ -22,14 +22,20 @@ export const PanelShell = ({
   return (
     <section className="panel-shell" aria-label={title}>
       <header className="panel-drag-region" data-tauri-drag-region>
-        <div className="panel-title-block">
-          <span className="panel-status-dot" aria-hidden="true" />
-          <h1>{title}</h1>
+        <div className="panel-title-block" data-tauri-drag-region>
+          <span
+            className="panel-status-dot"
+            aria-hidden="true"
+            data-tauri-drag-region
+          />
+          <h1 data-tauri-drag-region>{title}</h1>
           {titleMeta}
         </div>
         {actions}
       </header>
-      <div className="panel-content">{children}</div>
+      <div className="panel-content">
+        <div className="panel-natural-content">{children}</div>
+      </div>
     </section>
   );
 };

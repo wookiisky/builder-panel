@@ -22,11 +22,15 @@ Settings Service 不直接读写文件系统，不决定具体配置路径，不
 
 Display 设置控制用量展示、浅色或深色主题、UI 密度、动画等级和 session 摘要悬浮提示段数。
 
-Panel 设置保留 `collapsed` 字段、上次窗口位置和上次窗口尺寸。
+Panel 设置保留 `collapsed` 字段、窗口最大逻辑高度、上次窗口位置和上次窗口宽度。
+
+Panel `max_window_height` 默认值为 400，低于 160 时归一化为默认值，高于 2000 时归一化为 2000。
 
 Settings Service 会将 `collapsed` 归一化为 `false`。
 
 Panel `collapsed` 字段不再驱动主界面布局。
+
+旧版 Panel `window_size` 字段会被清空且不迁移为逻辑窗口宽度。
 
 Agents 设置控制 Codex CLI、Codex APP、Claude Code CLI 和 Claude Code APP 开关。
 
@@ -82,7 +86,7 @@ JSON 设置文件 adapter 使用同目录临时文件写入后替换目标文件
 
 ## 相关测试
 
-`src-tauri/src/services/settings_service.rs` 覆盖缺失配置、损坏配置、保存和 Codex 内部提示词追加模式归一化。
+`src-tauri/src/services/settings_service.rs` 覆盖缺失配置、损坏配置、保存、Panel 最大窗口高度和 Codex 内部提示词追加模式归一化。
 
 `src-tauri/src/adapters/config_file/mod.rs` 覆盖设置文件缺失、读写和损坏 JSON。
 
@@ -90,6 +94,6 @@ JSON 设置文件 adapter 使用同目录临时文件写入后替换目标文件
 
 `src-tauri/src/adapters/config_file/mod.rs` 覆盖同一路径并发保存不会共享临时文件。
 
-`src/api/settingsApi.test.ts` 覆盖前端默认设置、默认 panel 状态事实、Codex 内部提示词追加模式默认值和自定义快捷输入归一化。
+`src/api/settingsApi.test.ts` 覆盖前端默认设置、默认 panel 状态事实、Panel 最大窗口高度、Codex 内部提示词追加模式默认值和自定义快捷输入归一化。
 
 `src/views/BuilderPanelApp.test.ts` 覆盖 hook 安装按钮禁用规则。

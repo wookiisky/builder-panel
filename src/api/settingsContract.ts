@@ -7,6 +7,13 @@ export type UiTheme = "light" | "dark";
 /// 动画等级。
 export type AnimationLevel = "full" | "reduced";
 
+/// panel 窗口默认最大逻辑高度。
+export const PANEL_WINDOW_DEFAULT_MAX_HEIGHT = 400;
+/// panel 窗口最小可配置最大逻辑高度。
+export const PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT = 160;
+/// panel 窗口最大可配置最大逻辑高度。
+export const PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT = 2000;
+
 /// 通用设置。
 export interface GeneralSettings {
   /// 是否保持面板置顶。
@@ -51,10 +58,14 @@ export interface PanelWindowSize {
 export interface PanelSettings {
   /// 是否处于收缩状态。
   readonly collapsed: boolean;
+  /// panel 窗口最大逻辑高度。
+  readonly max_window_height: number;
   /// 上次窗口位置。
   readonly window_position: PanelWindowPosition | null;
-  /// 上次窗口尺寸。
+  /// 旧版窗口尺寸；运行时不再恢复。
   readonly window_size: PanelWindowSize | null;
+  /// 上次窗口逻辑宽度。
+  readonly window_width: number | null;
 }
 
 /// Agent 接入设置。

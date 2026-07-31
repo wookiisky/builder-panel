@@ -9,6 +9,11 @@ import type {
   UiDensity,
   UiTheme,
 } from "../api/settingsContract";
+import {
+  PANEL_WINDOW_DEFAULT_MAX_HEIGHT,
+  PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT,
+  PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT,
+} from "../api/settingsContract";
 import { PanelIcon, type PanelIconName } from "./PanelIcon";
 
 /// hook 安装 UI 状态。
@@ -105,6 +110,29 @@ export const SettingsPanel = ({
             });
           }}
         />
+      </SettingsGroup>
+      <SettingsGroup title="Panel">
+        <label className="select-row">
+          <span>窗口最大高度</span>
+          <input
+            max={PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT}
+            min={PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT}
+            step={1}
+            type="number"
+            value={settings.panel.max_window_height}
+            onChange={(event) => {
+              update({
+                ...settings,
+                panel: {
+                  ...settings.panel,
+                  max_window_height: panelMaxWindowHeightFromInput(
+                    event.target.value,
+                  ),
+                },
+              });
+            }}
+          />
+        </label>
       </SettingsGroup>
       <SettingsGroup title="Display">
         <ToggleRow
@@ -532,6 +560,19 @@ export const SettingsPanel = ({
       </SettingsGroup>
     </section>
   );
+};
+
+/// 从设置输入中读取 panel 最大窗口高度。
+const panelMaxWindowHeightFromInput = (value: string): number => {
+  const parsed = Number(value);
+  if (
+    !Number.isInteger(parsed) ||
+    parsed < PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT
+  ) {
+    return PANEL_WINDOW_DEFAULT_MAX_HEIGHT;
+  }
+
+  return Math.min(parsed, PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT);
 };
 
 /// 更新指定快捷输入。

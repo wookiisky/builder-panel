@@ -37,7 +37,7 @@ use crate::ports::agent_adapter_port::ChoiceSubmission;
 use crate::ports::jump_target_port::JumpTargetPort;
 use crate::ports::session_update_port::{NoopSessionUpdateSink, SessionUpdateSinkPort};
 use crate::services::settings_service::{
-    BuilderPanelSettings, PanelWindowPosition, PanelWindowSize, SettingsService, SettingsViewModel,
+    BuilderPanelSettings, PanelWindowPosition, SettingsService, SettingsViewModel,
 };
 
 /// 全局 Codex CLI runtime，用于阶段 4 真实 hook 闭环。
@@ -234,8 +234,9 @@ pub fn save_panel_window_state(update: PanelWindowStateUpdate) -> Result<(), Str
     if let Some(position) = update.window_position {
         settings.panel.window_position = Some(position);
     }
-    if let Some(size) = update.window_size {
-        settings.panel.window_size = Some(size);
+    if let Some(width) = update.window_width {
+        settings.panel.window_width = Some(width);
+        settings.panel.window_size = None;
     }
 
     service
@@ -887,8 +888,8 @@ pub struct PanelWindowStateUpdate {
     pub collapsed: Option<bool>,
     /// 上次窗口位置。
     pub window_position: Option<PanelWindowPosition>,
-    /// 上次窗口尺寸。
-    pub window_size: Option<PanelWindowSize>,
+    /// 上次窗口逻辑宽度。
+    pub window_width: Option<u32>,
 }
 
 /// hook 安装请求。

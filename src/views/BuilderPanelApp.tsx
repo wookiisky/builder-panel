@@ -28,6 +28,7 @@ import {
   type HookInstallAgentStatus,
 } from "../api/hookInstallApi";
 import {
+  applyPanelAlwaysOnTopPreference,
   applyPanelWindowPreferences,
   closePanelWindow,
   minimizePanelWindow,
@@ -76,6 +77,8 @@ import {
   updateDraft,
   type MockPanelUiState,
 } from "../stores/mockPanelStore";
+import { PANEL_WINDOW_RESIZE_DELTA } from "../stores/panelAdaptiveSizing";
+import { useAdaptivePanelWindow } from "./useAdaptivePanelWindow";
 /// 会话运行时来源。
 type RuntimeSource = "codex_cli" | "codex_app";
 
@@ -101,7 +104,6 @@ export type PanelSessionListItem = SessionListItemViewModel & {
 export const SESSION_REFRESH_INTERVAL_MS = 1000;
 /// 后端实时更新触发前端刷新时的短延迟。
 export const SESSION_UPDATE_REFRESH_DELAY_MS = 350;
-
 /// Builder Panel 首屏应用。
 export const BuilderPanelApp = () => {
   const [mockUiState, setMockUiState] = useState<MockPanelUiState>(() =>
@@ -115,6 +117,8 @@ export const BuilderPanelApp = () => {
     status_message: null,
   }));
   const [settingsHydrated, setSettingsHydrated] = useState(false);
+  const [panelWindowPreferencesReady, setPanelWindowPreferencesReady] =
+    useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [hookInstallState, setHookInstallState] = useState<HookInstallUiState>(
     () => ({
@@ -126,12 +130,15 @@ export const BuilderPanelApp = () => {
   );
   const [logPath, setLogPath] = useState<string | null>(null);
   const settingsSaveVersion = useRef(0);
+  const panelSurfaceRef = useRef<HTMLElement | null>(null);
   const sessionCaptureOrderStore = useRef(
     createPanelSessionCaptureOrderStore(),
   );
-  const panelWindowPreferencesApplied = useRef(false);
+  const panelWindowPreferenceApplication = useRef<Promise<void> | null>(null);
   const panelGeometrySaveTimer = useRef<number | null>(null);
   const pendingPanelWindowUpdate = useRef<PanelWindowStateUpdate>({});
+  const latestPanelWindowState = useRef<PanelWindowStateUpdate>({});
+  const lastPersistedPanelWindowWidth = useRef<number | null>(null);
 
   const applySessionRefresh = (
     items: readonly PanelSessionListItem[],
@@ -152,6 +159,16 @@ export const BuilderPanelApp = () => {
     fetchPanelSettings()
       .then((view) => {
         if (!disposed) {
+          latestPanelWindowState.current = {
+            ...(view.settings.panel.window_position === null
+              ? {}
+              : { window_position: view.settings.panel.window_position }),
+            ...(view.settings.panel.window_width === null
+              ? {}
+              : { window_width: view.settings.panel.window_width }),
+          };
+          lastPersistedPanelWindowWidth.current =
+            view.settings.panel.window_width;
           setSettingsView({
             ...view,
             settings: forceExpandedPanelSettings(view.settings),
@@ -165,6 +182,18 @@ export const BuilderPanelApp = () => {
             settings: defaultSettings(),
             status_message: readableError(error, "读取设置失败"),
           };
+          latestPanelWindowState.current = {
+            ...(fallbackView.settings.panel.window_position === null
+              ? {}
+              : {
+                  window_position: fallbackView.settings.panel.window_position,
+                }),
+            ...(fallbackView.settings.panel.window_width === null
+              ? {}
+              : { window_width: fallbackView.settings.panel.window_width }),
+          };
+          lastPersistedPanelWindowWidth.current =
+            fallbackView.settings.panel.window_width;
           setSettingsView({
             ...fallbackView,
             settings: forceExpandedPanelSettings(fallbackView.settings),
@@ -195,23 +224,58 @@ export const BuilderPanelApp = () => {
   }, [settingsView.settings.logging.enabled]);
 
   useEffect(() => {
-    if (!settingsHydrated || panelWindowPreferencesApplied.current) {
+    if (!settingsHydrated) {
       return;
     }
 
-    panelWindowPreferencesApplied.current = true;
-    applyPanelWindowPreferences(settingsView.settings).catch(
-      (error: unknown) => {
-        setSettingsView((current) => ({
-          ...current,
-          status_message: readableError(error, "应用 panel 窗口设置失败"),
-        }));
-      },
-    );
+    let disposed = false;
+    const application =
+      panelWindowPreferenceApplication.current ??
+      applyPanelWindowPreferences(settingsView.settings);
+    panelWindowPreferenceApplication.current = application;
+    void application
+      .catch((error: unknown) => {
+        if (!disposed) {
+          setSettingsView((current) => ({
+            ...current,
+            status_message: readableError(error, "应用 panel 窗口设置失败"),
+          }));
+        }
+      })
+      .finally(() => {
+        if (!disposed) {
+          setPanelWindowPreferencesReady(true);
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
   }, [settingsHydrated, settingsView.settings]);
 
+  const panelWindowResizeSignature = panelWindowContentResizeSignature({
+    errorMessage: mockUiState.errorMessage,
+    settings: settingsView.settings,
+    settingsModalOpen,
+    sessions,
+  });
+  const { requestResize: requestPanelWindowContentResize } =
+    useAdaptivePanelWindow({
+      configuredMaxHeight: settingsView.settings.panel.max_window_height,
+      contentSignature: panelWindowResizeSignature,
+      enabled: panelWindowPreferencesReady,
+      overlayOpen: settingsModalOpen,
+      reportError: (error) => {
+        setSettingsView((current) => ({
+          ...current,
+          status_message: readableError(error, "调整 panel 窗口尺寸失败"),
+        }));
+      },
+      surfaceRef: panelSurfaceRef,
+    });
+
   useEffect(() => {
-    if (!settingsHydrated) {
+    if (!panelWindowPreferencesReady) {
       return;
     }
 
@@ -219,7 +283,22 @@ export const BuilderPanelApp = () => {
     let unsubscribe: (() => void) | null = null;
     subscribePanelWindowGeometry((update) => {
       if (!disposed) {
-        schedulePanelWindowStateSave(update);
+        requestPanelWindowContentResize();
+        const persistentUpdate = panelWindowUpdateForPersistence(
+          update,
+          lastPersistedPanelWindowWidth.current,
+        );
+        if (persistentUpdate === null) {
+          return;
+        }
+        if (typeof persistentUpdate.window_width === "number") {
+          lastPersistedPanelWindowWidth.current = persistentUpdate.window_width;
+        }
+        latestPanelWindowState.current = mergePanelWindowStateUpdate(
+          latestPanelWindowState.current,
+          persistentUpdate,
+        );
+        schedulePanelWindowStateSave(persistentUpdate);
       }
     })
       .then((unlisten) => {
@@ -245,7 +324,7 @@ export const BuilderPanelApp = () => {
         window.clearTimeout(panelGeometrySaveTimer.current);
       }
     };
-  }, [settingsHydrated]);
+  }, [panelWindowPreferencesReady, requestPanelWindowContentResize]);
 
   useEffect(() => {
     let disposed = false;
@@ -321,15 +400,19 @@ export const BuilderPanelApp = () => {
   const updateSettings = async (
     settings: BuilderPanelSettings,
   ): Promise<void> => {
+    const settingsWithLatestWindowState = mergePanelWindowStateIntoSettings(
+      settings,
+      latestPanelWindowState.current,
+    );
     const saveVersion = settingsSaveVersion.current + 1;
     settingsSaveVersion.current = saveVersion;
     setSettingsView({
-      settings,
+      settings: settingsWithLatestWindowState,
       status_message: settingsView.status_message,
     });
     setSettingsSaving(true);
     try {
-      const nextView = await savePanelSettings(settings);
+      const nextView = await savePanelSettings(settingsWithLatestWindowState);
       if (
         isLatestSettingsSaveResponse(saveVersion, settingsSaveVersion.current)
       ) {
@@ -340,7 +423,7 @@ export const BuilderPanelApp = () => {
         saveVersion,
         settingsSaveVersion.current,
         nextView.settings,
-        applyPanelWindowPreferences,
+        applyPanelAlwaysOnTopPreference,
       ).catch((error: unknown) => {
         setSettingsView((current) => ({
           ...current,
@@ -352,7 +435,7 @@ export const BuilderPanelApp = () => {
         isLatestSettingsSaveResponse(saveVersion, settingsSaveVersion.current)
       ) {
         setSettingsView({
-          settings,
+          settings: settingsWithLatestWindowState,
           status_message: readableError(error, "保存设置失败"),
         });
       }
@@ -673,7 +756,10 @@ export const BuilderPanelApp = () => {
   }, [settingsModalOpen]);
 
   return (
-    <main className={appSurfaceClassName(settingsView.settings)}>
+    <main
+      ref={panelSurfaceRef}
+      className={appSurfaceClassName(settingsView.settings)}
+    >
       <PanelShell
         actions={
           <PanelTitleActions
@@ -718,6 +804,7 @@ export const BuilderPanelApp = () => {
           onJump={(session) => {
             void jumpToPanelSession(session);
           }}
+          onLayoutChange={requestPanelWindowContentResize}
           onResolveApproval={(session, interactionId, decision) => {
             void resolveApprovalForSession(session, interactionId, decision);
           }}
@@ -814,6 +901,115 @@ const forceExpandedPanelSettings = (
     collapsed: false,
   },
 });
+
+/// panel 内容 resize 签名输入。
+interface PanelWindowContentResizeSignatureInput {
+  /// 当前错误提示。
+  readonly errorMessage: string | null;
+  /// 当前设置。
+  readonly settings: BuilderPanelSettings;
+  /// 设置弹窗是否打开。
+  readonly settingsModalOpen: boolean;
+  /// 当前 session 列表。
+  readonly sessions: readonly PanelSessionListItem[];
+}
+
+/// 创建会影响 panel 内容高度的稳定签名。
+export const panelWindowContentResizeSignature = ({
+  errorMessage,
+  settings,
+  settingsModalOpen,
+  sessions,
+}: PanelWindowContentResizeSignatureInput): string => {
+  const enabledShortcuts = sortedEnabledShortcuts(
+    settings.replies.custom_shortcuts,
+  );
+  const hasVisibleShortcutRow = sessions.some((session) =>
+    shouldShowSessionShortcutRow(session, settings),
+  );
+  const shortcutSignature =
+    settings.replies.shortcut_replies_enabled && hasVisibleShortcutRow
+      ? enabledShortcuts.map((shortcut) => ({
+          id: shortcut.id,
+          label: shortcut.label,
+          order: shortcut.order,
+        }))
+      : [];
+
+  return JSON.stringify({
+    density: settings.display.density,
+    errorMessage,
+    maxWindowHeight: settings.panel.max_window_height,
+    settingsModalOpen,
+    summaryTooltipParagraphs: settings.display.summary_tooltip_paragraphs,
+    shortcuts: shortcutSignature,
+    sessions: sessions.map((session) =>
+      panelSessionContentResizeSignature(
+        session,
+        settings.display.summary_tooltip_paragraphs,
+      ),
+    ),
+  });
+};
+
+/// 判断 session 是否会展示快捷输入行。
+const shouldShowSessionShortcutRow = (
+  session: PanelSessionListItem,
+  settings: BuilderPanelSettings,
+): boolean => {
+  return (
+    settings.replies.shortcut_replies_enabled &&
+    session.inline_interaction.kind !== "choice" &&
+    shouldUseFollowupShortcut(
+      session.status_kind,
+      session.inline_interaction.can_create_followup_turn,
+    )
+  );
+};
+
+/// 创建单个 session 对 panel 内容高度的签名。
+const panelSessionContentResizeSignature = (
+  session: PanelSessionListItem,
+  summaryTooltipParagraphs: number,
+): object => {
+  const interaction = session.inline_interaction;
+  const summaryParagraph = textDisplayParagraph(
+    session.summary,
+    summaryTooltipParagraphs,
+  );
+  const showActionRow = shouldShowSessionActionRow(
+    session.status_kind,
+    interaction.can_create_followup_turn,
+    interaction.can_send_reply,
+  );
+  const showActionSummary = shouldShowInteractionSummary(session.status_kind);
+
+  return {
+    actionSummary: showActionSummary ? interaction.summary : null,
+    canCreateFollowupTurn: interaction.can_create_followup_turn,
+    canResolveApproval: interaction.can_resolve_approval,
+    canSendReply: interaction.can_send_reply,
+    choiceBox:
+      interaction.kind === "choice" && interaction.choice_box.enabled
+        ? {
+            allowsMultiple: interaction.choice_box.allows_multiple,
+            choices: interaction.choice_box.choices.map((choice) => ({
+              label: choice.label,
+              value: choice.value,
+            })),
+          }
+        : null,
+    indentLevel: session.indent_level,
+    interactionKind: interaction.kind,
+    projectLabel: session.project_label,
+    runtimeSource: session.runtimeSource,
+    sessionKey: panelSessionToId(session),
+    showActionRow,
+    statusKind: session.status_kind,
+    summaryText: summaryParagraph.visibleText,
+    threadLabel: session.thread_label,
+  };
+};
 
 /// Session 刷新调度器依赖。
 interface SessionRefreshSchedulerOptions<TimerId> {
@@ -1197,6 +1393,46 @@ export const mergePanelWindowStateUpdate = (
   };
 };
 
+/// 将最新窗口几何合并进整包设置，避免后续保存覆盖局部持久化结果。
+export const mergePanelWindowStateIntoSettings = (
+  settings: BuilderPanelSettings,
+  windowState: PanelWindowStateUpdate,
+): BuilderPanelSettings => {
+  return {
+    ...settings,
+    panel: {
+      ...settings.panel,
+      ...(windowState.window_position === undefined
+        ? {}
+        : { window_position: windowState.window_position }),
+      ...(windowState.window_width === undefined
+        ? {}
+        : { window_width: windowState.window_width }),
+    },
+  };
+};
+
+/// 过滤程序化高度变化产生的重复宽度保存。
+export const panelWindowUpdateForPersistence = (
+  update: PanelWindowStateUpdate,
+  lastPersistedWidth: number | null,
+): PanelWindowStateUpdate | null => {
+  const hasPosition = update.window_position !== undefined;
+  const width = update.window_width;
+  const hasChangedWidth =
+    typeof width === "number" &&
+    (lastPersistedWidth === null ||
+      Math.abs(width - lastPersistedWidth) > PANEL_WINDOW_RESIZE_DELTA);
+  if (!hasPosition && !hasChangedWidth) {
+    return null;
+  }
+
+  return {
+    ...(hasPosition ? { window_position: update.window_position } : {}),
+    ...(hasChangedWidth ? { window_width: width } : {}),
+  };
+};
+
 /// 创建默认单 agent hook 安装状态。
 const defaultHookAgentStatus = (
   agent: HookInstallAgent,
@@ -1266,8 +1502,12 @@ const PanelTitleMeta = ({ sessions, settings }: PanelTitleMetaProps) => {
   const counts = countSessionsByStatus(sessions);
 
   return (
-    <div className="panel-title-meta" aria-label="session 状态">
-      <span>
+    <div
+      className="panel-title-meta"
+      aria-label="session 状态"
+      data-tauri-drag-region
+    >
+      <span data-tauri-drag-region>
         运行 {counts.running} 等待 {counts.waiting} 总计 {sessions.length}
       </span>
       {settings.display.show_usage && <ToolUsageSummary sessions={sessions} />}
@@ -1537,6 +1777,8 @@ interface SessionStreamProps {
   readonly mockUiState: MockPanelUiState;
   /// 跳回回调。
   readonly onJump: (session: PanelSessionListItem) => void;
+  /// 布局可能变化时触发窗口尺寸重算。
+  readonly onLayoutChange?: () => void;
   /// 草稿变化回调。
   readonly onDraftChange: (
     session: PanelSessionListItem,
@@ -1587,6 +1829,7 @@ export const SessionStream = ({
   onToggleChoice,
   onSubmitChoice,
   onCreateFollowupTurn,
+  onLayoutChange = noopPanelLayoutChange,
 }: SessionStreamProps) => (
   <div className="session-list" aria-label="agent 会话列表">
     {sessions.length === 0 && (
@@ -1603,6 +1846,7 @@ export const SessionStream = ({
         onCreateFollowupTurn={onCreateFollowupTurn}
         onDraftChange={onDraftChange}
         onJump={onJump}
+        onLayoutChange={onLayoutChange}
         onResolveApproval={onResolveApproval}
         onSendReply={onSendReply}
         onSubmitChoice={onSubmitChoice}
@@ -1611,6 +1855,9 @@ export const SessionStream = ({
     ))}
   </div>
 );
+
+/// 默认布局变化回调。
+const noopPanelLayoutChange = (): void => undefined;
 
 /// 工具用量摘要。
 interface ToolUsageSummaryItem {
@@ -1632,13 +1879,17 @@ const ToolUsageSummary = ({
 }) => {
   const items = aggregateToolUsage(sessions);
   if (items.length === 0) {
-    return <span className="tool-usage-empty">用量 --</span>;
+    return (
+      <span className="tool-usage-empty" data-tauri-drag-region>
+        用量 --
+      </span>
+    );
   }
 
   return (
-    <div className="tool-usage" aria-label="工具用量">
+    <div className="tool-usage" aria-label="工具用量" data-tauri-drag-region>
       {items.map((item) => (
-        <span key={item.family} title={item.tooltip}>
+        <span key={item.family} title={item.tooltip} data-tauri-drag-region>
           {item.family} 5H {item.usage5h} / 1W {item.weekly}
         </span>
       ))}
@@ -1747,6 +1998,8 @@ interface SessionRowProps {
   readonly mockUiState: MockPanelUiState;
   /// 跳回回调。
   readonly onJump: (session: PanelSessionListItem) => void;
+  /// 布局可能变化时触发窗口尺寸重算。
+  readonly onLayoutChange: () => void;
   /// 草稿变化回调。
   readonly onDraftChange: (
     session: PanelSessionListItem,
@@ -1778,6 +2031,7 @@ const SessionRow = ({
   onToggleChoice,
   onSubmitChoice,
   onCreateFollowupTurn,
+  onLayoutChange,
 }: SessionRowProps) => {
   const interaction = session.inline_interaction;
   const interactionId = interaction.interaction_id;
@@ -1821,6 +2075,11 @@ const SessionRow = ({
   const rowStyle = {
     "--session-indent": `${Math.min(session.indent_level, 1) * 14}px`,
   } as CSSProperties;
+  const requestLayoutChangeOnHoverExpansion = (): void => {
+    if (hoverExpanded) {
+      onLayoutChange();
+    }
+  };
 
   return (
     <article
@@ -1836,9 +2095,13 @@ const SessionRow = ({
       }
       style={rowStyle}
       tabIndex={hoverExpanded ? 0 : undefined}
+      onBlur={requestLayoutChangeOnHoverExpansion}
       onClick={() => {
         onJump(session);
       }}
+      onFocus={requestLayoutChangeOnHoverExpansion}
+      onMouseEnter={requestLayoutChangeOnHoverExpansion}
+      onMouseLeave={requestLayoutChangeOnHoverExpansion}
     >
       <div className="session-row-main">
         <span
@@ -1904,6 +2167,15 @@ const SessionRow = ({
           )}
           onClick={(event) => {
             event.stopPropagation();
+          }}
+          onTransitionEnd={(event) => {
+            if (
+              event.propertyName === "max-height" ||
+              event.propertyName === "padding-top" ||
+              event.propertyName === "padding-bottom"
+            ) {
+              onLayoutChange();
+            }
           }}
         >
           {showActionSummary && (

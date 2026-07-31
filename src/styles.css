@@ -7,7 +7,7 @@
   --font-size-md: 12px;
   font-family: var(--font-family-ui);
   color: #161713;
-  background: #eef1f4;
+  background: transparent;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -20,7 +20,15 @@
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+#root {
+  min-width: 320px;
+  width: 100%;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -47,8 +55,6 @@ textarea:focus-visible {
 }
 
 .app-surface {
-  --bg: #f3f5f7;
-  --bg-grid: rgba(24, 32, 44, 0.05);
   --panel: #f7f9fb;
   --panel-strong: #ffffff;
   --panel-soft: #edf1f5;
@@ -68,18 +74,16 @@ textarea:focus-visible {
   --control-border: rgba(39, 49, 63, 0.28);
   --row-hover: rgba(23, 105, 170, 0.08);
   --shadow: rgba(15, 23, 42, 0.16);
-  min-height: 100vh;
+  width: 100%;
+  max-height: 100vh;
+  min-height: 0;
   padding: 6px;
   color: var(--text);
-  background:
-    linear-gradient(var(--bg-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px), var(--bg);
-  background-size: 16px 16px;
+  background: var(--panel);
+  overflow: hidden;
 }
 
 .app-theme-dark {
-  --bg: #0b0f12;
-  --bg-grid: rgba(106, 130, 154, 0.08);
   --panel: #11171c;
   --panel-strong: #151d23;
   --panel-soft: #0d1216;
@@ -102,7 +106,11 @@ textarea:focus-visible {
 }
 
 .panel-shell {
-  width: min(100%, 1040px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: 100%;
+  max-height: calc(100vh - 12px);
+  min-height: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);
@@ -121,6 +129,25 @@ textarea:focus-visible {
   background: var(--panel-strong);
   cursor: grab;
   user-select: none;
+}
+
+[data-tauri-drag-region] {
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+button,
+input,
+select,
+textarea,
+a,
+.panel-title-actions,
+.panel-title-actions *,
+.inline-reply *,
+.choice-row *,
+.overlay-panel * {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }
 
 .panel-title-block {
@@ -239,11 +266,16 @@ button:disabled {
 }
 
 .panel-content {
-  display: grid;
-  gap: 0;
-  max-height: calc(100vh - 42px);
-  padding: 0;
+  max-height: calc(100vh - 44px);
+  min-height: 0;
   overflow: auto;
+}
+
+.panel-natural-content {
+  display: grid;
+  align-content: start;
+  align-items: start;
+  min-width: 0;
 }
 
 .panel-summary,
@@ -1383,7 +1415,7 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.app-surface-compact .panel-content {
+.app-surface-compact .panel-natural-content {
   gap: 6px;
   padding: 6px;
 }

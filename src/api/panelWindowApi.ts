@@ -1,20 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+  currentMonitor,
   getCurrentWindow,
+  LogicalSize,
   PhysicalPosition,
-  PhysicalSize,
 } from "@tauri-apps/api/window";
 
 import type { BuilderPanelSettings, PanelSettings } from "./settingsContract";
+import type { PanelWindowLogicalGeometry } from "./panelWindowGeometryContract";
+import { isTauriRuntime } from "./tauriRuntime";
 
 /// panel 窗口状态局部保存请求。
 export interface PanelWindowStateUpdate {
-  /// 是否处于收缩状态。
-  readonly collapsed?: boolean;
   /// 上次窗口位置。
   readonly window_position?: PanelSettings["window_position"];
-  /// 上次窗口尺寸。
-  readonly window_size?: PanelSettings["window_size"];
+  /// 上次窗口逻辑宽度。
+  readonly window_width?: PanelSettings["window_width"];
 }
 
 /// 保存 panel 窗口状态。
@@ -65,15 +66,32 @@ export const applyPanelWindowPreferences = async (
   }
 };
 
+/// 仅应用运行期间可变的 panel 置顶偏好。
+export const applyPanelAlwaysOnTopPreference = async (
+  settings: BuilderPanelSettings,
+): Promise<void> => {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  try {
+    await getCurrentWindow().setAlwaysOnTop(settings.general.keep_panel_on_top);
+  } catch (error) {
+    throw errorWithCause(error, "应用 panel 置顶设置失败");
+  }
+};
+
 /// 对指定窗口应用已持久化的窗口几何。
 const applyPanelWindowGeometryToWindow = async (
   appWindow: ReturnType<typeof getCurrentWindow>,
   panel: PanelSettings,
 ): Promise<void> => {
-  if (panel.window_size !== null) {
-    await appWindow.setSize(
-      new PhysicalSize(panel.window_size.width, panel.window_size.height),
-    );
+  const windowWidth = panel.window_width;
+  if (windowWidth !== null) {
+    const currentSize = await appWindow.innerSize();
+    const scaleFactor = await appWindow.scaleFactor();
+    const currentLogicalHeight = currentSize.toLogical(scaleFactor).height;
+    await appWindow.setSize(new LogicalSize(windowWidth, currentLogicalHeight));
   }
   if (panel.window_position !== null) {
     await appWindow.setPosition(
@@ -100,11 +118,10 @@ export const subscribePanelWindowGeometry = async (
     });
   });
   const unlistenResized = await appWindow.onResized(({ payload }) => {
-    onChange({
-      window_size: {
-        width: payload.width,
-        height: payload.height,
-      },
+    void appWindow.scaleFactor().then((scaleFactor) => {
+      onChange({
+        window_width: Math.round(payload.width / scaleFactor),
+      });
     });
   });
 
@@ -112,6 +129,83 @@ export const subscribePanelWindowGeometry = async (
     unlistenMoved();
     unlistenResized();
   };
+};
+
+/// 读取当前窗口和所在显示器工作区的统一逻辑几何。
+export const readPanelWindowLogicalGeometry =
+  async (): Promise<PanelWindowLogicalGeometry | null> => {
+    if (!isTauriRuntime()) {
+      return null;
+    }
+
+    try {
+      const appWindow = getCurrentWindow();
+      const [scaleFactor, innerSize, outerPosition, monitor] =
+        await Promise.all([
+          appWindow.scaleFactor(),
+          appWindow.innerSize(),
+          appWindow.outerPosition(),
+          currentMonitor(),
+        ]);
+      const logicalSize = innerSize.toLogical(scaleFactor);
+
+      return {
+        windowPosition: {
+          x: physicalToLogical(outerPosition.x, scaleFactor),
+          y: physicalToLogical(outerPosition.y, scaleFactor),
+        },
+        windowSize: {
+          width: logicalSize.width,
+          height: logicalSize.height,
+        },
+        workArea:
+          monitor === null
+            ? null
+            : {
+                position: {
+                  x: physicalToLogical(
+                    monitor.workArea.position.x,
+                    scaleFactor,
+                  ),
+                  y: physicalToLogical(
+                    monitor.workArea.position.y,
+                    scaleFactor,
+                  ),
+                },
+                size: {
+                  width: physicalToLogical(
+                    monitor.workArea.size.width,
+                    scaleFactor,
+                  ),
+                  height: physicalToLogical(
+                    monitor.workArea.size.height,
+                    scaleFactor,
+                  ),
+                },
+              },
+      };
+    } catch (error) {
+      throw errorWithCause(error, "读取 panel 窗口几何失败");
+    }
+  };
+
+/// 保留当前真实宽度并调整 panel 窗口内容高度。
+export const resizePanelWindowContentHeight = async (
+  height: number,
+): Promise<void> => {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  try {
+    const appWindow = getCurrentWindow();
+    const scaleFactor = await appWindow.scaleFactor();
+    const currentSize = await appWindow.innerSize();
+    const currentLogicalWidth = currentSize.toLogical(scaleFactor).width;
+    await appWindow.setSize(new LogicalSize(currentLogicalWidth, height));
+  } catch (error) {
+    throw errorWithCause(error, "调整 panel 窗口尺寸失败");
+  }
 };
 
 /// 关闭当前 panel 窗口。
@@ -177,7 +271,15 @@ const errorWithCause = (error: unknown, fallback: string): Error => {
   return new Error(fallback, { cause: error });
 };
 
-/// 判断当前是否运行在 Tauri 环境。
-const isTauriRuntime = (): boolean => {
-  return "__TAURI_INTERNALS__" in window;
+/// 将 Tauri 物理像素转换为当前窗口坐标系下的逻辑像素。
+const physicalToLogical = (value: number, scaleFactor: number): number => {
+  if (
+    !Number.isFinite(value) ||
+    !Number.isFinite(scaleFactor) ||
+    scaleFactor <= 0
+  ) {
+    throw new Error("panel 窗口几何数据无效");
+  }
+
+  return value / scaleFactor;
 };

@@ -5,6 +5,11 @@ import type {
   CustomShortcutInput,
   SettingsViewModel,
 } from "./settingsContract";
+import {
+  PANEL_WINDOW_DEFAULT_MAX_HEIGHT,
+  PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT,
+  PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT,
+} from "./settingsContract";
 
 /// 浏览器 fallback 使用的 localStorage 键。
 const FALLBACK_SETTINGS_KEY = "builder-panel-settings";
@@ -25,8 +30,10 @@ export const defaultSettings = (): BuilderPanelSettings => ({
   },
   panel: {
     collapsed: false,
+    max_window_height: PANEL_WINDOW_DEFAULT_MAX_HEIGHT,
     window_position: null,
     window_size: null,
+    window_width: null,
   },
   agents: {
     codex_cli_enabled: true,
@@ -168,10 +175,7 @@ export const normalizeFallbackSettings = (
     candidate.advanced,
     defaults.advanced,
   );
-  const logging = normalizeLoggingSettings(
-    candidate.logging,
-    defaults.logging,
-  );
+  const logging = normalizeLoggingSettings(candidate.logging, defaults.logging);
 
   if (
     general === null ||
@@ -322,16 +326,58 @@ const normalizePanelSettings = (
     candidate.window_size,
     defaults.window_size,
   );
+  const windowWidth = normalizePanelWindowWidth(
+    candidate.window_width,
+    defaults.window_width,
+  );
+  const maxWindowHeight = normalizePanelMaxWindowHeight(
+    candidate.max_window_height,
+    defaults.max_window_height,
+  );
+  const hasWindowWidth = Object.prototype.hasOwnProperty.call(
+    candidate,
+    "window_width",
+  );
 
-  if (windowPosition === undefined || windowSize === undefined) {
+  if (
+    windowPosition === undefined ||
+    windowSize === undefined ||
+    windowWidth === undefined
+  ) {
     return null;
   }
 
   return {
     collapsed,
+    max_window_height: maxWindowHeight,
     window_position: windowPosition,
-    window_size: windowSize,
+    window_size: null,
+    window_width:
+      windowWidth ?? (hasWindowWidth ? null : defaults.window_width),
   };
+};
+
+/// 归一 panel 最大窗口高度。
+export const normalizePanelMaxWindowHeight = (
+  value: unknown,
+  defaults = PANEL_WINDOW_DEFAULT_MAX_HEIGHT,
+): number => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value)
+  ) {
+    return defaults;
+  }
+
+  if (value < PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT) {
+    return defaults;
+  }
+
+  return Math.min(value, PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT);
 };
 
 /// 归一 panel 位置。
@@ -404,6 +450,24 @@ const normalizePanelWindowSize = (
     width,
     height,
   };
+};
+
+/// 归一 panel 窗口逻辑宽度。
+const normalizePanelWindowWidth = (
+  value: unknown,
+  defaults: BuilderPanelSettings["panel"]["window_width"],
+): BuilderPanelSettings["panel"]["window_width"] | undefined => {
+  if (value === undefined) {
+    return defaults;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return undefined;
+  }
+
+  return value;
 };
 
 /// 归一 Agent 设置。

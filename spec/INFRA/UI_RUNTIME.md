@@ -12,7 +12,7 @@ UI Runtime 不记录 React 组件内部私有状态细节，不替代外部行�
 
 阶段 7 不提供 mini 模式切换入口。
 
-Tauri 主窗口默认尺寸调整为扩展模式工作台尺寸。
+Tauri 主窗口默认宽度面向扩展模式工作台，默认高度面向首屏内容自适应。
 
 前端合并 Codex CLI 和 Codex APP session 后按展示分组和首次观察顺序排序。
 
@@ -53,6 +53,40 @@ Codex APP parent-child 展示块内任一 session 未完成时，整个块进入
 前端支持浅色和深色两种主题，由 Display 设置控制。
 
 前端主界面使用紧凑工作台布局，主体为无标题单列 session table。
+
+前端主窗口高度由当前面板内容派生，不把高度作为长期用户偏好恢复。
+
+当前面板内容少于窗口最大高度时，窗口高度随内容收缩，避免展示大面积空白背景。
+
+前端内容高度自适应以标题栏、边框、外层 padding 和 session 内容区自然高度计算，不以当前 WebView 视口高度作为自然高度来源。
+
+session 自然内容层与受限滚动视口是两个独立布局层；自然内容层提供测量，滚动视口负责窗口达到上限后的裁剪和滚动。
+
+设置弹窗打开时会作为当前可见内容参与窗口高度自适应，仍受窗口最大高度和屏幕可用高度限制。
+
+当前打开的 overlay 面板尺寸变化时，前端会主动请求窗口内容高度自适应；动态子级 overlay 通过 DOM 子树变化监听纳入同一测量和收敛链路，挂载、卸载都会触发重算。
+
+当前面板内容超过用户配置的窗口最大高度时，窗口高度限制在该最大高度内，session 内容区滚动。
+
+前端根布局限制在当前 WebView 视口内，超过上限的内容滚动必须收敛在 session 内容区。
+
+Panel `max_window_height` 控制窗口最大逻辑高度，默认值为 400，前端设置边界最小值为 160、最大值为 2000。
+
+当前屏幕可用高度小于用户配置的窗口最大高度时，窗口高度限制在屏幕内，session 内容区滚动。
+
+窗口内容高度自适应上限按当前窗口顶边和屏幕可用区域底边计算，避免窗口底部越出屏幕。
+
+窗口和当前显示器工作区几何来自 Tauri API，并按当前窗口 scale factor 转换为同一逻辑坐标系。
+
+窗口高度调整前读取真实窗口高度；手动拉高会重新收缩，手动改宽会保留真实宽度并触发内容重排后的高度计算。
+
+内容高度调整串行执行，并在执行期间把多次变化合并为一次最新状态重跑。
+
+session 展示文本、行内交互和影响行高的显示设置变化时，前端会主动请求窗口内容高度自适应。
+
+当前 WebView 不提供 `ResizeObserver` 时，前端仍会在首屏和窗口 resize 时请求一次内容高度自适应。
+
+`ResizeObserver` 仅补充可见盒尺寸变化触发，不作为 session 内容滚动高度变化的唯一触发来源；`MutationObserver` 负责动态内容和子级 overlay 的挂载、卸载触发。
 
 每个 session 主行左侧展示状态 icon、运行时来源、项目名和 thread 名。
 
@@ -120,15 +154,23 @@ session 来源标记按运行时来源派生并以无填充样式展示：来自
 
 设置中的 Panel `collapsed` 字段会被归一化为 `false`，不再作为主界面布局状态。
 
-Tauri 环境会在设置读取后尝试恢复上次窗口位置、尺寸和置顶偏好。
+Tauri 环境会在设置读取后尝试恢复上次窗口位置、逻辑宽度和置顶偏好。
 
-Tauri 环境会监听主窗口移动和尺寸变化，并以局部保存 command 持久化窗口几何。
+旧版 `window_size` 是物理像素尺寸，设置归一化时会清空且不迁移为逻辑宽度。
+
+Tauri 环境会监听主窗口移动和尺寸变化，并以局部保存 command 持久化窗口位置和逻辑宽度。
+
+Tauri 环境不会把内容自适应得到的窗口高度写成稳定偏好。
 
 Tauri 环境依赖 `core:window:allow-start-dragging` 允许顶部拖动区移动窗口。
+
+Tauri 顶部拖动区的非交互子元素直接声明 `data-tauri-drag-region`，窗口操作按钮不声明拖动区。
 
 Tauri 环境依赖 `core:window:allow-minimize` 允许前端最小化主窗口。
 
 Tauri 环境依赖 `core:window:allow-set-always-on-top` 允许前端应用面板置顶设置。
+
+panel 窗口 API 通过 `@tauri-apps/api/core.isTauri()` 判断当前是否运行在 Tauri 环境。
 
 浏览器开发环境不执行 Tauri 窗口几何恢复。
 
@@ -140,7 +182,7 @@ session 选中和回复草稿由前端 UI 状态管理。
 
 有跳回能力和跳回目标但全局跳回开关关闭的 session 点击后只更新选中态，不请求跳回且不展示错误。
 
-设置弹窗包含 General、Display、Agents、Hook Install、Replies、Presets、Terminal、Advanced 和 Logging 分组。
+设置弹窗包含 General、Panel、Display、Agents、Hook Install、Replies、Presets、Terminal、Advanced 和 Logging 分组。
 
 设置弹窗内容区不再渲染独立说明 header。
 
@@ -186,7 +228,19 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 `src/api/settingsApi.ts` 是前端设置读写和 fallback 校验入口。
 
-`src/api/panelWindowApi.ts` 是前端 panel 窗口几何恢复、监听、局部保存、最小化和关闭窗口入口。
+`src/api/panelWindowApi.ts` 是前端 panel 窗口位置和逻辑宽度恢复、内容高度自适应、监听、局部保存、最小化和关闭窗口入口。
+
+`src/api/panelWindowGeometryContract.ts` 是统一逻辑窗口几何契约入口。
+
+`src/stores/panelAdaptiveSizing.ts` 是目标高度和真实高度比较纯规则入口。
+
+`src/stores/panelAdaptiveResizeController.ts` 是 resize 串行和最新请求合并入口。
+
+`src/views/panelContentMeasurement.ts` 是自然内容层和 overlay 测量入口。
+
+`src/views/useAdaptivePanelWindow.ts` 是内容观察、窗口事件和 resize 副作用编排入口。
+
+`src/api/tauriRuntime.ts` 是前端 Tauri 运行时判断入口。
 
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 
@@ -204,11 +258,23 @@ Tauri 环境通过 settings command 读写 JSON 设置文件。
 
 `src/views/BuilderPanelApp.test.ts` 覆盖合并 session 捕捉顺序、统计、能力动作标签、工具用量聚合、follow-up 展开规则和 follow-up 输入顺序。
 
-`src/api/settingsApi.test.ts` 覆盖阶段 7 默认设置、收缩状态归一化和自定义快捷输入校验。
+`src/views/BuilderPanelApp.test.ts` 覆盖 panel 内容签名、重复宽度保存过滤、长内容滚动约束和标题栏拖动区标记。
+
+`src/views/panelContentMeasurement.test.ts` 覆盖自然内容层、overlay 高度和尺寸观察目标。
+
+`src/stores/panelAdaptiveSizing.test.ts` 覆盖配置上限、真实高度比较、多屏负坐标和显示器缺失降级。
+
+`src/stores/panelAdaptiveResizeController.test.ts` 覆盖 resize 串行、最新请求合并、失败重试和释放行为。
+
+`src/api/settingsApi.test.ts` 覆盖阶段 7 默认设置、panel 最大窗口高度归一化、收缩状态归一化和自定义快捷输入校验。
 
 `src/views/BuilderPanelApp.test.ts` 覆盖 hook 安装按钮禁用规则。
 
 `src/components/SettingsPanel.test.tsx` 覆盖 hook 状态列表展示和单项安装卸载按钮。
+
+`src/api/panelWindowApi.test.ts` 覆盖 panel 窗口逻辑宽度恢复、物理到逻辑几何转换、保留真实宽度的内容高度调整和浏览器环境 no-op。
+
+`src/api/tauriRuntime.test.ts` 覆盖前端 Tauri 运行时判断入口。
 
 `src-tauri/src/services/settings_service.rs` 覆盖配置缺失、配置损坏和保存。
 

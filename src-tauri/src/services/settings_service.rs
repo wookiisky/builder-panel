@@ -102,6 +102,18 @@ pub fn default_summary_tooltip_paragraphs() -> u32 {
     5
 }
 
+/// panel 窗口默认最大逻辑高度。
+pub const PANEL_WINDOW_DEFAULT_MAX_HEIGHT: u32 = 400;
+/// panel 窗口最小可配置最大逻辑高度。
+pub const PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT: u32 = 160;
+/// panel 窗口最大可配置最大逻辑高度。
+pub const PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT: u32 = 2000;
+
+/// panel 窗口最大逻辑高度默认值。
+pub fn default_panel_max_window_height() -> u32 {
+    PANEL_WINDOW_DEFAULT_MAX_HEIGHT
+}
+
 /// panel 窗口位置。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PanelWindowPosition {
@@ -126,10 +138,15 @@ pub struct PanelWindowSize {
 pub struct PanelSettings {
     /// 是否处于收缩状态。
     pub collapsed: bool,
+    /// panel 窗口最大逻辑高度。
+    #[serde(default = "default_panel_max_window_height")]
+    pub max_window_height: u32,
     /// 上次窗口位置。
     pub window_position: Option<PanelWindowPosition>,
-    /// 上次窗口尺寸。
+    /// 旧版窗口尺寸；运行时不再恢复。
     pub window_size: Option<PanelWindowSize>,
+    /// 上次窗口逻辑宽度。
+    pub window_width: Option<u32>,
 }
 
 impl Default for PanelSettings {
@@ -137,8 +154,10 @@ impl Default for PanelSettings {
     fn default() -> Self {
         Self {
             collapsed: false,
+            max_window_height: default_panel_max_window_height(),
             window_position: None,
             window_size: None,
+            window_width: None,
         }
     }
 }
@@ -507,11 +526,29 @@ fn trimmed_text(value: &Value, max_chars: usize) -> Option<String> {
 /// 清洗设置模型。
 fn normalize_settings(mut settings: BuilderPanelSettings) -> BuilderPanelSettings {
     settings.panel.collapsed = false;
+    settings.panel.max_window_height =
+        sanitize_panel_max_window_height(settings.panel.max_window_height);
+    settings.panel.window_width = sanitize_panel_window_width(settings.panel.window_width);
+    settings.panel.window_size = None;
     settings.agents.codex_internal_prompt_patterns =
         sanitize_codex_internal_prompt_patterns(settings.agents.codex_internal_prompt_patterns);
     settings.replies.custom_shortcuts =
         sanitize_custom_shortcuts(settings.replies.custom_shortcuts);
     settings
+}
+
+/// 清洗 panel 窗口逻辑宽度。
+fn sanitize_panel_window_width(width: Option<u32>) -> Option<u32> {
+    width.filter(|value| *value > 0)
+}
+
+/// 清洗 panel 窗口最大逻辑高度。
+fn sanitize_panel_max_window_height(height: u32) -> u32 {
+    if height < PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT {
+        return PANEL_WINDOW_DEFAULT_MAX_HEIGHT;
+    }
+
+    height.min(PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT)
 }
 
 /// 清洗用户追加的 Codex 内部提示词过滤模式。
@@ -572,7 +609,10 @@ fn clean_model_text(value: String, max_chars: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BuilderPanelSettings, SettingsService};
+    use super::{
+        BuilderPanelSettings, PanelWindowSize, SettingsService, PANEL_WINDOW_DEFAULT_MAX_HEIGHT,
+        PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT, PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT,
+    };
     use crate::domain::app_error::{AppError, AppErrorCode, FallbackAction};
     use crate::ports::config_store_port::SettingsStorePort;
     use std::cell::RefCell;
@@ -620,8 +660,55 @@ mod tests {
 
         assert_eq!(settings.display.theme, Default::default());
         assert_eq!(settings.panel.collapsed, false);
+        assert_eq!(
+            settings.panel.max_window_height,
+            PANEL_WINDOW_DEFAULT_MAX_HEIGHT
+        );
         assert_eq!(settings.panel.window_position, None);
         assert_eq!(settings.panel.window_size, None);
+        assert_eq!(settings.panel.window_width, None);
+    }
+
+    #[test]
+    fn read_settings_drops_legacy_window_size() {
+        let mut settings = BuilderPanelSettings::defaults();
+        settings.panel.window_size = Some(PanelWindowSize {
+            width: 700,
+            height: 500,
+        });
+        let store = FakeSettingsStore::with_settings(settings);
+        let service = SettingsService::new(&store);
+        let view = service.read_settings();
+
+        assert_eq!(view.settings.panel.window_width, None);
+        assert_eq!(view.settings.panel.window_size, None);
+    }
+
+    #[test]
+    fn read_settings_sanitizes_panel_max_window_height() {
+        for (input, expected) in [
+            (0, PANEL_WINDOW_DEFAULT_MAX_HEIGHT),
+            (
+                PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT - 1,
+                PANEL_WINDOW_DEFAULT_MAX_HEIGHT,
+            ),
+            (
+                PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT,
+                PANEL_WINDOW_MIN_CONFIGURED_MAX_HEIGHT,
+            ),
+            (
+                PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT + 1,
+                PANEL_WINDOW_MAX_CONFIGURED_MAX_HEIGHT,
+            ),
+        ] {
+            let mut settings = BuilderPanelSettings::defaults();
+            settings.panel.max_window_height = input;
+            let store = FakeSettingsStore::with_settings(settings);
+            let service = SettingsService::new(&store);
+            let view = service.read_settings();
+
+            assert_eq!(view.settings.panel.max_window_height, expected);
+        }
     }
 
     #[test]
@@ -658,6 +745,13 @@ mod tests {
     }
 
     impl FakeSettingsStore {
+        fn with_settings(settings: BuilderPanelSettings) -> Self {
+            Self {
+                value: Ok(Some(settings)),
+                saved: RefCell::new(None),
+            }
+        }
+
         fn missing() -> Self {
             Self {
                 value: Ok(None),

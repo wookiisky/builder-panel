@@ -60,6 +60,12 @@ Rust Domain 测试验证已完成 session 过期 key 纯计算规则，包括严
 
 前端单元测试验证合并 session 的展示分组、首次观察序、父子展示块锚点和 store 隔离。
 
+前端单元测试验证 panel 目标高度以 Tauri 真实窗口高度为比较基准，并验证 resize 串行、最新请求合并、失败后重试和释放行为。
+
+前端单元测试验证 panel 独立自然内容层不使用当前 WebView 视口高度，打开的 overlay 面板参与高度测量并触发尺寸观察，动态子级 overlay 挂载、卸载会触发重算，且长内容滚动约束收敛在内容区。
+
+前端单元测试验证 Tauri 物理窗口和当前显示器工作区按 scale factor 转换到统一逻辑坐标，包括多屏负坐标和显示器缺失降级。
+
 架构脚本验证跨层依赖边界。
 
 Rust adapter 测试验证 bridge 和 hook helper 边界行为。
@@ -274,7 +280,25 @@ Rust terminal adapter 测试验证跳回记录、系统 URL 打开边界和复�
 
 前端 Settings Panel 测试验证 hook 状态列表展示和单项安装卸载按钮回调。
 
-前端 Builder Panel 测试验证窗口移动和尺寸变化的局部保存更新会合并。
+前端 Settings Panel 测试验证 Panel 分组可更新窗口最大高度。
+
+前端 Builder Panel 测试验证窗口移动和逻辑宽度变化的局部保存更新会合并。
+
+前端 Builder Panel 测试验证 panel 内容签名、重复宽度保存过滤、长内容滚动约束和标题栏拖动区标记。
+
+前端 panel 自适应规则测试验证配置最大高度、真实高度比较、当前显示器工作区限制、多屏负坐标和显示器缺失降级。
+
+前端 panel resize controller 测试验证 resize 副作用串行、进行中请求合并、失败后可重试和释放后不开始新副作用。
+
+前端 panel 内容测量测试验证独立自然内容层、打开 overlay 后的高度候选、ResizeObserver 目标，以及动态 DOM 挂载和卸载的 MutationObserver 触发。
+
+前端 panel window API 测试验证窗口逻辑宽度恢复、物理几何统一转换、内容高度调整保留真实宽度和浏览器环境 no-op。
+
+前端 Tauri runtime 测试验证运行时判断入口跟随官方 Tauri 环境标记。
+
+前端设置测试和 Rust Settings Service 测试验证 Panel 最大窗口高度归一化。
+
+前端设置测试和 Rust Settings Service 测试验证旧版物理像素窗口尺寸会被清空且不迁移。
 
 Rust settings service 测试验证配置缺失、配置损坏和保存。
 
@@ -484,7 +508,7 @@ Codex CLI hook 真实 smoke 验证构建 `builder-panel-hook`，安装真实 Cod
 
 `src/api/settingsApi.test.ts` 是前端设置默认值和自定义快捷输入清洗测试入口。
 
-`src/api/panelWindowApi.test.ts` 覆盖前端 panel 窗口置顶偏好应用、状态恢复、局部保存和关闭窗口入口。
+`src/api/panelWindowApi.test.ts` 覆盖前端 panel 窗口置顶偏好应用、逻辑宽度恢复、内容尺寸调整、局部保存和关闭窗口入口。
 
 `src/api/sessionJumpApi.ts` 是前端 session 跳回 command 调用入口。
 

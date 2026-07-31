@@ -135,6 +135,46 @@ describe("SettingsPanel hook install list", () => {
     });
   });
 
+  it("updates panel max window height from the Panel group", async () => {
+    const onChange = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <SettingsPanel
+          hookInstall={hookInstallState([])}
+          logPath={null}
+          saving={false}
+          settings={defaultSettings()}
+          statusMessage={null}
+          onChange={onChange}
+          onInstallHook={() => undefined}
+          onOpenLogFolder={() => undefined}
+          onUninstallHook={() => undefined}
+        />,
+      );
+    });
+
+    const input = labeledInput(container, "窗口最大高度");
+    await act(async () => {
+      setInputValue(input, "520");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        panel: expect.objectContaining({
+          max_window_height: 520,
+        }),
+      }),
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("opens the log folder through the icon action", async () => {
     const onOpenLogFolder = vi.fn();
     const container = document.createElement("div");
@@ -188,4 +228,26 @@ const labeledButton = (
     throw new Error(`未找到按钮：${label}`);
   }
   return button;
+};
+
+const labeledInput = (
+  container: HTMLElement,
+  label: string,
+): HTMLInputElement => {
+  const labels = [...container.querySelectorAll("label")];
+  const target = labels.find((item) => item.textContent?.includes(label));
+  const input = target?.querySelector("input");
+  if (input === undefined || input === null) {
+    throw new Error(`未找到输入框：${label}`);
+  }
+
+  return input;
+};
+
+const setInputValue = (input: HTMLInputElement, value: string): void => {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    "value",
+  );
+  descriptor?.set?.call(input, value);
 };

@@ -28,6 +28,9 @@ import {
   isHookActionDisabled,
   mergePanelSessionsByCaptureOrder,
   mergePanelWindowStateUpdate,
+  mergePanelWindowStateIntoSettings,
+  panelWindowContentResizeSignature,
+  panelWindowUpdateForPersistence,
   PanelTitleActions,
   panelSessionToId,
   parseTooltipMarkdown,
@@ -61,6 +64,7 @@ import {
   PanelSessionStatusIcon,
   type PanelIconName,
 } from "../components/PanelIcon";
+import { PanelShell } from "../components/PanelShell";
 import {
   createDefaultMockPanelUiState,
   sessionKeyToId,
@@ -763,9 +767,7 @@ describe("BuilderPanelApp session refresh", () => {
 
     const rows = container.querySelectorAll(".session-table-row");
     expect(rows).toHaveLength(2);
-    expect(rows[0].querySelector(".session-source")?.textContent).toBe(
-      "Codex",
-    );
+    expect(rows[0].querySelector(".session-source")?.textContent).toBe("Codex");
     expect(rows[0].querySelector(".session-project")?.textContent).toBe(
       "project-a",
     );
@@ -886,6 +888,32 @@ describe("BuilderPanelApp session refresh", () => {
     );
     expect(rowMainBlock?.groups?.body).not.toContain("minmax(176px, 0.34fr)");
     expect(tooltipWrapperBlock?.groups?.body).toMatch(/min-width:\s*0;/);
+  });
+
+  it("keeps short panel content natural and long content scrollable", () => {
+    const styles = readFileSync("src/styles.css", "utf8");
+    const surfaceBlock = styles.match(/\.app-surface\s*{(?<body>[^}]*)}/);
+    const shellBlock = styles.match(/\.panel-shell\s*{(?<body>[^}]*)}/);
+    const contentBlock = styles.match(/\.panel-content\s*{(?<body>[^}]*)}/);
+    const naturalContentBlock = styles.match(
+      /\.panel-natural-content\s*{(?<body>[^}]*)}/,
+    );
+
+    expect(surfaceBlock?.groups?.body).not.toMatch(
+      /(?:^|[^-])height:\s*100vh;/,
+    );
+    expect(surfaceBlock?.groups?.body).toMatch(/max-height:\s*100vh;/);
+    expect(surfaceBlock?.groups?.body).toMatch(/overflow:\s*hidden;/);
+    expect(shellBlock?.groups?.body).not.toMatch(/height:\s*100%;/);
+    expect(shellBlock?.groups?.body).toMatch(
+      /max-height:\s*calc\(100vh - 12px\);/,
+    );
+    expect(contentBlock?.groups?.body).toMatch(
+      /max-height:\s*calc\(100vh - 44px\);/,
+    );
+    expect(contentBlock?.groups?.body).toMatch(/overflow:\s*auto;/);
+    expect(naturalContentBlock?.groups?.body).toMatch(/display:\s*grid;/);
+    expect(naturalContentBlock?.groups?.body).not.toMatch(/max-height:/);
   });
 
   it("renders reusable panel icons with thin absolute strokes", async () => {
@@ -2117,6 +2145,63 @@ describe("BuilderPanelApp session refresh", () => {
     expect(shouldUseFollowupShortcut("running", true)).toBe(false);
   });
 
+  it("requests layout resize when hover-expanded rows change visibility", async () => {
+    const reactActGlobal = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    const onLayoutChange = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(SessionStream, {
+          mockUiState: createDefaultMockPanelUiState(),
+          currentTimeMs: 2000,
+          sessions: [followupSession("completed", "已完成")],
+          settings: defaultSettings(),
+          selectedSessionId: null,
+          onCreateFollowupTurn: () => undefined,
+          onDraftChange: () => undefined,
+          onJump: () => undefined,
+          onLayoutChange,
+          onResolveApproval: () => undefined,
+          onSendReply: () => undefined,
+          onSubmitChoice: () => undefined,
+          onToggleChoice: () => undefined,
+        }),
+      );
+    });
+
+    const row = container.querySelector<HTMLElement>(".session-table-row");
+    const actionRow = container.querySelector<HTMLElement>(
+      ".session-row-action-followup",
+    );
+    expect(row).not.toBeNull();
+    expect(actionRow).not.toBeNull();
+
+    await act(async () => {
+      row?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    await act(async () => {
+      row?.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    await act(async () => {
+      const transitionEvent = new Event("transitionend", { bubbles: true });
+      Object.defineProperty(transitionEvent, "propertyName", {
+        value: "max-height",
+      });
+      actionRow?.dispatchEvent(transitionEvent);
+    });
+
+    expect(onLayoutChange).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("uses the compact two-column action row for manual follow-up expansion", () => {
     expect(sessionActionRowClassName("completed")).toContain(
       "session-row-action-followup",
@@ -2553,14 +2638,155 @@ describe("BuilderPanelApp session refresh", () => {
         window_position: { x: 12, y: 20 },
       },
       {
-        window_size: { width: 860, height: 640 },
+        window_width: 860,
       },
     );
 
     expect(merged).toEqual({
       window_position: { x: 12, y: 20 },
-      window_size: { width: 860, height: 640 },
+      window_width: 860,
     });
+  });
+
+  it("keeps the latest window geometry when another setting is saved", () => {
+    const settings = defaultSettings();
+    const nextSettings = mergePanelWindowStateIntoSettings(settings, {
+      window_position: { x: -120, y: 48 },
+      window_width: 860,
+    });
+
+    expect(nextSettings.panel.window_position).toEqual({ x: -120, y: 48 });
+    expect(nextSettings.panel.window_width).toBe(860);
+    expect(nextSettings.display).toEqual(settings.display);
+  });
+
+  it("keeps moved positions and changed widths for persistence", () => {
+    expect(
+      panelWindowUpdateForPersistence(
+        { window_position: { x: 12, y: 20 } },
+        665,
+      ),
+    ).toEqual({ window_position: { x: 12, y: 20 } });
+    expect(panelWindowUpdateForPersistence({ window_width: 860 }, 665)).toEqual(
+      { window_width: 860 },
+    );
+  });
+
+  it("drops repeated width updates caused by programmatic height resize", () => {
+    expect(
+      panelWindowUpdateForPersistence({ window_width: 666 }, 665),
+    ).toBeNull();
+  });
+
+  it("changes panel resize signature when visible summary text changes", () => {
+    const settings = defaultSettings();
+    const shortSession = {
+      ...sessionItem(codexAppSessionKey, "codex_app", "running", "运行中"),
+      summary: textDisplay("短摘要"),
+    };
+    const longSession = {
+      ...shortSession,
+      summary: textDisplay("更长的摘要会让当前输出区域换行并改变内容高度"),
+    };
+
+    const shortSignature = panelWindowContentResizeSignature({
+      errorMessage: null,
+      settings,
+      settingsModalOpen: false,
+      sessions: [shortSession],
+    });
+    const longSignature = panelWindowContentResizeSignature({
+      errorMessage: null,
+      settings,
+      settingsModalOpen: false,
+      sessions: [longSession],
+    });
+
+    expect(longSignature).not.toBe(shortSignature);
+  });
+
+  it("ignores settings that do not affect panel content height in resize signature", () => {
+    const settings = defaultSettings();
+    const session = sessionItem(
+      codexAppSessionKey,
+      "codex_app",
+      "running",
+      "运行中",
+    );
+    const baseSignature = panelWindowContentResizeSignature({
+      errorMessage: null,
+      settings,
+      settingsModalOpen: false,
+      sessions: [session],
+    });
+    const nextSignature = panelWindowContentResizeSignature({
+      errorMessage: null,
+      settings: {
+        ...settings,
+        terminal: {
+          ...settings.terminal,
+          jump_enabled: false,
+        },
+      },
+      settingsModalOpen: false,
+      sessions: [session],
+    });
+
+    expect(nextSignature).toBe(baseSignature);
+  });
+
+  it("changes panel resize signature when configured max window height changes", () => {
+    const settings = defaultSettings();
+    const session = sessionItem(
+      codexAppSessionKey,
+      "codex_app",
+      "running",
+      "运行中",
+    );
+    const baseSignature = panelWindowContentResizeSignature({
+      errorMessage: null,
+      settings,
+      settingsModalOpen: false,
+      sessions: [session],
+    });
+    const nextSignature = panelWindowContentResizeSignature({
+      errorMessage: null,
+      settings: {
+        ...settings,
+        panel: {
+          ...settings.panel,
+          max_window_height: 520,
+        },
+      },
+      settingsModalOpen: false,
+      sessions: [session],
+    });
+
+    expect(nextSignature).not.toBe(baseSignature);
+  });
+
+  it("changes panel resize signature when the settings overlay opens", () => {
+    const settings = defaultSettings();
+    const session = sessionItem(
+      codexAppSessionKey,
+      "codex_app",
+      "running",
+      "运行中",
+    );
+    const closedSignature = panelWindowContentResizeSignature({
+      errorMessage: null,
+      settings,
+      settingsModalOpen: false,
+      sessions: [session],
+    });
+    const openSignature = panelWindowContentResizeSignature({
+      errorMessage: null,
+      settings,
+      settingsModalOpen: true,
+      sessions: [session],
+    });
+
+    expect(openSignature).not.toBe(closedSignature);
   });
 
   it("keeps submitting state when panel window controls fail", () => {
@@ -2573,6 +2799,44 @@ describe("BuilderPanelApp session refresh", () => {
 
     expect(next.errorMessage).toBe("最小化窗口失败");
     expect(next.submittingInteractionId).toBe("approval-1");
+  });
+
+  it("marks title text as drag region without marking window buttons", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(PanelShell, {
+          actions: createElement(PanelTitleActions, {
+            onClose: vi.fn(),
+            onMinimize: vi.fn(),
+            onOpenSettings: vi.fn(),
+          }),
+          children: createElement("div"),
+          title: "Builder Panel",
+          titleMeta: createElement(
+            "span",
+            { "data-tauri-drag-region": true },
+            "运行 0 等待 0 总计 1",
+          ),
+        }),
+      );
+    });
+
+    const title = container.querySelector("h1");
+    const statusDot = container.querySelector(".panel-status-dot");
+    const minimizeButton = container.querySelector(
+      "button[aria-label='最小化']",
+    );
+
+    expect(title?.hasAttribute("data-tauri-drag-region")).toBe(true);
+    expect(statusDot?.hasAttribute("data-tauri-drag-region")).toBe(true);
+    expect(minimizeButton?.hasAttribute("data-tauri-drag-region")).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("formats active session elapsed time with hour rollover", () => {
